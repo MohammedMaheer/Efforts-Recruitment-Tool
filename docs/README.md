@@ -1,4 +1,4 @@
-# AI Recruiter Platform 🚀 - **FREE Local AI Edition**
+# AI Recruiter Platform 🚀 - **Efforts Solutions IT**
 
 <div align="center">
 
