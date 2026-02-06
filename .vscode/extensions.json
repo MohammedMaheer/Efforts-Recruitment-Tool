@@ -1,0 +1,24 @@
+{
+  "recommendations": [
+    {
+      "extensionId": "ms-python.python",
+      "reason": "Python language support for backend development"
+    },
+    {
+      "extensionId": "ms-vscode.vscode-typescript-next",
+      "reason": "Enhanced TypeScript support for frontend"
+    },
+    {
+      "extensionId": "dbaeumer.vscode-eslint",
+      "reason": "ESLint integration for code quality"
+    },
+    {
+      "extensionId": "esbenp.prettier-vscode",
+      "reason": "Code formatting"
+    },
+    {
+      "extensionId": "ms-azuretools.vscode-docker",
+      "reason": "Docker support for deployment"
+    }
+  ]
+}

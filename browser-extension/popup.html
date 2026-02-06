@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Recruiter - LinkedIn Scraper</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="popup-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="logo">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"></path>
+          <circle cx="9" cy="7" r="4"></circle>
+          <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
+          <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+        </svg>
+        <span>AI Recruiter</span>
+      </div>
+      <div class="status" id="connectionStatus">
+        <span class="status-dot"></span>
+        <span class="status-text">Checking...</span>
+      </div>
+    </header>
+
+    <!-- Tabs -->
+    <div class="tabs">
+      <button class="tab active" data-tab="profiles">
+        <span>Profiles</span>
+        <span class="badge" id="profileCount">0</span>
+      </button>
+      <button class="tab" data-tab="settings">Settings</button>
+    </div>
+
+    <!-- Profiles Tab -->
+    <div class="tab-content active" id="profiles-tab">
+      <!-- Current Page Section -->
+      <div class="section">
+        <h3>Current Page</h3>
+        <div id="currentPage" class="current-page">
+          <p class="muted">Navigate to a LinkedIn profile to scrape</p>
+        </div>
+        <button id="scrapeBtn" class="btn btn-primary" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+            <polyline points="7 10 12 15 17 10"></polyline>
+            <line x1="12" y1="15" x2="12" y2="3"></line>
+          </svg>
+          Scrape This Profile
+        </button>
+      </div>
+
+      <!-- Scraped Profiles List -->
+      <div class="section">
+        <div class="section-header">
+          <h3>Scraped Profiles</h3>
+          <button id="clearBtn" class="btn btn-ghost btn-sm">Clear All</button>
+        </div>
+        <div id="profilesList" class="profiles-list">
+          <p class="muted">No profiles scraped yet</p>
+        </div>
+      </div>
+
+      <!-- Actions -->
+      <div class="actions">
+        <button id="sendAllBtn" class="btn btn-success" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="22" y1="2" x2="11" y2="13"></line>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+          </svg>
+          Send All to AI Recruiter
+        </button>
+      </div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div class="tab-content" id="settings-tab">
+      <div class="section">
+        <h3>API Configuration</h3>
+        <div class="form-group">
+          <label for="apiUrl">Backend URL</label>
+          <input type="url" id="apiUrl" placeholder="http://localhost:8000" />
+        </div>
+        <button id="testConnection" class="btn btn-secondary">
+          Test Connection
+        </button>
+      </div>
+
+      <div class="section">
+        <h3>Scraping Options</h3>
+        <div class="form-group">
+          <label class="toggle">
+            <input type="checkbox" id="autoSend" />
+            <span class="toggle-slider"></span>
+            <span>Auto-send to backend</span>
+          </label>
+          <p class="help-text">Automatically send scraped profiles to AI Recruiter</p>
+        </div>
+
+        <div class="form-group">
+          <label for="jobCategory">Default Job Category</label>
+          <select id="jobCategory">
+            <option value="General">General</option>
+            <option value="Engineering">Engineering</option>
+            <option value="Design">Design</option>
+            <option value="Marketing">Marketing</option>
+            <option value="Sales">Sales</option>
+            <option value="Product">Product</option>
+            <option value="Data">Data Science</option>
+            <option value="Operations">Operations</option>
+            <option value="HR">Human Resources</option>
+            <option value="Finance">Finance</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="section">
+        <button id="saveSettings" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <a href="http://localhost:3000" target="_blank">Open AI Recruiter Dashboard</a>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
