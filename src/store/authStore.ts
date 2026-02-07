@@ -5,8 +5,10 @@ import config from '@/config'
 interface User {
   id: string
   email: string
+  username?: string
   name: string
   firstName?: string
+  lastName?: string
   role: string
   company?: string
   phone?: string
@@ -18,8 +20,8 @@ interface AuthState {
   token: string | null
   isAuthenticated: boolean
   isLoading: boolean
-  login: (email: string, password: string) => Promise<void>
-  register: (email: string, password: string, name?: string) => Promise<void>
+  login: (emailOrUsername: string, password: string) => Promise<void>
+  register: (email: string, password: string, name: string, username?: string) => Promise<void>
   logout: () => void
   verifyToken: () => Promise<boolean>
   updateProfile: (profile: Partial<User>) => Promise<void>
@@ -62,13 +64,13 @@ export const useAuthStore = create<AuthState>()(
         }
       },
       
-      register: async (email: string, password: string, name?: string) => {
+      register: async (email: string, password: string, name: string, username?: string) => {
         set({ isLoading: true })
         try {
           const response = await fetch(`${config.endpoints.auth}/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password, name }),
+            body: JSON.stringify({ email, password, name, username }),
           })
           
           if (!response.ok) {

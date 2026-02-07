@@ -3054,7 +3054,8 @@ class LoginRequest(BaseModel):
 class RegisterRequest(BaseModel):
     email: str
     password: str
-    name: Optional[str] = None
+    name: str
+    username: Optional[str] = None
 
 class UserProfile(BaseModel):
     firstName: str
@@ -3104,11 +3105,16 @@ async def register(request: RegisterRequest):
     - Email must be unique
     """
     try:
-        if not request.email or not request.password:
-            raise HTTPException(400, "Email and password are required")
+        if not request.email or not request.password or not request.name:
+            raise HTTPException(400, "Name, email and password are required")
         
-        result = auth_service.register(request.email, request.password, request.name)
-        logger.info(f"✅ New user registered: {request.email}")
+        result = auth_service.register(
+            email=request.email, 
+            password=request.password, 
+            name=request.name,
+            username=request.username
+        )
+        logger.info(f"✅ New user registered: {request.email} ({request.name})")
         return result
         
     except ValueError as e:

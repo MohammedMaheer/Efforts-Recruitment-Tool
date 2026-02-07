@@ -6,13 +6,29 @@ Handles user registration, login, and JWT token management
 import sqlite3
 import os
 import secrets
+import hashlib
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
-from passlib.context import CryptContext
 from jose import JWTError, jwt
 
-# Password hashing configuration
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# JWT Configuration
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_hex(32))
+ALGORITHM = "HS256"
+ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7  # 7 days
+
+def _hash_password(password: str) -> str:
+    """Hash password using SHA-256 with salt"""
+    salt = secrets.token_hex(16)
+    hashed = hashlib.sha256((salt + password).encode()).hexdigest()
+    return f"{salt}${hashed}"
+
+def _verify_password(plain_password: str, stored_hash: str) -> bool:
+    """Verify password against stored hash"""
+    try:
+        salt, hashed = stored_hash.split('$')
+        return hashlib.sha256((salt + plain_password).encode()).hexdigest() == hashed
+    except:
+        return False
 
 # JWT Configuration
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_hex(32))
@@ -40,9 +56,11 @@ class AuthService:
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
                     email TEXT UNIQUE NOT NULL,
+                    username TEXT UNIQUE,
                     password_hash TEXT NOT NULL,
                     name TEXT NOT NULL,
                     first_name TEXT,
+                    last_name TEXT,
                     role TEXT DEFAULT 'Recruiter',
                     company TEXT,
                     phone TEXT,
@@ -57,17 +75,18 @@ class AuthService:
             
             # Create indexes
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)")
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_is_active ON users(is_active)")
             
             conn.commit()
     
     def _hash_password(self, password: str) -> str:
-        """Hash a password using bcrypt"""
-        return pwd_context.hash(password)
+        """Hash password using SHA-256 with salt"""
+        return _hash_password(password)
     
     def _verify_password(self, plain_password: str, hashed_password: str) -> bool:
-        """Verify a password against its hash"""
-        return pwd_context.verify(plain_password, hashed_password)
+        """Verify password against stored hash"""
+        return _verify_password(plain_password, hashed_password)
     
     def _create_access_token(self, data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
         """Create JWT access token"""
@@ -80,14 +99,15 @@ class AuthService:
         """Generate unique user ID"""
         return f"user_{secrets.token_hex(8)}"
     
-    def register(self, email: str, password: str, name: Optional[str] = None) -> Dict[str, Any]:
+    def register(self, email: str, password: str, name: str, username: Optional[str] = None) -> Dict[str, Any]:
         """
         Register a new user
         
         Args:
             email: User's email address
             password: Plain text password (will be hashed)
-            name: Optional display name
+            name: User's full name
+            username: Optional username for login
             
         Returns:
             Dict with user data and access token
@@ -100,42 +120,57 @@ class AuthService:
         if not email or '@' not in email:
             raise ValueError("Invalid email address")
         
+        if not name or len(name.strip()) < 2:
+            raise ValueError("Name is required")
+        
         if len(password) < 6:
             raise ValueError("Password must be at least 6 characters")
+        
+        # Process name
+        name = name.strip()
+        name_parts = name.split()
+        first_name = name_parts[0] if name_parts else "User"
+        last_name = ' '.join(name_parts[1:]) if len(name_parts) > 1 else ""
+        
+        # Generate username from email if not provided
+        if not username:
+            username = email.split('@')[0].lower().replace('.', '_').replace('-', '_')
+        else:
+            username = username.strip().lower()
         
         # Generate user data
         user_id = self._generate_user_id()
         password_hash = self._hash_password(password)
         
-        # Extract name from email if not provided
-        if not name:
-            name = email.split('@')[0].replace('.', ' ').replace('_', ' ').title()
-        
-        first_name = name.split()[0] if name else "User"
-        
         try:
             with self._get_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("""
-                    INSERT INTO users (id, email, password_hash, name, first_name, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO users (id, email, username, password_hash, name, first_name, last_name, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    user_id, email, password_hash, name, first_name,
+                    user_id, email, username, password_hash, name, first_name, last_name,
                     datetime.utcnow().isoformat(), datetime.utcnow().isoformat()
                 ))
                 conn.commit()
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as e:
+            if 'email' in str(e).lower():
+                raise ValueError("An account with this email already exists")
+            elif 'username' in str(e).lower():
+                raise ValueError("This username is already taken")
             raise ValueError("An account with this email already exists")
         
         # Create access token
-        token = self._create_access_token({"sub": user_id, "email": email})
+        token = self._create_access_token({"sub": user_id, "email": email, "username": username})
         
         return {
             "user": {
                 "id": user_id,
                 "email": email,
+                "username": username,
                 "name": name,
                 "firstName": first_name,
+                "lastName": last_name,
                 "role": "Recruiter"
             },
             "token": token
@@ -144,9 +179,10 @@ class AuthService:
     def login(self, email: str, password: str) -> Dict[str, Any]:
         """
         Authenticate user and return access token
+        Supports login with email or username
         
         Args:
-            email: User's email address
+            email: User's email address or username
             password: Plain text password
             
         Returns:
@@ -155,21 +191,22 @@ class AuthService:
         Raises:
             ValueError: If credentials are invalid
         """
-        email = email.strip().lower()
+        login_id = email.strip().lower()
         
         with self._get_connection() as conn:
             cursor = conn.cursor()
+            # Try email first, then username
             cursor.execute("""
-                SELECT id, email, password_hash, name, first_name, role, company, phone, avatar_url
-                FROM users WHERE email = ? AND is_active = 1
-            """, (email,))
+                SELECT id, email, username, password_hash, name, first_name, last_name, role, company, phone, avatar_url
+                FROM users WHERE (email = ? OR username = ?) AND is_active = 1
+            """, (login_id, login_id))
             row = cursor.fetchone()
         
         if not row:
-            raise ValueError("Invalid email or password")
+            raise ValueError("Invalid email/username or password")
         
         if not self._verify_password(password, row['password_hash']):
-            raise ValueError("Invalid email or password")
+            raise ValueError("Invalid email/username or password")
         
         # Update last login
         with self._get_connection() as conn:
@@ -180,14 +217,16 @@ class AuthService:
             conn.commit()
         
         # Create access token
-        token = self._create_access_token({"sub": row['id'], "email": row['email']})
+        token = self._create_access_token({"sub": row['id'], "email": row['email'], "username": row['username']})
         
         return {
             "user": {
                 "id": row['id'],
                 "email": row['email'],
+                "username": row['username'],
                 "name": row['name'],
                 "firstName": row['first_name'],
+                "lastName": row['last_name'],
                 "role": row['role'] or "Recruiter",
                 "company": row['company'],
                 "phone": row['phone'],

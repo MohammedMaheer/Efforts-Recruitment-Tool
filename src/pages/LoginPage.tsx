@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mail, Lock, Briefcase, Zap, TrendingUp, CheckCircle, ArrowRight, Sparkles, Brain, Target, User, AlertCircle } from 'lucide-react'
+import { Mail, Lock, Briefcase, Zap, TrendingUp, CheckCircle, ArrowRight, Sparkles, Brain, Target, User, AlertCircle, AtSign } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { useAuthStore } from '@/store/authStore'
@@ -9,6 +9,7 @@ export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [name, setName] = useState('')
+  const [username, setUsername] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [activeFeature, setActiveFeature] = useState(0)
   const [isRegistering, setIsRegistering] = useState(false)
@@ -52,13 +53,14 @@ export default function LoginPage() {
     setIsLoading(true)
     
     try {
-      // Validate inputs
-      if (!email || !password) {
-        throw new Error('Email and password are required')
-      }
-      
       if (isRegistering) {
         // Validate registration
+        if (!name || name.trim().length < 2) {
+          throw new Error('Full name is required')
+        }
+        if (!email || !email.includes('@')) {
+          throw new Error('Valid email is required')
+        }
         if (password.length < 6) {
           throw new Error('Password must be at least 6 characters')
         }
@@ -67,9 +69,13 @@ export default function LoginPage() {
         }
         
         // Register new account using store function
-        await register(email, password, name || undefined)
+        await register(email, password, name, username || undefined)
       } else {
-        // Login using store function
+        // Validate login
+        if (!email || !password) {
+          throw new Error('Email/username and password are required')
+        }
+        // Login using store function (email field accepts email or username)
         await login(email, password)
       }
     } catch (err) {
@@ -283,7 +289,7 @@ export default function LoginPage() {
               {isRegistering && (
                 <div>
                   <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-2">
-                    Full Name
+                    Full Name <span className="text-red-500">*</span>
                   </label>
                   <div className="relative">
                     <User className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -292,23 +298,25 @@ export default function LoginPage() {
                       type="text"
                       placeholder="John Doe"
                       value={name}
-                      onChange={(e) => setName(e.target.value)}
+                      onChange={(e) => { setName(e.target.value); setError(null) }}
                       className="pl-10"
+                      required
                     />
                   </div>
                 </div>
               )}
 
+              {/* Email field - for both login and registration */}
               <div>
                 <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
-                  Email address
+                  {isRegistering ? 'Email Address' : 'Email or Username'} {isRegistering && <span className="text-red-500">*</span>}
                 </label>
                 <div className="relative">
                   <Mail className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
                   <Input
                     id="email"
-                    type="email"
-                    placeholder="recruiter@company.ae"
+                    type={isRegistering ? "email" : "text"}
+                    placeholder={isRegistering ? "recruiter@company.ae" : "email or username"}
                     value={email}
                     onChange={(e) => { setEmail(e.target.value); setError(null) }}
                     className="pl-10"
@@ -317,9 +325,30 @@ export default function LoginPage() {
                 </div>
               </div>
 
+              {/* Username field - only for registration (optional) */}
+              {isRegistering && (
+                <div>
+                  <label htmlFor="username" className="block text-sm font-medium text-gray-700 mb-2">
+                    Username <span className="text-gray-400 text-xs">(optional - for quick login)</span>
+                  </label>
+                  <div className="relative">
+                    <AtSign className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                    <Input
+                      id="username"
+                      type="text"
+                      placeholder="johndoe"
+                      value={username}
+                      onChange={(e) => { setUsername(e.target.value.toLowerCase().replace(/[^a-z0-9_]/g, '')); setError(null) }}
+                      className="pl-10"
+                    />
+                  </div>
+                  <p className="mt-1 text-xs text-gray-500">Only lowercase letters, numbers, and underscores</p>
+                </div>
+              )}
+
               <div>
                 <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
-                  Password
+                  Password {isRegistering && <span className="text-red-500">*</span>}
                 </label>
                 <div className="relative">
                   <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -402,6 +431,8 @@ export default function LoginPage() {
                     setError(null)
                     setPassword('')
                     setConfirmPassword('')
+                    setUsername('')
+                    setName('')
                   }}
                   className="font-medium text-primary-600 hover:text-primary-700"
                 >
