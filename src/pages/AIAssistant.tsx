@@ -213,10 +213,11 @@ Try one of the suggestions below or ask me anything!`,
       intent = 'ml_ranking'
       try {
         const candidateIds = candidates.slice(0, 20).map(c => c.id)
-        const result = await advancedApi.ml.rankCandidates(candidateIds, undefined, 10)
+        const result = await advancedApi.ml.rankCandidates(candidateIds, undefined, 10) as { data?: { rankings?: Array<{ candidate_id: string; score: number }> } }
         
         if (result.data?.rankings) {
-          const rankedIds = result.data.rankings.map((r: { candidate_id: string }) => r.candidate_id)
+          const rankings = result.data.rankings
+          const rankedIds = rankings.map((r) => r.candidate_id)
           filteredCandidates = rankedIds
             .map((id: string) => candidates.find(c => c.id === id))
             .filter(Boolean) as Candidate[]
@@ -225,8 +226,8 @@ Try one of the suggestions below or ask me anything!`,
           
           insights = [
             { title: 'Analyzed', value: candidateIds.length, icon: Brain, color: 'purple' },
-            { title: 'Top Score', value: `${(result.data.rankings[0]?.score * 100 || 0).toFixed(0)}%`, icon: Star, color: 'yellow' },
-            { title: 'Avg Score', value: `${(result.data.rankings.reduce((a: number, r: { score: number }) => a + r.score, 0) / result.data.rankings.length * 100).toFixed(0)}%`, icon: TrendingUp, color: 'green' }
+            { title: 'Top Score', value: `${(rankings[0]?.score * 100 || 0).toFixed(0)}%`, icon: Star, color: 'yellow' },
+            { title: 'Avg Score', value: `${(rankings.reduce((a, r) => a + r.score, 0) / rankings.length * 100).toFixed(0)}%`, icon: TrendingUp, color: 'green' }
           ]
         }
       } catch (error) {
@@ -286,7 +287,7 @@ Try one of the suggestions below or ask me anything!`,
         const duplicatesFound = duplicateResults.filter((r) => (r as { data?: { duplicates?: unknown[] } })?.data?.duplicates?.length).length
         
         if (duplicatesFound > 0) {
-          filteredCandidates = candidates.filter((c, idx) => {
+          filteredCandidates = candidates.filter((_c, idx) => {
             const result = duplicateResults[idx] as { data?: { duplicates?: unknown[] } } | null
             return result?.data?.duplicates && result.data.duplicates.length > 0
           })
@@ -674,7 +675,7 @@ Try one of the suggestions below or ask me anything!`,
       {/* Messages Container */}
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
         <AnimatePresence>
-          {messages.map((message, index) => (
+          {messages.map((message) => (
             <motion.div
               key={message.id}
               initial={{ opacity: 0, y: 20, scale: 0.95 }}
