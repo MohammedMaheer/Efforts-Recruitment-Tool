@@ -289,10 +289,12 @@ export default function CandidateDetail() {
                   <Mail className="w-4 h-4" />
                   {candidate.email}
                 </span>
-                <span className="flex items-center gap-1">
-                  <Phone className="w-4 h-4" />
-                  {candidate.phone}
-                </span>
+                {candidate.phone && candidate.phone.replace(/\D/g, '').length >= 7 && (
+                  <span className="flex items-center gap-1">
+                    <Phone className="w-4 h-4" />
+                    {candidate.phone}
+                  </span>
+                )}
                 <span className="flex items-center gap-1">
                   <MapPin className="w-4 h-4" />
                   {candidate.location}
