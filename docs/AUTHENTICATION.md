@@ -4,6 +4,17 @@
 
 The AI Recruiter Platform uses a JWT-based authentication system with secure password hashing and persistent user sessions.
 
+## Default Admin Credentials
+
+| Field | Value |
+|-------|-------|
+| **Name** | Mohammed Maheer |
+| **Email** | admin@effortz.com |
+| **Username** | admin |
+| **Password** | admin123 |
+
+> ⚠️ **Important**: Change the admin password after first login in production!
+
 ## Features
 
 - **User Registration**: Create new accounts with email, password, and optional name
