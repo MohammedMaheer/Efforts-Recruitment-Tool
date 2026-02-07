@@ -82,17 +82,22 @@ class EmailParser:
         
         body_lower = clean_body.lower()
         
-        # Extract phone number
+        # Extract phone number (minimum 7 digits to avoid matching years like 2026)
         phone_patterns = [
-            r'\+?\d{1,3}[-.\s]?\(?\d{1,4}\)?[-.\s]?\d{1,4}[-.\s]?\d{1,9}',
-            r'\(\d{3}\)\s*\d{3}[-.\s]?\d{4}',
-            r'\d{10,12}'
+            r'\+971[\s.-]?\d{1,2}[\s.-]?\d{3}[\s.-]?\d{4}',  # UAE format
+            r'\+\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}',  # International
+            r'\(\d{3}\)\s*\d{3}[-.\s]?\d{4}',  # US format
+            r'\b\d{10,12}\b'  # Plain 10-12 digit numbers
         ]
         for pattern in phone_patterns:
             match = re.search(pattern, body)
             if match:
-                result['phone'] = match.group()
-                break
+                phone_candidate = match.group()
+                # Filter out year-like numbers (4 digits between 1900-2100)
+                digits_only = re.sub(r'\D', '', phone_candidate)
+                if len(digits_only) >= 7:  # Valid phone has at least 7 digits
+                    result['phone'] = phone_candidate
+                    break
         
         # Extract skills (common tech keywords)
         skill_keywords = [

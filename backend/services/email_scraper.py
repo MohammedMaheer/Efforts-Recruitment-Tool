@@ -152,17 +152,22 @@ def parse_indeed_email(body: str, subject: str) -> Optional[Dict]:
     if linkedin_match:
         result['linkedin'] = f"https://linkedin.com/in/{linkedin_match.group(1)}"
     
-    # Extract phone from body (multiple formats)
+    # Extract phone from body (multiple formats, minimum 7 digits to avoid years)
     phone_patterns = [
-        r'\+?\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}',
-        r'\(\d{3}\)\s*\d{3}[-.\s]?\d{4}',
-        r'\+971[\s.-]?\d{1,2}[\s.-]?\d{3}[\s.-]?\d{4}',  # UAE
+        r'\+971[\s.-]?\d{1,2}[\s.-]?\d{3}[\s.-]?\d{4}',  # UAE format first
+        r'\+\d{1,3}[-.\s]?\(?\d{2,4}\)?[-.\s]?\d{3,4}[-.\s]?\d{3,4}',  # International
+        r'\(\d{3}\)\s*\d{3}[-.\s]?\d{4}',  # US format
+        r'(?:phone|mobile|cell|tel)[:\s]+([\d\s\-\.\+\(\)]{7,20})',  # Labeled phone
     ]
     for pattern in phone_patterns:
-        phone_match = re.search(pattern, clean_body)
+        phone_match = re.search(pattern, clean_body, re.IGNORECASE)
         if phone_match:
-            result['phone'] = phone_match.group()
-            break
+            phone_candidate = phone_match.group(1) if phone_match.lastindex else phone_match.group()
+            # Filter out year-like numbers - must have at least 7 digits
+            digits_only = re.sub(r'\D', '', phone_candidate)
+            if len(digits_only) >= 7:
+                result['phone'] = phone_candidate.strip()
+                break
     
     # Extract location from body
     location_patterns = [
