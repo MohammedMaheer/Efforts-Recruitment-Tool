@@ -1,12 +1,19 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import config from '@/config'
 
 export default function OAuthCallback() {
   const navigate = useNavigate()
+  const hasProcessed = useRef(false)  // Prevent duplicate requests
 
   useEffect(() => {
     const handleCallback = async () => {
+      // Prevent duplicate calls (React StrictMode calls useEffect twice)
+      if (hasProcessed.current) {
+        return
+      }
+      hasProcessed.current = true
+
       // Get the authorization code from URL
       const urlParams = new URLSearchParams(window.location.search)
       const code = urlParams.get('code')
@@ -16,6 +23,9 @@ export default function OAuthCallback() {
         navigate('/settings')
         return
       }
+
+      // Clear the URL to prevent re-use of the code
+      window.history.replaceState({}, document.title, '/auth/callback')
 
       try {
         // Exchange code for token
@@ -41,7 +51,7 @@ export default function OAuthCallback() {
             console.warn('Email sync trigger failed, will sync on next interval:', syncError)
           }
           
-          alert(`Successfully connected ${data.email}!\n\nEmail sync started - candidates will appear shortly.`)
+          alert(`Successfully connected ${data.email}!\n\nEmail sync started - candidates will appear shortly.\n\n✅ Auto-refresh enabled - you won't need to log in again!`)
           navigate('/candidates')
         } else {
           console.error('OAuth2 error:', data)
