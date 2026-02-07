@@ -93,8 +93,6 @@ export default function LoginPage() {
     }, 4000)
     return () => clearInterval(interval)
   }, [features.length])
-    return () => clearInterval(interval)
-  })
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-purple-50 flex">
