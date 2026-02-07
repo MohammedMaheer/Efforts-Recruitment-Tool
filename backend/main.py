@@ -82,7 +82,15 @@ background_sync_task = None
 oauth_automation_service: OAuthAutomationService = None
 
 async def auto_sync_emails():
-    """Automatically sync emails with OAuth2 PRIORITY - Auto-refreshes tokens"""
+    """
+    FULLY AUTOMATED email sync with OAuth2 Client Credentials Flow
+    NO user intervention required - authenticates automatically using app credentials
+    
+    Authentication Priority:
+    1. Client Credentials (Application Permissions) - FULLY AUTOMATIC
+    2. Refresh Token (if available from previous delegated auth)
+    3. IMAP fallback (if OAuth2 not configured)
+    """
     # Wait 5 seconds before first sync to allow server to fully start
     await asyncio.sleep(5)
     
@@ -90,7 +98,7 @@ async def auto_sync_emails():
         try:
             logger.info("🔄 Auto-sync: Starting email sync...")
             
-            # PRIORITY: Try OAuth2 for primary Outlook account
+            # Get OAuth2 configuration
             client_id = os.getenv('MICROSOFT_CLIENT_ID')
             client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
             tenant_id = os.getenv('MICROSOFT_TENANT_ID')
@@ -100,22 +108,29 @@ async def auto_sync_emails():
             
             if all([client_id, client_secret, tenant_id, primary_email]):
                 try:
-                    # Check if we have a saved OAuth2 token
                     token_storage = get_token_storage()
                     token_data = token_storage.get_token(primary_email)
+                    graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=primary_email)
                     
-                    if token_data:
-                        # Check if token is expired and we have a refresh token
-                        is_expired = token_data.get('is_expired', False)
-                        refresh_token = token_data.get('refresh_token')
+                    # PRIORITY 1: Try Client Credentials Flow (FULLY AUTOMATIC - no user interaction)
+                    # This uses Application Permissions configured in Azure AD
+                    needs_new_token = (
+                        not token_data or 
+                        token_data.get('is_expired', True) or
+                        not token_data.get('access_token')
+                    )
+                    
+                    if needs_new_token:
+                        logger.info(f"🔐 Auto-authenticating with Client Credentials for {primary_email}...")
                         
-                        if is_expired and refresh_token:
-                            logger.info(f"🔄 Token expired for {primary_email}, auto-refreshing...")
-                            graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=primary_email)
+                        # Try refresh token first if available
+                        refresh_token = token_data.get('refresh_token') if token_data else None
+                        auth_success = False
+                        
+                        if refresh_token:
+                            logger.info("🔄 Attempting token refresh...")
                             refresh_result = await graph_service.refresh_access_token(refresh_token)
-                            
                             if refresh_result['status'] == 'success':
-                                # Save the new tokens
                                 token_storage.save_token(
                                     email=primary_email,
                                     access_token=refresh_result['access_token'],
@@ -124,152 +139,199 @@ async def auto_sync_emails():
                                     auth_type='delegated'
                                 )
                                 token_data = token_storage.get_token(primary_email)
-                                logger.info(f"✅ Token auto-refreshed for {primary_email}")
+                                auth_success = True
+                                logger.info(f"✅ Token refreshed successfully for {primary_email}")
+                        
+                        # If refresh failed or no refresh token, use Client Credentials (AUTOMATIC)
+                        if not auth_success:
+                            logger.info("🤖 Using Client Credentials Flow (automatic authentication)...")
+                            cred_result = graph_service.authenticate_with_credentials()
+                            
+                            if cred_result['status'] == 'success':
+                                token_storage.save_token(
+                                    email=primary_email,
+                                    access_token=cred_result['access_token'],
+                                    refresh_token=None,  # Client credentials don't use refresh tokens
+                                    expires_in=cred_result['expires_in'],
+                                    auth_type='application'
+                                )
+                                token_data = token_storage.get_token(primary_email)
+                                logger.info(f"✅ Client Credentials authentication successful for {primary_email}")
                             else:
-                                logger.error(f"❌ Token refresh failed: {refresh_result.get('error')}")
-                                token_data = None  # Force re-auth
+                                error_msg = cred_result.get('error', 'Unknown error')
+                                logger.warning(f"⚠️ Client Credentials failed: {error_msg}")
+                                
+                                # Provide helpful setup instructions
+                                if 'unauthorized' in str(error_msg).lower() or 'consent' in str(error_msg).lower():
+                                    logger.info("📋 To enable FULLY AUTOMATIC authentication:")
+                                    logger.info("   1. Go to Azure Portal → App Registrations → Your App")
+                                    logger.info("   2. API Permissions → Add Permission → Microsoft Graph")
+                                    logger.info("   3. Application Permissions → Mail.Read, Mail.ReadBasic")
+                                    logger.info("   4. Click 'Grant admin consent' (requires admin)")
+                                    logger.info("   Once configured, authentication will be fully automatic!")
+                    
+                    # Use the token if we have a valid one
+                    if token_data and token_data.get('access_token') and not token_data.get('is_expired', True):
+                        logger.info(f"🔐 Using OAuth2 ({token_data.get('auth_type', 'unknown')}) for {primary_email}...")
                         
-                        if token_data and token_data.get('access_token') and not token_data.get('is_expired', True):
-                            logger.info(f"🔐 Using OAuth2 for {primary_email}...")
-                            
-                            # Use Microsoft Graph API with saved token
-                            saved_auth_type = token_data.get('auth_type', 'delegated')
-                            
-                            graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=primary_email)
-                            graph_service.access_token = token_data['access_token']
-                            graph_service.auth_type = saved_auth_type
-                            graph_service.token_expiry = token_data.get('expires_at_dt', datetime.now() + timedelta(hours=1))
-                            
-                            # Check if database is empty - if empty, fetch ALL emails
-                            candidate_count = await asyncio.to_thread(
-                                lambda: db_service.get_total_candidates()
-                            )
-                            process_all = (candidate_count == 0)
-                            
-                            # Fetch emails - ALWAYS fetch ALL emails to ensure complete inbox coverage
-                            logger.info(f"📧 {'Initial setup - fetching ALL emails from entire inbox...' if process_all else 'Full sync - fetching ALL emails...'}")
-                            result = await graph_service.get_messages(
-                                folder='inbox', 
-                                top=100000,  # High limit for non-paginated fallback
-                                fetch_all=True  # ALWAYS fetch ALL emails to get complete history
-                            )
+                        graph_service.access_token = token_data['access_token']
+                        graph_service.auth_type = token_data.get('auth_type', 'application')
+                        graph_service.token_expiry = token_data.get('expires_at_dt', datetime.now() + timedelta(hours=1))
                         
-                            if result['status'] == 'success':
-                                messages = result['messages']
-                                logger.info(f"📧 Found {len(messages)} emails from OAuth2")
-                                
-                                # Process messages in parallel batches
-                                new_count = 0
-                                
-                                async def process_graph_message(msg):
-                                    nonlocal new_count
-                                    try:
-                                        # Convert Graph API message to candidate format
-                                        sender = msg.get('from', {}).get('emailAddress', {})
-                                        sender_email = sender.get('address', '')
-                                        sender_name = sender.get('name', sender_email.split('@')[0])
-                                        
-                                        subject = msg.get('subject', '')
-                                        body = msg.get('body', {}).get('content', '')
-                                        
-                                        # Check for attachments
-                                        has_attachments = msg.get('hasAttachments', False)
-                                        attachments = []
-                                        
-                                        if has_attachments:
-                                            # Fetch attachments
-                                            attach_result = await graph_service.get_message_with_attachments(msg['id'])
-                                            if attach_result['status'] == 'success':
-                                                attachments = attach_result['attachments']
-                                        
-                                        # Build email data - use actual email received date
-                                        received_dt = msg.get('receivedDateTime')
-                                        if received_dt:
-                                            try:
-                                                received_date = datetime.fromisoformat(received_dt.replace('Z', '+00:00'))
-                                            except:
-                                                received_date = datetime.now()
-                                        else:
-                                            received_date = datetime.now()
-                                        
-                                        email_data = {
-                                            'subject': subject,
-                                            'sender_email': sender_email,
-                                            'sender_name': sender_name,
-                                            'body': body,
-                                            'attachments': attachments,
-                                            'received_date': received_date
-                                        }
-                                        
-                                        # Extract candidate
-                                        candidate = await scraper_service.extract_candidate_from_email(email_data)
-                                        if not candidate or not candidate.get('email'):
-                                            return
-                                        
-                                        # Check if exists
-                                        existing = await asyncio.to_thread(db_service.get_candidate_by_email, candidate['email'])
-                                        
-                                        needs_ai = False
-                                        if not existing:
-                                            needs_ai = True
-                                            new_count += 1
-                                        elif not existing.get('ai_score'):
-                                            needs_ai = True
-                                        
-                                        # AI processing - use resume text OR email summary
-                                        analysis_text = candidate.get('resume_text') or candidate.get('summary', '')
-                                        if needs_ai and analysis_text and len(analysis_text) > 20:
-                                            try:
-                                                ai_analysis = await asyncio.wait_for(
-                                                    ai_service.analyze_candidate(analysis_text),
-                                                    timeout=AI_ANALYSIS_TIMEOUT
-                                                )
-                                                if ai_analysis and ai_analysis.get('quality_score'):
-                                                    # Map quality_score to matchScore for database
-                                                    candidate.update({
-                                                        'job_category': ai_analysis.get('job_category', 'General'),
-                                                        'matchScore': ai_analysis.get('quality_score', 50),
-                                                        'summary': ai_analysis.get('summary', candidate.get('summary', '')),
-                                                        'skills': ai_analysis.get('skills', candidate.get('skills', [])),
-                                                        'experience': ai_analysis.get('experience', candidate.get('experience', 0)),
-                                                        'education': ai_analysis.get('education', []),
-                                                        'phone': ai_analysis.get('phone') or candidate.get('phone', ''),
-                                                        'location': ai_analysis.get('location') or candidate.get('location', ''),
-                                                        'linkedin': ai_analysis.get('linkedin') or candidate.get('linkedin', ''),
-                                                    })
-                                                    logger.info(f"✅ AI scored {candidate.get('name')}: {ai_analysis.get('quality_score')}%")
-                                            except Exception as ai_err:
-                                                logger.warning(f"AI analysis failed: {str(ai_err)[:50]}")
-                                                candidate['matchScore'] = 45  # Default score for error
-                                        
-                                        # Save to database
-                                        if existing:
-                                            await asyncio.to_thread(db_service.update_candidate, candidate)
-                                        else:
-                                            await asyncio.to_thread(db_service.insert_candidate, candidate)
-                                            
-                                    except Exception as e:
-                                        logger.warning(f"Error processing message: {str(e)[:100]}")
-                                
-                                # Process in batches (smaller batch for SQLite safety)
-                                BATCH_SIZE = 3
-                                for i in range(0, len(messages), BATCH_SIZE):
-                                    batch = messages[i:i+BATCH_SIZE]
-                                    await asyncio.gather(*[process_graph_message(msg) for msg in batch], return_exceptions=True)
+                        # Check if database is empty - if empty, fetch ALL emails
+                        candidate_count = await asyncio.to_thread(
+                            lambda: db_service.get_total_candidates()
+                        )
+                        process_all = (candidate_count == 0)
+                        
+                        # Fetch emails
+                        logger.info(f"📧 {'Initial setup - fetching ALL emails...' if process_all else 'Syncing emails...'}")
+                        result = await graph_service.get_messages(
+                            folder='inbox', 
+                            top=100000,
+                            fetch_all=True
+                        )
+                    
+                        if result['status'] == 'success':
+                            messages = result['messages']
+                            logger.info(f"📧 Found {len(messages)} emails from OAuth2")
+                            
+                            # Process messages in parallel batches
+                            new_count = 0
+                            
+                            async def process_graph_message(msg):
+                                nonlocal new_count
+                                try:
+                                    # Convert Graph API message to candidate format
+                                    sender = msg.get('from', {}).get('emailAddress', {})
+                                    sender_email = sender.get('address', '')
+                                    sender_name = sender.get('name', sender_email.split('@')[0])
                                     
-                                    if len(messages) > 50 and (i + BATCH_SIZE) % 50 == 0:
-                                        logger.info(f"📊 Progress: {min(i+BATCH_SIZE, len(messages))}/{len(messages)} emails processed...")
+                                    subject = msg.get('subject', '')
+                                    body = msg.get('body', {}).get('content', '')
+                                    
+                                    # Check for attachments
+                                    has_attachments = msg.get('hasAttachments', False)
+                                    attachments = []
+                                    
+                                    if has_attachments:
+                                        # Fetch attachments
+                                        attach_result = await graph_service.get_message_with_attachments(msg['id'])
+                                        if attach_result['status'] == 'success':
+                                            attachments = attach_result['attachments']
+                                    
+                                    # Build email data - use actual email received date
+                                    received_dt = msg.get('receivedDateTime')
+                                    if received_dt:
+                                        try:
+                                            received_date = datetime.fromisoformat(received_dt.replace('Z', '+00:00'))
+                                        except:
+                                            received_date = datetime.now()
+                                    else:
+                                        received_date = datetime.now()
+                                    
+                                    email_data = {
+                                        'subject': subject,
+                                        'sender_email': sender_email,
+                                        'sender_name': sender_name,
+                                        'body': body,
+                                        'attachments': attachments,
+                                        'received_date': received_date
+                                    }
+                                    
+                                    # Extract candidate
+                                    candidate = await scraper_service.extract_candidate_from_email(email_data)
+                                    if not candidate or not candidate.get('email'):
+                                        return
+                                    
+                                    # Check if exists
+                                    existing = await asyncio.to_thread(db_service.get_candidate_by_email, candidate['email'])
+                                    
+                                    needs_ai = False
+                                    if not existing:
+                                        needs_ai = True
+                                        new_count += 1
+                                    elif not existing.get('ai_score'):
+                                        needs_ai = True
+                                    
+                                    # AI processing - use resume text OR email summary
+                                    analysis_text = candidate.get('resume_text') or candidate.get('summary', '')
+                                    if needs_ai and analysis_text and len(analysis_text) > 20:
+                                        try:
+                                            ai_analysis = await asyncio.wait_for(
+                                                ai_service.analyze_candidate(analysis_text),
+                                                timeout=AI_ANALYSIS_TIMEOUT
+                                            )
+                                            if ai_analysis and ai_analysis.get('quality_score'):
+                                                # Map quality_score to matchScore for database
+                                                candidate.update({
+                                                    'job_category': ai_analysis.get('job_category', 'General'),
+                                                    'matchScore': ai_analysis.get('quality_score', 50),
+                                                    'summary': ai_analysis.get('summary', candidate.get('summary', '')),
+                                                    'skills': ai_analysis.get('skills', candidate.get('skills', [])),
+                                                    'experience': ai_analysis.get('experience', candidate.get('experience', 0)),
+                                                    'education': ai_analysis.get('education', []),
+                                                    'phone': ai_analysis.get('phone') or candidate.get('phone', ''),
+                                                    'location': ai_analysis.get('location') or candidate.get('location', ''),
+                                                    'linkedin': ai_analysis.get('linkedin') or candidate.get('linkedin', ''),
+                                                })
+                                                logger.info(f"✅ AI scored {candidate.get('name')}: {ai_analysis.get('quality_score')}%")
+                                        except Exception as ai_err:
+                                            logger.warning(f"AI analysis failed: {str(ai_err)[:50]}")
+                                            candidate['matchScore'] = 45  # Default score for error
+                                    
+                                    # Save to database
+                                    if existing:
+                                        await asyncio.to_thread(db_service.update_candidate, candidate)
+                                    else:
+                                        await asyncio.to_thread(db_service.insert_candidate, candidate)
+                                        
+                                except Exception as e:
+                                    logger.warning(f"Error processing message: {str(e)[:100]}")
+                            
+                            # Process in batches (smaller batch for SQLite safety)
+                            BATCH_SIZE = 3
+                            for i in range(0, len(messages), BATCH_SIZE):
+                                batch = messages[i:i+BATCH_SIZE]
+                                await asyncio.gather(*[process_graph_message(msg) for msg in batch], return_exceptions=True)
                                 
-                                logger.info(f"✅ OAuth2 sync: {primary_email} - {len(messages)} emails, {new_count} new candidates")
-                                oauth2_success = True
-                                
-                            else:
-                                logger.warning(f"OAuth2 fetch failed: {result.get('message')}")
+                                if len(messages) > 50 and (i + BATCH_SIZE) % 50 == 0:
+                                    logger.info(f"📊 Progress: {min(i+BATCH_SIZE, len(messages))}/{len(messages)} emails processed...")
+                            
+                            logger.info(f"✅ OAuth2 sync: {primary_email} - {len(messages)} emails, {new_count} new candidates")
+                            oauth2_success = True
+                            
                         else:
-                            logger.info(f"⚠️ Token invalid or expired for {primary_email}. Please re-authenticate via frontend.")
-                    else:
-                        logger.info(f"⚠️ No OAuth2 token found for {primary_email}. Please authenticate via frontend.")
-                        
+                            error_msg = result.get('message', 'Unknown error')
+                            logger.warning(f"OAuth2 fetch failed: {error_msg}")
+                            
+                            # If 403 Forbidden with application auth, need Azure AD permissions
+                            if '403' in str(error_msg) and token_data.get('auth_type') == 'application':
+                                logger.info("=" * 70)
+                                logger.info("📋 APPLICATION PERMISSIONS NOT CONFIGURED IN AZURE AD")
+                                logger.info("=" * 70)
+                                logger.info("")
+                                logger.info("OPTION 1: Enable FULLY AUTOMATIC sync (recommended if you have Azure admin)")
+                                logger.info("   1. Go to: Azure Portal → App Registrations → AI Recruitment Tool")
+                                logger.info("   2. Click: API Permissions → Add a permission")
+                                logger.info("   3. Select: Microsoft Graph → Application permissions")
+                                logger.info("   4. Add: Mail.Read and Mail.ReadBasic")
+                                logger.info("   5. Click: 'Grant admin consent for [Organization]'")
+                                logger.info("")
+                                logger.info("OPTION 2: Authenticate ONCE via frontend (if no Azure admin access)")
+                                logger.info("   1. Open: http://localhost:3000")
+                                logger.info("   2. Go to: Settings → Email Integration")
+                                logger.info("   3. Click: Connect Microsoft Account")
+                                logger.info("   4. Sign in and grant permissions")
+                                logger.info("   → After this ONE-TIME login, auto-refresh works FOREVER")
+                                logger.info("")
+                                logger.info("=" * 70)
+                                # Clear the application token since it won't work
+                                token_storage.delete_token(primary_email)
+                            elif 'token' in error_msg.lower() or 'unauthorized' in error_msg.lower():
+                                logger.info("🔄 Clearing invalid token...")
+                                token_storage.delete_token(primary_email)
+                    
                 except Exception as oauth_error:
                     logger.error(f"OAuth2 sync error: {str(oauth_error)}")
             
@@ -2325,12 +2387,19 @@ async def oauth2_callback(request: OAuth2CallbackRequest):
         result = await graph_service.authenticate(request.code, request.redirect_uri)
         
         if result['status'] == 'success':
-            # Save token to storage
+            # Save token to storage - ENSURE refresh_token is saved for auto-refresh
             token_storage = get_token_storage()
+            refresh_token = result.get('refresh_token')
+            
+            if not refresh_token:
+                logger.warning("⚠️ No refresh token received from Microsoft. Auto-refresh will not work!")
+            else:
+                logger.info(f"✅ Refresh token received - auto-refresh enabled")
+            
             token_storage.save_token(
                 email=email_address,
                 access_token=result['access_token'],
-                refresh_token=result.get('refresh_token'),
+                refresh_token=refresh_token,
                 expires_in=result['expires_in'],
                 auth_type='delegated'  # User login = delegated permissions (uses /me/ endpoint)
             )

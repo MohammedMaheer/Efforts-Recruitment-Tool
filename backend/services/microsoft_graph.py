@@ -51,13 +51,17 @@ class MicrosoftGraphService:
             expires_in = token_data.get('expires_in', 3600)
             self.token_expiry = datetime.now() + timedelta(seconds=expires_in)
             
+            logger.info(f"✅ OAuth2 authentication successful. Refresh token present: {bool(token_data.get('refresh_token'))}")
+            
             return {
                 'status': 'success',
                 'access_token': self.access_token,
+                'refresh_token': token_data.get('refresh_token'),  # CRITICAL: Return refresh token for auto-refresh
                 'expires_in': expires_in
             }
         
         except Exception as e:
+            logger.error(f"❌ OAuth2 authentication failed: {str(e)}")
             return {
                 'status': 'failed',
                 'error': str(e)
