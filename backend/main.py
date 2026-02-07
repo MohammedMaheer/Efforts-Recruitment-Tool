@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -25,6 +25,7 @@ from services.local_ai_service import get_local_ai_service
 from services.email_scraper import get_scraper_service
 from services.database_service import get_db_service
 from services.oauth_automation_service import get_oauth_automation, OAuthAutomationService
+from services.auth_service import get_auth_service
 from models.candidate import Candidate, JobDescription, MatchResult
 
 # Advanced AI services
@@ -3050,105 +3051,180 @@ class LoginRequest(BaseModel):
     email: str
     password: str
 
+class RegisterRequest(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
+
 class UserProfile(BaseModel):
     firstName: str
     lastName: str
     email: str
     company: Optional[str] = None
+    phone: Optional[str] = None
 
 class PasswordUpdate(BaseModel):
     currentPassword: str
     newPassword: str
 
+# Initialize auth service
+auth_service = get_auth_service()
+
 @app.post("/api/auth/login")
 async def login(request: LoginRequest):
     """
     Authenticate user and return JWT token
-    DEVELOPMENT MODE: Returns mock user for testing
+    
+    - Validates email and password
+    - Returns user data and JWT access token
+    - Token expires in 7 days
     """
     try:
-        # Development mock - accepts any credentials
-        # Just check that email and password are not empty
         if not request.email or not request.password:
             raise HTTPException(400, "Email and password are required")
         
-        return {
-            "user": {
-                "id": "dev-user-123",
-                "email": request.email,
-                "name": "Development User",
-                "firstName": "Dev",
-                "role": "Recruiter"
-            },
-            "token": "dev-token-mock-jwt-12345"
-        }
+        result = auth_service.login(request.email, request.password)
+        return result
         
+    except ValueError as e:
+        raise HTTPException(401, str(e))
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"Login error: {e}")
         raise HTTPException(500, f"Login error: {str(e)}")
 
 @app.post("/api/auth/register")
-async def register(request: LoginRequest):
+async def register(request: RegisterRequest):
     """
     Register new user account
-    DEVELOPMENT MODE: Returns mock user for testing
+    
+    - Creates new user with hashed password
+    - Returns user data and JWT access token
+    - Email must be unique
     """
     try:
-        # Development mock - accepts any credentials
         if not request.email or not request.password:
             raise HTTPException(400, "Email and password are required")
         
-        if len(request.password) < 6:
-            raise HTTPException(400, "Password must be at least 6 characters")
+        result = auth_service.register(request.email, request.password, request.name)
+        logger.info(f"✅ New user registered: {request.email}")
+        return result
         
-        return {
-            "user": {
-                "id": f"dev-user-{hash(request.email) % 10000}",
-                "email": request.email,
-                "name": request.email.split('@')[0].title(),
-                "firstName": request.email.split('@')[0].title(),
-                "role": "Recruiter"
-            },
-            "token": f"dev-token-{hash(request.email) % 10000}"
-        }
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Registration error: {e}")
+        raise HTTPException(500, f"Registration error: {str(e)}")
+
+@app.get("/api/auth/me")
+async def get_current_user(authorization: Optional[str] = Header(None)):
+    """
+    Get current user from JWT token
+    
+    - Validates Authorization header
+    - Returns user data if token is valid
+    """
+    try:
+        if not authorization:
+            raise HTTPException(401, "Authorization header required")
+        
+        # Extract token from "Bearer <token>"
+        parts = authorization.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            raise HTTPException(401, "Invalid authorization format. Use 'Bearer <token>'")
+        
+        token = parts[1]
+        user = auth_service.verify_token(token)
+        
+        if not user:
+            raise HTTPException(401, "Invalid or expired token")
+        
+        return {"user": user}
         
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Registration error: {str(e)}")
+        logger.error(f"Auth verification error: {e}")
+        raise HTTPException(500, f"Auth error: {str(e)}")
 
 # User profile endpoints
 @app.put("/api/users/profile")
-async def update_profile(profile: UserProfile):
+async def update_profile(profile: UserProfile, authorization: Optional[str] = Header(None)):
     """
     Update user profile information
     """
     try:
-        # In production: save to database
+        if not authorization:
+            raise HTTPException(401, "Authorization required")
+        
+        # Extract and verify token
+        parts = authorization.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            raise HTTPException(401, "Invalid authorization format")
+        
+        user = auth_service.verify_token(parts[1])
+        if not user:
+            raise HTTPException(401, "Invalid or expired token")
+        
+        # Update profile
+        updated_user = auth_service.update_profile(user['id'], {
+            'name': f"{profile.firstName} {profile.lastName}",
+            'first_name': profile.firstName,
+            'company': profile.company,
+            'phone': profile.phone
+        })
+        
         return {
             'status': 'success',
             'message': 'Profile updated successfully',
-            'profile': profile.dict()
+            'user': updated_user
         }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
+        logger.error(f"Profile update error: {e}")
         raise HTTPException(500, f"Error updating profile: {str(e)}")
 
 @app.put("/api/users/password")
-async def update_password(password_update: PasswordUpdate):
+async def update_password(password_update: PasswordUpdate, authorization: Optional[str] = Header(None)):
     """
     Update user password
     """
     try:
-        # In production: verify current password and update with hashed new password
-        if password_update.currentPassword and password_update.newPassword:
-            return {
-                'status': 'success',
-                'message': 'Password updated successfully'
-            }
-        else:
-            raise HTTPException(400, 'Invalid password data')
+        if not authorization:
+            raise HTTPException(401, "Authorization required")
+        
+        # Extract and verify token
+        parts = authorization.split()
+        if len(parts) != 2 or parts[0].lower() != "bearer":
+            raise HTTPException(401, "Invalid authorization format")
+        
+        user = auth_service.verify_token(parts[1])
+        if not user:
+            raise HTTPException(401, "Invalid or expired token")
+        
+        # Change password
+        auth_service.change_password(
+            user['id'],
+            password_update.currentPassword,
+            password_update.newPassword
+        )
+        
+        return {
+            'status': 'success',
+            'message': 'Password updated successfully'
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     except Exception as e:
+        logger.error(f"Password update error: {e}")
         raise HTTPException(500, f"Error updating password: {str(e)}")
 
 # Candidate management endpoints - status update only, other routes defined earlier

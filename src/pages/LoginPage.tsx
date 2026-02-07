@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mail, Lock, Briefcase, Zap, TrendingUp, CheckCircle, ArrowRight, Sparkles, Brain, Target } from 'lucide-react'
+import { Mail, Lock, Briefcase, Zap, TrendingUp, CheckCircle, ArrowRight, Sparkles, Brain, Target, User, AlertCircle } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { useAuthStore } from '@/store/authStore'
@@ -8,10 +8,14 @@ import { useAuthStore } from '@/store/authStore'
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [name, setName] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const [activeFeature, setActiveFeature] = useState(0)
   const [isRegistering, setIsRegistering] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [confirmPassword, setConfirmPassword] = useState('')
   const login = useAuthStore((state) => state.login)
+  const register = useAuthStore((state) => state.register)
 
   const features = [
     {
@@ -44,41 +48,45 @@ export default function LoginPage() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    setError(null)
     setIsLoading(true)
+    
     try {
+      // Validate inputs
+      if (!email || !password) {
+        throw new Error('Email and password are required')
+      }
+      
       if (isRegistering) {
-        // Register new account
-        const response = await fetch('http://localhost:8000/api/auth/register', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email, password })
-        })
-        
-        if (!response.ok) {
-          const error = await response.json()
-          throw new Error(error.detail || 'Registration failed')
+        // Validate registration
+        if (password.length < 6) {
+          throw new Error('Password must be at least 6 characters')
+        }
+        if (password !== confirmPassword) {
+          throw new Error('Passwords do not match')
         }
         
-        const data = await response.json()
-        // Store user and set authenticated
-        useAuthStore.setState({ user: data.user, isAuthenticated: true })
+        // Register new account using store function
+        await register(email, password, name || undefined)
       } else {
-        // Login
+        // Login using store function
         await login(email, password)
       }
-    } catch (error) {
-      console.error(isRegistering ? 'Registration failed:' : 'Login failed:', error)
-      alert(error instanceof Error ? error.message : 'Authentication failed')
+    } catch (err) {
+      console.error(isRegistering ? 'Registration failed:' : 'Login failed:', err)
+      setError(err instanceof Error ? err.message : 'Authentication failed')
     } finally {
       setIsLoading(false)
     }
   }
 
   // Auto-rotate features
-  useState(() => {
+  useEffect(() => {
     const interval = setInterval(() => {
       setActiveFeature((prev) => (prev + 1) % features.length)
     }, 4000)
+    return () => clearInterval(interval)
+  }, [features.length])
     return () => clearInterval(interval)
   })
 
@@ -258,7 +266,39 @@ export default function LoginPage() {
               {isRegistering ? 'Create your account to get started' : 'Sign in to continue to your dashboard'}
             </p>
 
+            {/* Error Display */}
+            {error && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg flex items-center gap-2 text-red-700"
+              >
+                <AlertCircle className="w-5 h-5 flex-shrink-0" />
+                <span className="text-sm">{error}</span>
+              </motion.div>
+            )}
+
             <form onSubmit={handleSubmit} className="space-y-5">
+              {/* Name field - only for registration */}
+              {isRegistering && (
+                <div>
+                  <label htmlFor="name" className="block text-sm font-medium text-gray-700 mb-2">
+                    Full Name
+                  </label>
+                  <div className="relative">
+                    <User className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                    <Input
+                      id="name"
+                      type="text"
+                      placeholder="John Doe"
+                      value={name}
+                      onChange={(e) => setName(e.target.value)}
+                      className="pl-10"
+                    />
+                  </div>
+                </div>
+              )}
+
               <div>
                 <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
                   Email address
@@ -270,7 +310,7 @@ export default function LoginPage() {
                     type="email"
                     placeholder="recruiter@company.ae"
                     value={email}
-                    onChange={(e) => setEmail(e.target.value)}
+                    onChange={(e) => { setEmail(e.target.value); setError(null) }}
                     className="pl-10"
                     required
                   />
@@ -288,12 +328,37 @@ export default function LoginPage() {
                     type="password"
                     placeholder="••••••••"
                     value={password}
-                    onChange={(e) => setPassword(e.target.value)}
+                    onChange={(e) => { setPassword(e.target.value); setError(null) }}
                     className="pl-10"
                     required
+                    minLength={6}
                   />
                 </div>
+                {isRegistering && (
+                  <p className="mt-1 text-xs text-gray-500">Must be at least 6 characters</p>
+                )}
               </div>
+
+              {/* Confirm Password - only for registration */}
+              {isRegistering && (
+                <div>
+                  <label htmlFor="confirmPassword" className="block text-sm font-medium text-gray-700 mb-2">
+                    Confirm Password
+                  </label>
+                  <div className="relative">
+                    <Lock className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                    <Input
+                      id="confirmPassword"
+                      type="password"
+                      placeholder="••••••••"
+                      value={confirmPassword}
+                      onChange={(e) => { setConfirmPassword(e.target.value); setError(null) }}
+                      className="pl-10"
+                      required
+                    />
+                  </div>
+                </div>
+              )}
 
               <div className="flex items-center justify-between">
                 <label className="flex items-center">
@@ -332,7 +397,12 @@ export default function LoginPage() {
                 {isRegistering ? 'Already have an account?' : "Don't have an account?"}{' '}
                 <button 
                   type="button"
-                  onClick={() => setIsRegistering(!isRegistering)}
+                  onClick={() => {
+                    setIsRegistering(!isRegistering)
+                    setError(null)
+                    setPassword('')
+                    setConfirmPassword('')
+                  }}
                   className="font-medium text-primary-600 hover:text-primary-700"
                 >
                   {isRegistering ? 'Sign in' : 'Create account'}
