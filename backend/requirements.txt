@@ -37,7 +37,13 @@ aiosqlite>=0.19.0  # Async SQLite for better concurrency
 sentence-transformers>=2.2.0  # Semantic similarity AI
 torch>=2.0.0  # Required by sentence-transformers
 transformers>=4.35.0  # Additional NLP capabilities
-gpt4all>=2.0.0  # Optional: Full local LLM (~4GB)
+
+# Local LLM via Ollama (BEST performance/speed ratio)
+# Install Ollama: https://ollama.com/download
+# Then run: ollama pull qwen2.5:7b
+# Ollama communicates via HTTP API - no Python package needed!
+# httpx is used for async HTTP calls to Ollama
+httpx>=0.25.0  # Async HTTP client for Ollama API
 
 # Intel GPU Acceleration (Intel Iris Xe)
 # intel-extension-for-pytorch>=2.1.0  # Intel GPU optimization - install separately with: pip install intel-extension-for-pytorch

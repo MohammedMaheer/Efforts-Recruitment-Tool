@@ -654,6 +654,27 @@ async def list_campaigns():
         raise HTTPException(500, f"Failed to get campaigns: {str(e)}")
 
 
+@router.get("/campaigns/stats/{campaign_id}", response_model=CampaignStatsResponse)
+async def get_campaign_stats(campaign_id: str):
+    """Get statistics for a campaign"""
+    try:
+        service = get_followup_service()
+        stats = service.get_campaign_stats(campaign_id)
+        return CampaignStatsResponse(**stats)
+    except Exception as e:
+        raise HTTPException(500, f"Failed to get stats: {str(e)}")
+
+
+@router.get("/campaigns/stats")
+async def get_all_campaign_stats():
+    """Get statistics for all campaigns"""
+    try:
+        service = get_followup_service()
+        return service.get_all_stats()
+    except Exception as e:
+        raise HTTPException(500, f"Failed to get stats: {str(e)}")
+
+
 @router.get("/campaigns/{campaign_id}")
 async def get_campaign(campaign_id: str):
     """Get a specific campaign"""
@@ -764,27 +785,6 @@ async def get_candidate_enrollments(candidate_id: str):
         return {'enrollments': enrollments}
     except Exception as e:
         raise HTTPException(500, f"Failed to get enrollments: {str(e)}")
-
-
-@router.get("/campaigns/stats/{campaign_id}", response_model=CampaignStatsResponse)
-async def get_campaign_stats(campaign_id: str):
-    """Get statistics for a campaign"""
-    try:
-        service = get_followup_service()
-        stats = service.get_campaign_stats(campaign_id)
-        return CampaignStatsResponse(**stats)
-    except Exception as e:
-        raise HTTPException(500, f"Failed to get stats: {str(e)}")
-
-
-@router.get("/campaigns/stats")
-async def get_all_campaign_stats():
-    """Get statistics for all campaigns"""
-    try:
-        service = get_followup_service()
-        return service.get_all_stats()
-    except Exception as e:
-        raise HTTPException(500, f"Failed to get stats: {str(e)}")
 
 
 @router.post("/campaigns/process")

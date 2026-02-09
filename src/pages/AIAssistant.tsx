@@ -22,7 +22,12 @@ import {
   BarChart3,
   Clock,
   CheckCircle2,
-  Copy
+  Copy,
+  Upload,
+  ThumbsUp,
+  ThumbsDown,
+  Briefcase,
+  X
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card, CardContent } from '@/components/ui/Card'
@@ -100,6 +105,13 @@ const suggestedPrompts = [
     category: 'top'
   },
   {
+    icon: Briefcase,
+    text: 'Match candidates to job description',
+    color: 'text-emerald-600',
+    bgColor: 'bg-emerald-50 hover:bg-emerald-100',
+    category: 'job_match'
+  },
+  {
     icon: Mail,
     text: 'Draft outreach email for top candidates',
     color: 'text-indigo-600',
@@ -122,10 +134,131 @@ const suggestedPrompts = [
   }
 ]
 
+// Job Description Matching Modal Component
+function JobMatchModal({ 
+  isOpen, 
+  onClose, 
+  onMatch 
+}: { 
+  isOpen: boolean
+  onClose: () => void
+  onMatch: (jd: string, topN: number) => void 
+}) {
+  const [jobDescription, setJobDescription] = useState('')
+  const [topN, setTopN] = useState(10)
+  const [isMatching, setIsMatching] = useState(false)
+
+  const handleMatch = async () => {
+    if (jobDescription.trim().length < 50) {
+      alert('Please enter a job description with at least 50 characters')
+      return
+    }
+    setIsMatching(true)
+    await onMatch(jobDescription, topN)
+    setIsMatching(false)
+    onClose()
+  }
+
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <motion.div
+        initial={{ opacity: 0, scale: 0.95 }}
+        animate={{ opacity: 1, scale: 1 }}
+        exit={{ opacity: 0, scale: 0.95 }}
+        className="bg-white rounded-2xl shadow-xl max-w-2xl w-full max-h-[90vh] overflow-hidden"
+      >
+        <div className="p-6 border-b border-gray-200">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center">
+                <Briefcase className="w-5 h-5 text-emerald-600" />
+              </div>
+              <div>
+                <h2 className="text-lg font-semibold text-gray-900">Match Candidates to Job</h2>
+                <p className="text-sm text-gray-500">Paste a job description to find best matches</p>
+              </div>
+            </div>
+            <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg">
+              <X className="w-5 h-5 text-gray-500" />
+            </button>
+          </div>
+        </div>
+        
+        <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Job Description *
+            </label>
+            <textarea
+              value={jobDescription}
+              onChange={(e) => setJobDescription(e.target.value)}
+              placeholder="Paste the full job description here...
+
+Example:
+We are looking for a Senior Software Engineer with 5+ years of experience in React, Node.js, and AWS. The ideal candidate should have experience with microservices architecture, CI/CD pipelines, and agile methodologies..."
+              className="w-full h-64 p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 resize-none text-sm"
+            />
+            <p className="text-xs text-gray-500 mt-1">
+              {jobDescription.length} characters (minimum 50 required)
+            </p>
+          </div>
+          
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-2">
+              Number of Top Candidates
+            </label>
+            <select
+              value={topN}
+              onChange={(e) => setTopN(Number(e.target.value))}
+              className="w-full p-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-500"
+            >
+              <option value={5}>Top 5</option>
+              <option value={10}>Top 10</option>
+              <option value={15}>Top 15</option>
+              <option value={20}>Top 20</option>
+            </select>
+          </div>
+        </div>
+        
+        <div className="p-6 border-t border-gray-200 bg-gray-50">
+          <div className="flex gap-3">
+            <button
+              onClick={onClose}
+              className="flex-1 px-4 py-3 border border-gray-300 rounded-xl text-gray-700 hover:bg-gray-100 font-medium"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleMatch}
+              disabled={isMatching || jobDescription.length < 50}
+              className="flex-1 px-4 py-3 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isMatching ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Matching...
+                </>
+              ) : (
+                <>
+                  <Brain className="w-4 h-4" />
+                  Find Best Matches
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+      </motion.div>
+    </div>
+  )
+}
+
 export default function AIAssistant() {
   const [messages, setMessages] = useState<Message[]>([])
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
+  const [showJobMatchModal, setShowJobMatchModal] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { candidates } = useCandidates({ autoFetch: true })
@@ -596,9 +729,125 @@ Try one of the suggestions below or ask me anything!`,
     }
   }
 
-  const handleSuggestedPrompt = (prompt: string) => {
+  const handleSuggestedPrompt = (prompt: string, category?: string) => {
+    // Handle special categories
+    if (category === 'job_match') {
+      setShowJobMatchModal(true)
+      return
+    }
     setInput(prompt)
     inputRef.current?.focus()
+  }
+
+  // Handle job description matching
+  const handleJobMatch = async (jobDescription: string, topN: number) => {
+    const userMessage: Message = {
+      id: Date.now().toString(),
+      type: 'user',
+      content: `🔍 **Job Description Matching Request**\n\nFind top ${topN} candidates for:\n\n"${jobDescription.slice(0, 200)}${jobDescription.length > 200 ? '...' : ''}"`,
+      timestamp: new Date()
+    }
+
+    setMessages(prev => [...prev, userMessage])
+    setIsTyping(true)
+
+    const loadingId = (Date.now() + 1).toString()
+    setMessages(prev => [...prev, {
+      id: loadingId,
+      type: 'ai',
+      content: '🧠 Analyzing job description and matching candidates using AI...',
+      timestamp: new Date(),
+      loading: true
+    }])
+
+    try {
+      const response = await fetch(`${config.apiUrl}/api/ai/match-job`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          job_description: jobDescription,
+          top_n: topN
+        })
+      })
+
+      const data = await response.json()
+      setMessages(prev => prev.filter(m => m.id !== loadingId))
+
+      if (data.rankings && data.rankings.length > 0) {
+        // Map ranked candidates to our candidate format
+        const rankedCandidateIds = data.rankings.map((r: { candidate_id: string }) => r.candidate_id)
+        const matchedCandidates = rankedCandidateIds
+          .map((id: string) => candidates.find(c => c.id === id))
+          .filter(Boolean) as Candidate[]
+
+        // Build response with AI analysis
+        let responseText = `## 🎯 AI Job Matching Results\n\n`
+        
+        if (data.job_analysis) {
+          responseText += `**Key Requirements Identified:**\n`
+          responseText += data.job_analysis.key_requirements?.map((r: string) => `• ${r}`).join('\n') || 'Not specified'
+          responseText += `\n\n**Experience Level:** ${data.job_analysis.experience_level || 'Not specified'}\n\n`
+        }
+
+        responseText += `**Top ${data.rankings.length} Matches:**\n\n`
+        
+        data.rankings.forEach((r: { rank: number; candidate_name: string; job_fit_score: number; recommendation: string; match_reasons?: string[] }, _idx: number) => {
+          const emoji = r.job_fit_score >= 80 ? '🌟' : r.job_fit_score >= 60 ? '✅' : '📋'
+          responseText += `${emoji} **#${r.rank} ${r.candidate_name}** - ${r.job_fit_score}% match\n`
+          responseText += `   ${r.recommendation}\n`
+          if (r.match_reasons?.length) {
+            responseText += `   _${r.match_reasons.slice(0, 2).join(', ')}_\n`
+          }
+          responseText += '\n'
+        })
+
+        if (data.summary) {
+          responseText += `\n**Summary:** ${data.summary.recommendation || ''}`
+        }
+
+        const aiMessage: Message = {
+          id: (Date.now() + 2).toString(),
+          type: 'ai',
+          content: responseText,
+          timestamp: new Date(),
+          candidates: matchedCandidates,
+          intent: 'job_match',
+          insights: [
+            { title: 'Evaluated', value: data.total_candidates_searched || candidates.length, icon: Users, color: 'blue' },
+            { title: 'Strong Matches', value: data.summary?.strong_matches || data.rankings.filter((r: { job_fit_score: number }) => r.job_fit_score >= 70).length, icon: Star, color: 'yellow' },
+            { title: 'Top Score', value: `${data.rankings[0]?.job_fit_score || 0}%`, icon: Target, color: 'green' }
+          ],
+          actions: [
+            { label: 'View All Candidates', icon: Users, action: () => navigate('/candidates'), variant: 'primary' },
+            { label: 'Email Top Matches', icon: Mail, action: () => navigate('/templates'), variant: 'secondary' }
+          ]
+        }
+
+        setMessages(prev => [...prev, aiMessage])
+      } else {
+        const aiMessage: Message = {
+          id: (Date.now() + 2).toString(),
+          type: 'ai',
+          content: data.message || '😕 No candidates found matching this job description. Try importing more candidates or broadening your search.',
+          timestamp: new Date(),
+          intent: 'job_match_empty'
+        }
+        setMessages(prev => [...prev, aiMessage])
+      }
+    } catch (error) {
+      console.error('Job matching error:', error)
+      setMessages(prev => prev.filter(m => m.id !== loadingId))
+      
+      const aiMessage: Message = {
+        id: (Date.now() + 2).toString(),
+        type: 'ai',
+        content: '❌ Error matching candidates. Please ensure the backend is running and try again.',
+        timestamp: new Date()
+      }
+      setMessages(prev => [...prev, aiMessage])
+    } finally {
+      setIsTyping(false)
+    }
   }
 
   const handleKeyPress = (e: React.KeyboardEvent) => {
@@ -929,7 +1178,7 @@ Try one of the suggestions below or ask me anything!`,
                     transition={{ delay: 0.6 + index * 0.05 }}
                     whileHover={{ scale: 1.03, y: -2 }}
                     whileTap={{ scale: 0.98 }}
-                    onClick={() => handleSuggestedPrompt(prompt.text)}
+                    onClick={() => handleSuggestedPrompt(prompt.text, prompt.category)}
                     className={`${prompt.bgColor} ${prompt.color} rounded-xl p-3 text-left transition-all border-2 border-transparent hover:border-current`}
                   >
                     <div className="flex items-start gap-2">
@@ -992,6 +1241,13 @@ Try one of the suggestions below or ask me anything!`,
           </p>
         </div>
       </motion.div>
+
+      {/* Job Description Matching Modal */}
+      <JobMatchModal
+        isOpen={showJobMatchModal}
+        onClose={() => setShowJobMatchModal(false)}
+        onMatch={handleJobMatch}
+      />
     </div>
   )
 }
