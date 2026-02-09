@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Users, TrendingUp, Award, Clock, ArrowUpRight, ArrowDownRight, Sparkles, Target, Zap, CheckCircle2, Calendar, Mail, Info, RefreshCw, Loader2, Briefcase, Upload, X, FileText, CheckCircle, AlertCircle } from 'lucide-react'
+import { Users, TrendingUp, Award, Clock, ArrowUpRight, ArrowDownRight, Sparkles, Target, Zap, CheckCircle2, Calendar, Mail, Info, RefreshCw, Loader2, Briefcase, Upload, X, FileText, CheckCircle, AlertCircle, Activity } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
@@ -11,6 +11,7 @@ import { useAuthStore } from '@/store/authStore'
 import { useState, useMemo, useRef, useCallback } from 'react'
 import { useAIStatus } from '@/hooks/useAIStatus'
 import { useCandidates } from '@/hooks/useCandidates'
+import { useRealTimeStats } from '@/hooks/useRealTimeStats'
 import config from '@/config'
 
 // Category colors for visual distinction
@@ -42,6 +43,50 @@ export default function Dashboard() {
   const [showTips, setShowTips] = useState(true)
   const [isSyncing, setIsSyncing] = useState(false)
   const aiStatus = useAIStatus()
+
+  // Real-time stats with 5-second polling
+  const { stats: liveStats, lastUpdate: liveLastUpdate } = useRealTimeStats({
+    interval: 5000, // Poll every 5 seconds
+    enabled: true,
+    onStatsChange: (newStats) => {
+      // Auto-refresh candidate list when counts change
+      if (newStats.total_candidates !== stats.total) {
+        refetch();
+      }
+    }
+  });
+
+  // Calculate category stats first (needed by displayStats)
+  const categoryStats = useMemo(() => {
+    const groups: Record<string, { count: number; avgScore: number; topScore: number }> = {}
+    candidates.forEach((candidate) => {
+      const category = candidate.jobCategory || 'General'
+      if (!groups[category]) {
+        groups[category] = { count: 0, avgScore: 0, topScore: 0 }
+      }
+      groups[category].count++
+      groups[category].avgScore += candidate.matchScore
+      if (candidate.matchScore > groups[category].topScore) {
+        groups[category].topScore = candidate.matchScore
+      }
+    })
+    
+    // Calculate averages
+    Object.keys(groups).forEach((category) => {
+      groups[category].avgScore = Math.round(groups[category].avgScore / groups[category].count)
+    })
+    
+    return groups
+  }, [candidates]);
+
+  // Use live stats if available, fallback to cached stats
+  const displayStats = useMemo(() => ({
+    totalCandidates: liveStats?.total_candidates ?? stats.total,
+    strongMatches: liveStats?.strong_matches ?? stats.strong,
+    averageScore: liveStats?.average_score ?? stats.avgScore,
+    recentCount: liveStats?.new_24h ?? stats.recentCount,
+    categoryCount: liveStats?.category_count ?? Object.keys(categoryStats).length,
+  }), [liveStats, stats, categoryStats]);
 
   // Upload state
   const [showUploadModal, setShowUploadModal] = useState(false)
@@ -162,29 +207,6 @@ export default function Dashboard() {
     : 0
 
   const recentCandidates = candidates.slice(0, 5)
-
-  // Calculate category stats
-  const categoryStats = useMemo(() => {
-    const groups: Record<string, { count: number; avgScore: number; topScore: number }> = {}
-    candidates.forEach((candidate) => {
-      const category = candidate.jobCategory || 'General'
-      if (!groups[category]) {
-        groups[category] = { count: 0, avgScore: 0, topScore: 0 }
-      }
-      groups[category].count++
-      groups[category].avgScore += candidate.matchScore
-      if (candidate.matchScore > groups[category].topScore) {
-        groups[category].topScore = candidate.matchScore
-      }
-    })
-    
-    // Calculate averages
-    Object.keys(groups).forEach((category) => {
-      groups[category].avgScore = Math.round(groups[category].avgScore / groups[category].count)
-    })
-    
-    return groups
-  }, [candidates])
 
   // Quick actions
   const quickActions = [
@@ -384,7 +406,7 @@ export default function Dashboard() {
         </motion.div>
       )}
 
-      {/* Stats Grid - Enhanced */}
+      {/* Stats Grid - Enhanced with Real-time Updates */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
         <div
           className="hover:-translate-y-1 transition-transform cursor-pointer"
@@ -397,12 +419,24 @@ export default function Dashboard() {
                 <div className="w-14 h-14 bg-gradient-to-br from-primary-500 to-primary-600 rounded-2xl flex items-center justify-center shadow-md">
                   <Users className="w-7 h-7 text-white" />
                 </div>
-                <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-primary-600 transition-colors" />
+                <div className="flex items-center gap-1">
+                  {liveStats && <Activity className="w-3 h-3 text-green-500 animate-pulse" />}
+                  <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-primary-600 transition-colors" />
+                </div>
               </div>
               <div>
                 <p className="text-sm font-medium text-gray-600 mb-1">Total Candidates</p>
-                <p className="text-4xl font-bold text-gray-900">{stats.total}</p>
-                <p className="text-xs text-gray-500 mt-2">Click to view all</p>
+                <motion.p 
+                  key={displayStats.totalCandidates}
+                  initial={{ scale: 1.1, color: '#3b82f6' }}
+                  animate={{ scale: 1, color: '#111827' }}
+                  className="text-4xl font-bold"
+                >
+                  {displayStats.totalCandidates}
+                </motion.p>
+                <p className="text-xs text-gray-500 mt-2">
+                  {liveLastUpdate ? `Updated ${new Date(liveLastUpdate).toLocaleTimeString()}` : 'Click to view all'}
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -423,14 +457,21 @@ export default function Dashboard() {
               </div>
               <div>
                 <p className="text-sm font-medium text-gray-600 mb-1">Strong Matches</p>
-                <p className="text-4xl font-bold text-gray-900">{stats.strong}</p>
+                <motion.p 
+                  key={displayStats.strongMatches}
+                  initial={{ scale: 1.1, color: '#10b981' }}
+                  animate={{ scale: 1, color: '#111827' }}
+                  className="text-4xl font-bold"
+                >
+                  {displayStats.strongMatches}
+                </motion.p>
                 <div className="mt-2 flex items-center gap-2">
                   <Progress 
-                    value={stats.total > 0 ? (stats.strong / stats.total) * 100 : 0} 
+                    value={displayStats.totalCandidates > 0 ? (displayStats.strongMatches / displayStats.totalCandidates) * 100 : 0} 
                     className="h-1.5 flex-1"
                   />
                   <span className="text-xs font-semibold text-success">
-                    {stats.total > 0 ? Math.round((stats.strong / stats.total) * 100) : 0}%
+                    {displayStats.totalCandidates > 0 ? Math.round((displayStats.strongMatches / displayStats.totalCandidates) * 100) : 0}%
                   </span>
                 </div>
               </div>
@@ -453,9 +494,16 @@ export default function Dashboard() {
               </div>
               <div>
                 <p className="text-sm font-medium text-gray-600 mb-1">Avg Match Score</p>
-                <p className="text-4xl font-bold text-gray-900">{stats.avgScore}%</p>
+                <motion.p 
+                  key={displayStats.averageScore}
+                  initial={{ scale: 1.1, color: '#8b5cf6' }}
+                  animate={{ scale: 1, color: '#111827' }}
+                  className="text-4xl font-bold"
+                >
+                  {displayStats.averageScore}%
+                </motion.p>
                 <div className="mt-2">
-                  <Progress value={stats.avgScore} className="h-1.5" />
+                  <Progress value={displayStats.averageScore} className="h-1.5" />
                 </div>
                 <p className="text-xs text-gray-500 mt-2">Search with AI</p>
               </div>
@@ -489,8 +537,15 @@ export default function Dashboard() {
                 )}
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-600 mb-1">Recent Uploads</p>
-                <p className="text-4xl font-bold text-gray-900">{stats.recentCount}</p>
+                <p className="text-sm font-medium text-gray-600 mb-1">New (24h)</p>
+                <motion.p 
+                  key={displayStats.recentCount}
+                  initial={{ scale: 1.1, color: '#f59e0b' }}
+                  animate={{ scale: 1, color: '#111827' }}
+                  className="text-4xl font-bold"
+                >
+                  {displayStats.recentCount}
+                </motion.p>
                 <p className="text-xs text-gray-500 mt-2">Upload more resumes</p>
               </div>
             </CardContent>

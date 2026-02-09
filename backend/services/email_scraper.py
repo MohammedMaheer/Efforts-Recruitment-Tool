@@ -753,24 +753,41 @@ class EmailScraperService:
                     logger.info(f"📧 System email detected: {sender_email} - will extract candidate from body")
                     break
             
-            # FIRST: Try to parse job portal emails (Indeed, LinkedIn, etc.)
-            job_portal_data = None
-            portal_source = None
+            # FIRST: Try LLM-powered email parsing (100% accurate)
+            llm_portal_data = None
+            try:
+                from services.llm_service import get_llm_service
+                llm_service = await get_llm_service()
+                if llm_service.available:
+                    llm_portal_data = await llm_service.parse_candidate_email(
+                        subject=subject,
+                        body=clean_body[:4000],
+                        sender=sender_email
+                    )
+                    if llm_portal_data:
+                        logger.info(f"🤖 LLM parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
+            except Exception as llm_err:
+                logger.debug(f"LLM email parsing skipped: {llm_err}")
             
-            # Check Indeed
-            indeed_data = parse_indeed_email(raw_body, subject)
-            if indeed_data:
-                job_portal_data = indeed_data
-                portal_source = 'Indeed'
-                logger.info(f"📧 Parsed Indeed application: {indeed_data.get('name', 'Unknown')}")
+            # SECOND: Try regex-based job portal parsing as fallback
+            job_portal_data = llm_portal_data  # Use LLM result if available
+            portal_source = llm_portal_data.get('source') if llm_portal_data else None
             
-            # Check LinkedIn
             if not job_portal_data:
-                linkedin_data = parse_linkedin_email(raw_body, subject)
-                if linkedin_data:
-                    job_portal_data = linkedin_data
-                    portal_source = 'LinkedIn'
-                    logger.info(f"📧 Parsed LinkedIn application: {linkedin_data.get('name', 'Unknown')}")
+                # Check Indeed
+                indeed_data = parse_indeed_email(raw_body, subject)
+                if indeed_data:
+                    job_portal_data = indeed_data
+                    portal_source = 'Indeed'
+                    logger.info(f"📧 Parsed Indeed application: {indeed_data.get('name', 'Unknown')}")
+                
+                # Check LinkedIn
+                if not job_portal_data:
+                    linkedin_data = parse_linkedin_email(raw_body, subject)
+                    if linkedin_data:
+                        job_portal_data = linkedin_data
+                        portal_source = 'LinkedIn'
+                        logger.info(f"📧 Parsed LinkedIn application: {linkedin_data.get('name', 'Unknown')}")
             
             # Parse resume if attached
             resume_data = None

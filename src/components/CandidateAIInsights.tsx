@@ -1,9 +1,10 @@
 /**
  * Candidate AI Insights Panel
- * Displays ML ranking, quality analysis, predictions, and skill gaps
+ * Displays ML ranking, quality analysis, predictions, skill gaps, and deep AI analysis with pros/cons
  */
 import React, { useState, useEffect } from 'react';
 import { advancedApi } from '@/services/api';
+import config from '@/config';
 import {
   Brain,
   Target,
@@ -18,6 +19,10 @@ import {
   Mail,
   MessageSquare,
   Calendar,
+  ThumbsUp,
+  ThumbsDown,
+  Award,
+  AlertCircle,
 } from 'lucide-react';
 
 interface CandidateInsightsProps {
@@ -50,6 +55,32 @@ interface MLRanking {
   factors: Record<string, number>;
 }
 
+interface DeepAnalysis {
+  overall_score: number;
+  pros: string[];
+  cons: string[];
+  skill_assessment?: {
+    technical_depth: number;
+    soft_skills_indicator: number;
+    leadership_potential: number;
+    growth_trajectory: string;
+  };
+  career_analysis?: {
+    career_progression: string;
+    job_stability: string;
+    role_evolution: string;
+  };
+  hiring_recommendation?: {
+    verdict: string;
+    confidence: number;
+    ideal_roles: string[];
+    red_flags: string[];
+    interview_focus_areas: string[];
+  };
+  summary?: string;
+  ai_powered?: boolean;
+}
+
 const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
   candidateId,
   candidateName,
@@ -61,8 +92,10 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
   const [prediction, setPrediction] = useState<Prediction | null>(null);
   const [quality, setQuality] = useState<QualityAnalysis | null>(null);
   const [mlRanking, setMlRanking] = useState<MLRanking | null>(null);
-  const [expandedSection, setExpandedSection] = useState<string | null>('predictions');
+  const [deepAnalysis, setDeepAnalysis] = useState<DeepAnalysis | null>(null);
+  const [expandedSection, setExpandedSection] = useState<string | null>('deep_analysis');
   const [enrolling, setEnrolling] = useState(false);
+  const [loadingDeepAnalysis, setLoadingDeepAnalysis] = useState(false);
 
   useEffect(() => {
     fetchInsights();
@@ -89,10 +122,28 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
           setMlRanking(data.rankings[0]);
         }
       }
+      
+      // Fetch deep AI analysis
+      await fetchDeepAnalysis();
     } catch (error) {
       console.error('Failed to fetch insights:', error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchDeepAnalysis = async () => {
+    setLoadingDeepAnalysis(true);
+    try {
+      const response = await fetch(`${config.apiUrl}/api/ai/candidate/${candidateId}/analysis`);
+      if (response.ok) {
+        const data = await response.json();
+        setDeepAnalysis(data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch deep analysis:', error);
+    } finally {
+      setLoadingDeepAnalysis(false);
     }
   };
 
@@ -181,6 +232,157 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
           </div>
         </div>
       )}
+
+      {/* Deep AI Analysis - Pros & Cons */}
+      <div className="border-b dark:border-gray-700">
+        <button
+          onClick={() => toggleSection('deep_analysis')}
+          className="w-full flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50"
+        >
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-purple-500" />
+            <span className="font-medium text-gray-900 dark:text-white">AI Analysis (Pros & Cons)</span>
+            {deepAnalysis?.ai_powered && (
+              <span className="px-2 py-0.5 text-xs rounded-full bg-purple-100 text-purple-700">
+                GPT-4
+              </span>
+            )}
+          </div>
+          {expandedSection === 'deep_analysis' ? (
+            <ChevronUp className="h-4 w-4 text-gray-400" />
+          ) : (
+            <ChevronDown className="h-4 w-4 text-gray-400" />
+          )}
+        </button>
+
+        {expandedSection === 'deep_analysis' && (
+          <div className="px-4 pb-4 space-y-4">
+            {loadingDeepAnalysis ? (
+              <div className="flex items-center justify-center py-4">
+                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600"></div>
+                <span className="ml-2 text-sm text-gray-500">Analyzing with AI...</span>
+              </div>
+            ) : deepAnalysis ? (
+              <>
+                {/* Overall Score */}
+                {deepAnalysis.overall_score && (
+                  <div className="flex items-center justify-between p-3 bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-900/20 dark:to-blue-900/20 rounded-lg">
+                    <span className="text-sm font-medium text-gray-700 dark:text-gray-300">AI Score</span>
+                    <span className={`text-xl font-bold ${
+                      deepAnalysis.overall_score >= 70 ? 'text-green-600' :
+                      deepAnalysis.overall_score >= 50 ? 'text-yellow-600' : 'text-red-600'
+                    }`}>
+                      {deepAnalysis.overall_score}%
+                    </span>
+                  </div>
+                )}
+
+                {/* Pros */}
+                {deepAnalysis.pros && deepAnalysis.pros.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-1">
+                      <ThumbsUp className="h-3.5 w-3.5 text-green-500" />
+                      Strengths ({deepAnalysis.pros.length})
+                    </h4>
+                    <div className="space-y-1.5">
+                      {deepAnalysis.pros.map((pro, index) => (
+                        <div
+                          key={index}
+                          className="text-xs p-2 bg-green-50 dark:bg-green-900/20 rounded border-l-2 border-green-500 text-green-800 dark:text-green-300"
+                        >
+                          {pro}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Cons */}
+                {deepAnalysis.cons && deepAnalysis.cons.length > 0 && (
+                  <div>
+                    <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-1">
+                      <ThumbsDown className="h-3.5 w-3.5 text-red-500" />
+                      Areas of Concern ({deepAnalysis.cons.length})
+                    </h4>
+                    <div className="space-y-1.5">
+                      {deepAnalysis.cons.map((con, index) => (
+                        <div
+                          key={index}
+                          className="text-xs p-2 bg-red-50 dark:bg-red-900/20 rounded border-l-2 border-red-500 text-red-800 dark:text-red-300"
+                        >
+                          {con}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Hiring Recommendation */}
+                {deepAnalysis.hiring_recommendation && (
+                  <div className="p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-1">
+                        <Award className="h-3.5 w-3.5 text-purple-500" />
+                        Recommendation
+                      </span>
+                      <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${
+                        deepAnalysis.hiring_recommendation.verdict === 'Strong Hire' ? 'bg-green-100 text-green-700' :
+                        deepAnalysis.hiring_recommendation.verdict === 'Hire' ? 'bg-blue-100 text-blue-700' :
+                        deepAnalysis.hiring_recommendation.verdict === 'Maybe' ? 'bg-yellow-100 text-yellow-700' :
+                        'bg-red-100 text-red-700'
+                      }`}>
+                        {deepAnalysis.hiring_recommendation.verdict}
+                      </span>
+                    </div>
+                    
+                    {deepAnalysis.hiring_recommendation.ideal_roles?.length > 0 && (
+                      <div className="mb-2">
+                        <span className="text-xs text-gray-500">Ideal for: </span>
+                        <span className="text-xs text-gray-700 dark:text-gray-300">
+                          {deepAnalysis.hiring_recommendation.ideal_roles.join(', ')}
+                        </span>
+                      </div>
+                    )}
+
+                    {deepAnalysis.hiring_recommendation.interview_focus_areas?.length > 0 && (
+                      <div>
+                        <span className="text-xs text-gray-500">Interview Focus: </span>
+                        <div className="flex flex-wrap gap-1 mt-1">
+                          {deepAnalysis.hiring_recommendation.interview_focus_areas.map((area, idx) => (
+                            <span key={idx} className="px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-xs rounded">
+                              {area}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Summary */}
+                {deepAnalysis.summary && (
+                  <div className="p-3 bg-blue-50 dark:bg-blue-900/20 rounded-lg">
+                    <p className="text-xs text-blue-800 dark:text-blue-300 italic">
+                      "{deepAnalysis.summary}"
+                    </p>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="text-center py-4">
+                <AlertCircle className="h-8 w-8 text-gray-400 mx-auto mb-2" />
+                <p className="text-sm text-gray-500">AI analysis not available</p>
+                <button
+                  onClick={fetchDeepAnalysis}
+                  className="mt-2 text-xs text-purple-600 hover:text-purple-700 font-medium"
+                >
+                  Try Again
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* Predictions Section */}
       {prediction && (

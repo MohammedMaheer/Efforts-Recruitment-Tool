@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key for fallback")
     openai_model: str = Field(default="gpt-3.5-turbo", description="OpenAI model to use")
     
+    # Local LLM (Ollama)
+    ollama_base_url: str = Field(default="http://localhost:11434", description="Ollama API URL")
+    ollama_primary_model: str = Field(default="qwen2.5:7b", description="Primary LLM model for extraction")
+    ollama_fast_model: str = Field(default="phi3.5", description="Fast model for simple tasks")
+    ollama_reasoning_model: str = Field(default="llama3.1:8b", description="Reasoning model for analysis")
+    llm_temperature: float = Field(default=0.1, description="LLM temperature (lower = more accurate)")
+    llm_max_tokens: int = Field(default=4096, description="Max tokens for LLM responses")
+    
     # Microsoft Graph (Email)
     microsoft_client_id: Optional[str] = Field(default=None)
     microsoft_client_secret: Optional[str] = Field(default=None)

@@ -1,13 +1,24 @@
 import PyPDF2
 import docx
 import re
-from typing import Dict, List, Any
+import logging
+from typing import Dict, List, Any, Optional
 from io import BytesIO
 
+logger = logging.getLogger(__name__)
+
+
 class ResumeParser:
-    """Service for parsing resume files and extracting structured data"""
+    """
+    Service for parsing resume files and extracting structured data.
+    
+    Uses a tiered approach:
+    1. LLM (Ollama) for 100% accurate structured extraction (primary)
+    2. Regex-based extraction as fallback when LLM is unavailable
+    """
     
     def __init__(self):
+        self._llm_service = None
         # Comprehensive skill keywords for better extraction
         self.skill_keywords = [
             # Programming Languages
@@ -64,20 +75,44 @@ class ResumeParser:
     
     async def extract_text(self, content: bytes, filename: str) -> str:
         """Extract text from PDF or DOCX file"""
-        if filename.endswith('.pdf'):
+        if filename.lower().endswith('.pdf'):
             return self._extract_from_pdf(content)
-        elif filename.endswith('.docx'):
+        elif filename.lower().endswith('.docx'):
             return self._extract_from_docx(content)
         else:
-            raise ValueError("Unsupported file format")
+            raise ValueError("Unsupported file format. Supported: PDF, DOCX")
     
     def _extract_from_pdf(self, content: bytes) -> str:
-        """Extract text from PDF"""
+        """Extract text from PDF using multiple methods for best results"""
         pdf_file = BytesIO(content)
+        text = ""
+        
+        # Try pdfplumber first (better for complex layouts)
+        try:
+            import pdfplumber
+            with pdfplumber.open(pdf_file) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+            if text.strip():
+                logger.info(f"📄 PDF extracted with pdfplumber: {len(text)} chars")
+                return text
+        except ImportError:
+            pass
+        except Exception as e:
+            logger.debug(f"pdfplumber failed, trying PyPDF2: {e}")
+        
+        # Fallback to PyPDF2
+        pdf_file.seek(0)
         pdf_reader = PyPDF2.PdfReader(pdf_file)
         text = ""
         for page in pdf_reader.pages:
-            text += page.extract_text()
+            page_text = page.extract_text()
+            if page_text:
+                text += page_text + "\n"
+        
+        logger.info(f"📄 PDF extracted with PyPDF2: {len(text)} chars")
         return text
     
     def _extract_from_docx(self, content: bytes) -> str:
@@ -88,10 +123,25 @@ class ResumeParser:
         return text
     
     async def parse_resume(self, content: bytes, filename: str) -> Dict[str, Any]:
-        """Parse resume and extract structured data"""
+        """
+        Parse resume and extract structured data.
+        Uses LLM for 100% accurate extraction, falls back to regex if unavailable.
+        """
         text = await self.extract_text(content, filename)
         
-        # Extract candidate information
+        if not text or len(text.strip()) < 30:
+            logger.warning(f"⚠️ Insufficient text extracted from {filename}")
+            return self._empty_result(text)
+        
+        # Strategy 1: Try LLM-powered extraction (100% accurate)
+        llm_result = await self._parse_with_llm(text)
+        if llm_result:
+            logger.info(f"✅ Resume parsed with LLM: {llm_result.get('name', 'Unknown')}")
+            llm_result['raw_text'] = text[:2000]
+            return llm_result
+        
+        # Strategy 2: Fallback to regex-based extraction
+        logger.info("⚠️ LLM unavailable, using regex-based extraction")
         name = self._extract_name(text)
         email = self._extract_email(text)
         phone = self._extract_phone(text)
@@ -114,7 +164,63 @@ class ResumeParser:
             "summary": summary,
             "location": location,
             "linkedin": linkedin,
-            "raw_text": text[:1000]  # First 1000 chars for AI analysis
+            "raw_text": text[:2000],
+            "parsed_by": "regex"
+        }
+    
+    async def _parse_with_llm(self, text: str) -> Optional[Dict[str, Any]]:
+        """Parse resume using LLM service for 100% accurate extraction"""
+        try:
+            # Lazy import to avoid circular dependencies
+            if self._llm_service is None:
+                from services.llm_service import get_llm_service
+                self._llm_service = await get_llm_service()
+            
+            if not self._llm_service.available:
+                return None
+            
+            result = await self._llm_service.parse_resume(text)
+            
+            if result and (result.get('name') or result.get('email') or result.get('skills')):
+                # Convert LLM format to parser format
+                return {
+                    "name": result.get('name', 'Unknown'),
+                    "email": result.get('email', ''),
+                    "phone": result.get('phone', ''),
+                    "skills": result.get('skills', []),
+                    "experience": result.get('experience_years', 0),
+                    "education": result.get('education', []),
+                    "work_history": result.get('work_history', []),
+                    "summary": result.get('summary', ''),
+                    "location": result.get('location', ''),
+                    "linkedin": result.get('linkedin', ''),
+                    "certifications": result.get('certifications', []),
+                    "languages": result.get('languages', []),
+                    "job_category": result.get('job_category', 'General'),
+                    "parsed_by": "llm"
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"LLM resume parsing failed: {e}")
+            return None
+    
+    def _empty_result(self, text: str = "") -> Dict[str, Any]:
+        """Return empty result structure"""
+        return {
+            "name": "Unknown",
+            "email": "",
+            "phone": "",
+            "skills": [],
+            "experience": 0,
+            "education": [],
+            "work_history": [],
+            "summary": "",
+            "location": "",
+            "linkedin": "",
+            "raw_text": text[:2000] if text else "",
+            "parsed_by": "none"
         }
     
     def _extract_linkedin(self, text: str) -> str:

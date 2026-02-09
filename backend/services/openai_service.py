@@ -1,12 +1,16 @@
 """
 OpenAI Service for AI-powered candidate matching and analysis
+Enhanced with deep candidate analysis, pros/cons, and job-specific scoring
 """
 import os
-from typing import Dict, List, Optional
+import json
+from typing import Dict, List, Optional, Any
 from openai import OpenAI
 from dotenv import load_dotenv
+import logging
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 class OpenAIService:
     def __init__(self):
@@ -15,9 +19,9 @@ class OpenAIService:
             raise ValueError("OPENAI_API_KEY not found in environment variables")
         
         self.client = OpenAI(api_key=api_key)
-        self.model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
-        self.max_tokens = int(os.getenv('OPENAI_MAX_TOKENS', '1000'))
-        self.temperature = float(os.getenv('OPENAI_TEMPERATURE', '0.7'))
+        self.model = os.getenv('OPENAI_MODEL', 'gpt-4o')  # Use GPT-4o for better analysis
+        self.max_tokens = int(os.getenv('OPENAI_MAX_TOKENS', '2000'))  # More tokens for detailed analysis
+        self.temperature = float(os.getenv('OPENAI_TEMPERATURE', '0.3'))  # Lower temp for consistency
     
     def analyze_candidate_match(
         self, 
@@ -141,16 +145,272 @@ Provide a professional, concise summary."""
         except Exception as e:
             return f"Error summarizing resume: {str(e)}"
     
-    def chat_with_ai(self, message: str, context: Optional[str] = None) -> str:
+    def analyze_candidate_deep(self, candidate_data: Dict) -> Dict:
         """
-        General chat functionality for AI assistant
+        Deep AI analysis of a candidate - generates comprehensive pros/cons,
+        strengths, weaknesses, career trajectory analysis, and hiring recommendations.
         """
-        messages = [
-            {"role": "system", "content": "You are a helpful recruitment AI assistant for a UAE-based hiring platform. Help users find candidates, understand data, and make hiring decisions."}
-        ]
+        prompt = f"""You are a senior talent acquisition specialist with 15+ years of experience.
+Perform a comprehensive analysis of this candidate:
+
+CANDIDATE PROFILE:
+- Name: {candidate_data.get('name', 'N/A')}
+- Email: {candidate_data.get('email', 'N/A')}
+- Location: {candidate_data.get('location', 'N/A')}
+- Experience: {candidate_data.get('experience', 0)} years
+- Skills: {', '.join(candidate_data.get('skills', [])[:20])}
+- Education: {json.dumps(candidate_data.get('education', []))}
+- Summary: {candidate_data.get('summary', 'N/A')[:500]}
+- Work History: {json.dumps(candidate_data.get('workHistory', candidate_data.get('work_history', []))[:3])}
+
+Provide a thorough analysis in the following JSON format:
+{{
+    "overall_score": <0-100 integer>,
+    "pros": [
+        "<specific strength 1 with evidence>",
+        "<specific strength 2 with evidence>",
+        "<specific strength 3 with evidence>",
+        "<specific strength 4 with evidence>",
+        "<specific strength 5 with evidence>"
+    ],
+    "cons": [
+        "<specific concern 1 with context>",
+        "<specific concern 2 with context>",
+        "<specific concern 3 with context>"
+    ],
+    "skill_assessment": {{
+        "technical_depth": <1-10>,
+        "soft_skills_indicator": <1-10>,
+        "leadership_potential": <1-10>,
+        "growth_trajectory": "<ascending/stable/declining>"
+    }},
+    "career_analysis": {{
+        "career_progression": "<rapid/steady/slow/unclear>",
+        "job_stability": "<stable/moderate/high_turnover>",
+        "role_evolution": "<description of career path>"
+    }},
+    "hiring_recommendation": {{
+        "verdict": "<Strong Hire/Hire/Maybe/No Hire>",
+        "confidence": <0-100>,
+        "ideal_roles": ["<role 1>", "<role 2>"],
+        "red_flags": ["<flag if any>"],
+        "interview_focus_areas": ["<area 1>", "<area 2>", "<area 3>"]
+    }},
+    "summary": "<2-3 sentence executive summary of this candidate>"
+}}
+
+Be specific, data-driven, and provide actionable insights."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an expert talent analyst. Provide detailed, actionable candidate assessments. Always respond in valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=1500,
+                temperature=0.3,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            result['ai_analyzed'] = True
+            result['analysis_model'] = self.model
+            return result
+            
+        except Exception as e:
+            logger.error(f"Deep candidate analysis error: {e}")
+            return {
+                "error": str(e),
+                "overall_score": 50,
+                "pros": ["Unable to analyze - API error"],
+                "cons": ["Analysis unavailable"],
+                "ai_analyzed": False
+            }
+    
+    def match_candidates_to_job(
+        self, 
+        job_description: str, 
+        candidates: List[Dict],
+        top_n: int = 10
+    ) -> Dict:
+        """
+        Match multiple candidates against a job description.
+        Returns ranked list with AI scores specific to this JD.
+        """
+        # Prepare candidate summaries for context
+        candidate_summaries = []
+        for i, c in enumerate(candidates[:30]):  # Limit to 30 for token limits
+            summary = f"""
+Candidate {i+1} (ID: {c.get('id', 'N/A')}):
+- Name: {c.get('name', 'N/A')}
+- Experience: {c.get('experience', 0)} years
+- Skills: {', '.join(c.get('skills', [])[:15])}
+- Location: {c.get('location', 'N/A')}
+- Summary: {c.get('summary', 'N/A')[:200]}
+"""
+            candidate_summaries.append(summary)
+        
+        prompt = f"""You are an expert technical recruiter. Analyze and rank candidates for this position.
+
+JOB DESCRIPTION:
+{job_description[:2000]}
+
+CANDIDATES TO EVALUATE:
+{''.join(candidate_summaries)}
+
+Rank ALL candidates from best to worst fit for this specific job.
+Return JSON in this format:
+{{
+    "job_analysis": {{
+        "key_requirements": ["<req 1>", "<req 2>", "<req 3>"],
+        "must_have_skills": ["<skill 1>", "<skill 2>"],
+        "nice_to_have": ["<skill 1>", "<skill 2>"],
+        "experience_level": "<junior/mid/senior/lead>",
+        "role_type": "<description>"
+    }},
+    "rankings": [
+        {{
+            "rank": 1,
+            "candidate_id": "<id>",
+            "candidate_name": "<name>",
+            "job_fit_score": <0-100>,
+            "match_reasons": ["<reason 1>", "<reason 2>", "<reason 3>"],
+            "gaps": ["<gap if any>"],
+            "recommendation": "<Strong Match/Good Match/Partial Match/Weak Match>"
+        }}
+    ],
+    "summary": {{
+        "total_evaluated": <number>,
+        "strong_matches": <number>,
+        "recommendation": "<brief hiring recommendation>"
+    }}
+}}
+
+Be thorough and rank ALL candidates provided."""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an expert recruiter. Match candidates to jobs precisely. Always respond in valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=2500,
+                temperature=0.2,
+                response_format={"type": "json_object"}
+            )
+            
+            result = json.loads(response.choices[0].message.content)
+            
+            # Ensure rankings is limited to top_n
+            if 'rankings' in result:
+                result['rankings'] = result['rankings'][:top_n]
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Job matching error: {e}")
+            return {
+                "error": str(e),
+                "rankings": [],
+                "job_analysis": {},
+                "summary": {"total_evaluated": 0, "strong_matches": 0}
+            }
+    
+    def generate_candidate_comparison(
+        self,
+        candidates: List[Dict],
+        job_description: Optional[str] = None
+    ) -> Dict:
+        """
+        Generate side-by-side comparison of candidates with pros/cons for each.
+        """
+        candidate_details = []
+        for c in candidates[:5]:  # Compare up to 5 candidates
+            detail = f"""
+{c.get('name', 'Unknown')}:
+- Experience: {c.get('experience', 0)} years
+- Skills: {', '.join(c.get('skills', [])[:10])}
+- Current/Last Role: {c.get('workHistory', [{}])[0].get('title', 'N/A') if c.get('workHistory') else 'N/A'}
+- Education: {c.get('education', [{}])[0].get('degree', 'N/A') if c.get('education') else 'N/A'}
+"""
+            candidate_details.append(detail)
+        
+        jd_context = f"\n\nJOB CONTEXT:\n{job_description[:500]}" if job_description else ""
+        
+        prompt = f"""Compare these candidates for hiring decision:{jd_context}
+
+CANDIDATES:
+{''.join(candidate_details)}
+
+Provide comparison in JSON format:
+{{
+    "comparison_matrix": [
+        {{
+            "name": "<candidate name>",
+            "overall_rank": <1-5>,
+            "score": <0-100>,
+            "key_strengths": ["<str 1>", "<str 2>"],
+            "key_weaknesses": ["<weak 1>"],
+            "best_for": "<what role/situation they're best for>",
+            "risk_level": "<low/medium/high>"
+        }}
+    ],
+    "head_to_head": {{
+        "winner": "<name of best candidate>",
+        "reasoning": "<why they're the best choice>",
+        "runner_up": "<second best>",
+        "close_call": <true/false if decision was difficult>
+    }},
+    "recommendation": "<Final hiring recommendation with reasoning>"
+}}"""
+
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an expert at comparing job candidates. Be objective and specific."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=1500,
+                temperature=0.3,
+                response_format={"type": "json_object"}
+            )
+            
+            return json.loads(response.choices[0].message.content)
+            
+        except Exception as e:
+            logger.error(f"Comparison error: {e}")
+            return {"error": str(e), "comparison_matrix": [], "recommendation": "Error generating comparison"}
+    
+    def chat_with_ai(self, message: str, context: Optional[str] = None, candidates_data: Optional[List[Dict]] = None) -> str:
+        """
+        Enhanced chat functionality with candidate context awareness
+        """
+        system_prompt = """You are an elite AI recruitment assistant for a UAE-based hiring platform. 
+You have deep expertise in:
+- Technical and non-technical hiring
+- Candidate evaluation and scoring
+- Job market trends in UAE/GCC
+- Interview strategies and questions
+- Salary benchmarking
+- Skill gap analysis
+
+Be specific, data-driven, and actionable in your responses.
+When discussing candidates, reference specific data points.
+Always provide concrete recommendations."""
+
+        messages = [{"role": "system", "content": system_prompt}]
         
         if context:
-            messages.append({"role": "system", "content": f"Context: {context}"})
+            messages.append({"role": "system", "content": f"Database Context: {context}"})
+        
+        if candidates_data:
+            candidate_context = f"Available Candidates ({len(candidates_data)} total):\n"
+            for c in candidates_data[:10]:
+                candidate_context += f"- {c.get('name')}: {c.get('experience', 0)}yrs exp, Skills: {', '.join(c.get('skills', [])[:5])}\n"
+            messages.append({"role": "system", "content": candidate_context})
         
         messages.append({"role": "user", "content": message})
         

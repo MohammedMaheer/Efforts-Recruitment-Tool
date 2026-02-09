@@ -1,4 +1,4 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Header
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Header, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
@@ -61,7 +61,7 @@ load_dotenv()
 # Configuration
 DEBUG = os.getenv('DEBUG', 'true').lower() == 'true'
 AI_TIMEOUT = float(os.getenv('AI_TIMEOUT_SECONDS', '15'))  # Increased for local AI
-AI_ANALYSIS_TIMEOUT = float(os.getenv('AI_ANALYSIS_TIMEOUT', '12'))  # Increased - local AI is FREE
+AI_ANALYSIS_TIMEOUT = float(os.getenv('AI_ANALYSIS_TIMEOUT', '180'))  # LLM inference needs time on CPU
 MAX_CONCURRENT_REQUESTS = int(os.getenv('MAX_CONCURRENT_REQUESTS', '100'))
 USE_OPENAI_FALLBACK = os.getenv('USE_OPENAI_FALLBACK', 'false').lower() == 'true'  # Disabled by default
 
@@ -468,6 +468,19 @@ async def lifespan(app: FastAPI):
         logger.info("🤖 AI: Local AI (FREE - Zero API costs)")
     else:
         logger.info(f"🤖 AI: OpenAI ({openai_service.model if openai_service else 'N/A'})")
+    
+    # Initialize Local LLM (Ollama)
+    try:
+        from services.llm_service import get_llm_service
+        llm_svc = await get_llm_service()
+        if llm_svc.available:
+            logger.info(f"🧠 LLM: Ollama connected! Primary: {llm_svc.primary_model}")
+            logger.info(f"   Models: {', '.join(llm_svc.available_models)}")
+        else:
+            logger.warning("⚠️ LLM: Ollama not available - using sentence-transformers + regex")
+            logger.warning("   Install: https://ollama.com/download → ollama pull qwen2.5:7b")
+    except Exception as e:
+        logger.warning(f"⚠️ LLM initialization skipped: {e}")
     
     logger.info(f"📧 Email Accounts: {len(scraper_service.email_accounts)} configured")
     logger.info(f"⚡ Max Concurrent Requests: {MAX_CONCURRENT_REQUESTS}")
@@ -1587,6 +1600,357 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...)):
         "results": results,
     }
 
+
+# ============================================================================
+# AI ANALYSIS ENDPOINTS - Deep candidate analysis with pros/cons
+# ============================================================================
+
+@app.get("/api/ai/candidate/{candidate_id}/analysis")
+async def get_candidate_ai_analysis(candidate_id: str):
+    """
+    Get deep AI analysis of a candidate including:
+    - Detailed pros and cons
+    - Career trajectory analysis
+    - Hiring recommendation
+    - Interview focus areas
+    """
+    try:
+        # Get candidate from database
+        conn = db_service.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (candidate_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            raise HTTPException(404, "Candidate not found")
+        
+        candidate = db_service._row_to_candidate(row)
+        
+        # Check cache first
+        cache_key = f"deep_analysis_{candidate_id}"
+        if cache_key in response_cache:
+            cached = response_cache[cache_key]
+            cached['from_cache'] = True
+            return cached
+        
+        # Get OpenAI service
+        from services.openai_service import get_openai_service
+        openai_svc = get_openai_service()
+        
+        if not openai_svc:
+            # Fallback: generate basic analysis without AI
+            return {
+                "candidate_id": candidate_id,
+                "candidate_name": candidate['name'],
+                "overall_score": candidate.get('matchScore', 50),
+                "pros": [
+                    f"Has {candidate.get('experience', 0)} years of experience",
+                    f"Skills include: {', '.join(candidate.get('skills', [])[:5]) or 'Not specified'}",
+                    "Resume available in database"
+                ],
+                "cons": [
+                    "AI analysis unavailable - configure OPENAI_API_KEY"
+                ],
+                "hiring_recommendation": {
+                    "verdict": "Review Needed",
+                    "confidence": 50,
+                    "ideal_roles": [],
+                    "interview_focus_areas": ["Technical skills", "Experience verification"]
+                },
+                "ai_powered": False
+            }
+        
+        # Run deep AI analysis
+        analysis = openai_svc.analyze_candidate_deep(candidate)
+        
+        result = {
+            "candidate_id": candidate_id,
+            "candidate_name": candidate['name'],
+            **analysis,
+            "ai_powered": True
+        }
+        
+        # Cache for 1 hour
+        response_cache[cache_key] = result
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI analysis error: {e}")
+        raise HTTPException(500, f"Error analyzing candidate: {str(e)}")
+
+
+@app.post("/api/ai/match-job")
+async def match_candidates_to_job_description(
+    job_description: str = Body(..., embed=True),
+    top_n: int = Body(10, embed=True),
+    min_experience: Optional[int] = Body(None, embed=True)
+):
+    """
+    Match candidates from database against a job description.
+    Returns ranked list with AI scores specific to this JD.
+    
+    Body params:
+    - job_description: The full job description text
+    - top_n: Number of top candidates to return (default 10)
+    - min_experience: Minimum years of experience filter (optional)
+    """
+    try:
+        if not job_description or len(job_description.strip()) < 50:
+            raise HTTPException(400, "Job description must be at least 50 characters")
+        
+        # Get candidates from database
+        filters = {}
+        if min_experience:
+            filters['min_experience'] = min_experience
+        
+        candidates = await asyncio.to_thread(
+            db_service.get_candidates_paginated,
+            1, 100, filters  # Get up to 100 candidates for matching
+        )
+        
+        if not candidates:
+            return {
+                "status": "no_candidates",
+                "message": "No candidates in database to match",
+                "rankings": [],
+                "job_analysis": {}
+            }
+        
+        # Get OpenAI service
+        from services.openai_service import get_openai_service
+        openai_svc = get_openai_service()
+        
+        if not openai_svc:
+            # Fallback: basic keyword matching
+            jd_lower = job_description.lower()
+            for c in candidates:
+                skill_matches = sum(1 for s in c.get('skills', []) if s.lower() in jd_lower)
+                c['job_fit_score'] = min(40 + skill_matches * 10, 95)
+            
+            candidates.sort(key=lambda x: x.get('job_fit_score', 0), reverse=True)
+            
+            return {
+                "status": "basic_match",
+                "message": "Basic keyword matching (AI unavailable)",
+                "rankings": [
+                    {
+                        "rank": i + 1,
+                        "candidate_id": c['id'],
+                        "candidate_name": c['name'],
+                        "job_fit_score": c.get('job_fit_score', 50),
+                        "match_reasons": [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
+                        "recommendation": "Review Needed"
+                    }
+                    for i, c in enumerate(candidates[:top_n])
+                ],
+                "job_analysis": {},
+                "ai_powered": False
+            }
+        
+        # Run AI job matching
+        result = openai_svc.match_candidates_to_job(job_description, candidates, top_n)
+        result['ai_powered'] = True
+        result['total_candidates_searched'] = len(candidates)
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Job matching error: {e}")
+        raise HTTPException(500, f"Error matching candidates: {str(e)}")
+
+
+@app.post("/api/ai/compare-candidates")
+async def compare_candidates(
+    candidate_ids: List[str] = Body(..., embed=True),
+    job_description: Optional[str] = Body(None, embed=True)
+):
+    """
+    Generate AI comparison of multiple candidates.
+    Useful for final hiring decisions.
+    """
+    try:
+        if len(candidate_ids) < 2:
+            raise HTTPException(400, "Need at least 2 candidates to compare")
+        if len(candidate_ids) > 5:
+            raise HTTPException(400, "Can compare up to 5 candidates at a time")
+        
+        # Get candidates from database
+        candidates = []
+        conn = db_service.get_connection()
+        cursor = conn.cursor()
+        
+        for cid in candidate_ids:
+            cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (cid,))
+            row = cursor.fetchone()
+            if row:
+                candidates.append(db_service._row_to_candidate(row))
+        
+        conn.close()
+        
+        if len(candidates) < 2:
+            raise HTTPException(404, "Could not find enough candidates to compare")
+        
+        # Get OpenAI service
+        from services.openai_service import get_openai_service
+        openai_svc = get_openai_service()
+        
+        if not openai_svc:
+            # Basic comparison without AI
+            candidates.sort(key=lambda x: x.get('matchScore', 0), reverse=True)
+            return {
+                "comparison_matrix": [
+                    {
+                        "name": c['name'],
+                        "overall_rank": i + 1,
+                        "score": c.get('matchScore', 50),
+                        "key_strengths": c.get('skills', [])[:3],
+                        "key_weaknesses": ["AI analysis unavailable"],
+                        "best_for": "General roles",
+                        "risk_level": "unknown"
+                    }
+                    for i, c in enumerate(candidates)
+                ],
+                "head_to_head": {
+                    "winner": candidates[0]['name'],
+                    "reasoning": "Highest match score",
+                    "runner_up": candidates[1]['name'] if len(candidates) > 1 else None
+                },
+                "recommendation": "Configure OPENAI_API_KEY for detailed comparison",
+                "ai_powered": False
+            }
+        
+        # Run AI comparison
+        result = openai_svc.generate_candidate_comparison(candidates, job_description)
+        result['ai_powered'] = True
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Comparison error: {e}")
+        raise HTTPException(500, f"Error comparing candidates: {str(e)}")
+
+
+@app.post("/api/ai/chat")
+async def ai_chat(
+    message: str = Body(..., embed=True),
+    include_candidates: bool = Body(True, embed=True)
+):
+    """
+    Enhanced AI chat with database context.
+    The AI has access to your candidate database for intelligent responses.
+    """
+    try:
+        candidates_data = None
+        context = None
+        
+        if include_candidates:
+            # Get candidate summary for context
+            stats = await asyncio.to_thread(db_service.get_statistics)
+            candidates = await asyncio.to_thread(
+                db_service.get_candidates_paginated, 1, 20, {}
+            )
+            candidates_data = candidates
+            context = f"Database has {stats.get('total_candidates', 0)} candidates across {len(stats.get('categories', {}))} job categories."
+        
+        from services.openai_service import get_openai_service
+        openai_svc = get_openai_service()
+        
+        if not openai_svc:
+            return {
+                "response": "AI service unavailable. Please configure OPENAI_API_KEY in your environment.",
+                "ai_powered": False
+            }
+        
+        response = openai_svc.chat_with_ai(message, context, candidates_data)
+        
+        return {
+            "response": response,
+            "ai_powered": True,
+            "context_included": include_candidates
+        }
+        
+    except Exception as e:
+        logger.error(f"AI chat error: {e}")
+        return {
+            "response": f"Error: {str(e)}",
+            "ai_powered": False
+        }
+
+
+# ============================================================================
+# REAL-TIME STATS ENDPOINT - For live updates
+# ============================================================================
+
+@app.get("/api/stats/live")
+async def get_live_stats():
+    """
+    Get real-time statistics for dashboard updates.
+    Lightweight endpoint for frequent polling.
+    """
+    try:
+        conn = db_service.get_connection()
+        cursor = conn.cursor()
+        
+        # Get counts efficiently
+        cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1")
+        total = cursor.fetchone()[0]
+        
+        cursor.execute("""
+            SELECT COUNT(*) FROM candidates 
+            WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-24 hours')
+        """)
+        new_24h = cursor.fetchone()[0]
+        
+        cursor.execute("""
+            SELECT job_category, COUNT(*) as count, AVG(match_score) as avg_score
+            FROM candidates WHERE is_active = 1
+            GROUP BY job_category
+        """)
+        categories = {row[0]: {"count": row[1], "avg_score": round(row[2] or 0, 1)} for row in cursor.fetchall()}
+        
+        cursor.execute("SELECT AVG(match_score) FROM candidates WHERE is_active = 1")
+        avg_score = cursor.fetchone()[0] or 0
+        
+        cursor.execute("""
+            SELECT COUNT(*) FROM candidates 
+            WHERE is_active = 1 AND match_score >= 70
+        """)
+        strong_matches = cursor.fetchone()[0]
+        
+        conn.close()
+        
+        return {
+            "total_candidates": total,
+            "new_24h": new_24h,
+            "categories": categories,
+            "category_count": len(categories),
+            "average_score": round(avg_score, 1),
+            "strong_matches": strong_matches,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Live stats error: {e}")
+        return {
+            "total_candidates": 0,
+            "new_24h": 0,
+            "categories": {},
+            "category_count": 0,
+            "average_score": 0,
+            "strong_matches": 0,
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }
+
+
 # JOB DESCRIPTIONS - REMOVED
 # System now auto-generates job categories from candidate emails
 # No manual job description upload needed
@@ -1834,30 +2198,75 @@ async def match_candidates(
     candidate_ids: Optional[List[str]] = None
 ):
     """
-    Match candidates against a job description
-    Returns ranked list with match scores
+    Match candidates against a job description using LLM + semantic + TF-IDF matching.
+    Resolves IDs to data, then calls the multi-tier matching engine.
     """
     try:
-        results = await matching_engine.match_candidates(
-            job_description_id,
-            candidate_ids
-        )
+        # Resolve job description from database
+        conn = db_service.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT description, title, required_skills FROM job_descriptions WHERE id = ?", (job_description_id,))
+        jd_row = cursor.fetchone()
+        if not jd_row:
+            conn.close()
+            raise HTTPException(404, f"Job description not found: {job_description_id}")
+        
+        job_text = f"{jd_row[1] or ''}\n{jd_row[0] or ''}\nRequired Skills: {jd_row[2] or ''}"
+        
+        # Resolve candidates
+        if candidate_ids:
+            placeholders = ','.join(['?' for _ in candidate_ids])
+            cursor.execute(f"SELECT * FROM candidates WHERE id IN ({placeholders}) AND is_active = 1", candidate_ids)
+        else:
+            cursor.execute("SELECT * FROM candidates WHERE is_active = 1 ORDER BY match_score DESC LIMIT 100")
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        candidates = [db_service._row_to_candidate(row) for row in rows]
+        
+        if not candidates:
+            return []
+        
+        results = await matching_engine.match_candidates(job_text, candidates)
         return results
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Error matching candidates: {str(e)}")
 
 @app.post("/api/matching/evaluate-candidate")
 async def evaluate_candidate(candidate_id: str, job_description_id: str):
     """
-    Detailed AI evaluation of a single candidate
-    Returns match score, strengths, gaps, and recommendation
+    Detailed AI evaluation of a single candidate using LLM.
+    Resolves IDs to data, then calls the multi-tier matching engine.
     """
     try:
-        evaluation = await matching_engine.evaluate_candidate(
-            candidate_id,
-            job_description_id
-        )
+        # Resolve job description
+        conn = db_service.get_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT description, title, required_skills FROM job_descriptions WHERE id = ?", (job_description_id,))
+        jd_row = cursor.fetchone()
+        if not jd_row:
+            conn.close()
+            raise HTTPException(404, f"Job description not found: {job_description_id}")
+        
+        job_text = f"{jd_row[1] or ''}\n{jd_row[0] or ''}\nRequired Skills: {jd_row[2] or ''}"
+        
+        # Resolve candidate
+        cursor.execute("SELECT * FROM candidates WHERE id = ?", (candidate_id,))
+        cand_row = cursor.fetchone()
+        conn.close()
+        
+        if not cand_row:
+            raise HTTPException(404, f"Candidate not found: {candidate_id}")
+        
+        candidate_data = db_service._row_to_candidate(cand_row)
+        
+        evaluation = await matching_engine.evaluate_candidate(candidate_data, job_text)
         return evaluation
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(500, f"Error evaluating candidate: {str(e)}")
 
@@ -3571,19 +3980,72 @@ async def ai_status():
     """
     Check AI service status and configuration
     """
+    # Get LLM service status
+    llm_status = {}
+    try:
+        from services.llm_service import get_llm_service
+        llm_svc = await get_llm_service()
+        llm_status = llm_svc.get_status()
+    except Exception:
+        llm_status = {'available': False}
+    
+    # Get local AI cache stats
+    ai_cache = {}
+    try:
+        ai_cache = ai_service.get_cache_stats()
+    except Exception:
+        pass
+    
     return {
         "available": True,
-        "primary_engine": "local_ai",
-        "fallback_engine": "openai" if fallback_service else "none",
-        "model": "Local AI (Free, Concurrent-Safe)",
+        "primary_engine": "ollama_llm" if llm_status.get('available') else "local_ai",
+        "fallback_engine": "openai" if fallback_service else "local_ai",
+        "llm": {
+            "available": llm_status.get('available', False),
+            "primary_model": llm_status.get('primary_model', 'Not loaded'),
+            "fast_model": llm_status.get('fast_model', 'Not loaded'),
+            "reasoning_model": llm_status.get('reasoning_model', 'Not loaded'),
+            "available_models": llm_status.get('available_models', []),
+            "requests_processed": llm_status.get('requests_processed', 0),
+            "avg_response_time": llm_status.get('average_response_time', 0),
+            "ollama_url": llm_status.get('ollama_url', 'http://localhost:11434'),
+        },
+        "sentence_model": ai_cache.get('model_loaded', False),
+        "ner_model": ai_cache.get('ner_loaded', False),
+        "device": ai_cache.get('device', 'cpu'),
+        "cache": {
+            "embedding": ai_cache.get('embedding_cache_size', 0),
+            "ner": ai_cache.get('ner_cache_size', 0),
+            "analysis": ai_cache.get('analysis_cache_size', 0),
+            "llm": llm_status.get('cache_size', 0),
+        },
+        "model": "Multi-Tier AI: LLM (Ollama) → Sentence-Transformers → SpaCy NER → Regex",
         "fallback_model": openai_service.model if fallback_service else None,
-        "message": "Local AI PRIMARY (FREE) with OpenAI emergency fallback",
+        "message": "🤖 AI Stack: Local LLM + Embeddings + NER (FREE) with OpenAI emergency fallback",
         "caching_enabled": True,
         "concurrent_processing": True,
         "max_concurrent": "100+ requests",
-        "cost": "$0 (fallback charges apply only if Local AI fails)",
-        "fallback_available": fallback_service is not None
+        "cost": "$0 (all local, OpenAI fallback charges only if all local AI fails)",
+        "fallback_available": fallback_service is not None,
+        "setup_instructions": {
+            "ollama": "Install from https://ollama.com/download then run: ollama pull qwen2.5:7b",
+            "models_recommended": ["qwen2.5:7b (extraction)", "phi3.5 (fast)", "llama3.1:8b (reasoning)"]
+        }
     }
+
+@app.get("/api/llm/status")
+async def llm_status():
+    """Get detailed LLM service status"""
+    try:
+        from services.llm_service import get_llm_service
+        llm_svc = await get_llm_service()
+        return llm_svc.get_status()
+    except Exception as e:
+        return {
+            "available": False,
+            "error": str(e),
+            "setup": "Install Ollama from https://ollama.com/download, then: ollama pull qwen2.5:7b"
+        }
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
