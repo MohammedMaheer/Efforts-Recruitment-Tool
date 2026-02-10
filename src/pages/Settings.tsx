@@ -6,10 +6,11 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { useAuthStore } from '@/store/authStore'
 import { useNotificationStore } from '@/store/notificationStore'
-import config from '@/config'
+import config from '@/config'\nimport { authFetch } from '@/lib/authFetch'
 
 export default function Settings() {
   const user = useAuthStore((state) => state.user)
+  const token = useAuthStore((state) => state.token)
   const addNotification = useNotificationStore((state) => state.addNotification)
   const [firstName, setFirstName] = useState(user?.name?.split(' ')[0] || '')
   const [lastName, setLastName] = useState(user?.name?.split(' ')[1] || '')
@@ -28,7 +29,10 @@ export default function Settings() {
     try {
       const response = await fetch(`${config.apiUrl}/api/users/profile`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify({
           firstName,
           lastName,
@@ -47,10 +51,13 @@ export default function Settings() {
         title: 'Profile Updated',
         message: 'Your profile has been updated successfully',
       })
-      alert('Profile updated successfully!')
     } catch (error) {
       console.error('Save error:', error)
-      alert('Failed to save profile')
+      addNotification({
+        type: 'error',
+        title: 'Error',
+        message: 'Failed to save profile',
+      })
     } finally {
       setIsSaving(false)
     }
@@ -70,7 +77,10 @@ export default function Settings() {
     try {
       const response = await fetch(`${config.apiUrl}/api/users/password`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
+        },
         body: JSON.stringify({
           currentPassword,
           newPassword
@@ -86,13 +96,16 @@ export default function Settings() {
         title: 'Password Changed',
         message: 'Your password has been updated successfully',
       })
-      alert('Password updated successfully!')
       setCurrentPassword('')
       setNewPassword('')
       setConfirmPassword('')
     } catch (error) {
       console.error('Password update error:', error)
-      alert('Failed to update password')
+      addNotification({
+        type: 'error',
+        title: 'Error',
+        message: 'Failed to update password',
+      })
     }
   }
 
@@ -103,7 +116,7 @@ export default function Settings() {
     
     try {
       // Get OAuth URL from backend (uses delegated flow - works with your Azure AD app)
-      const response = await fetch(`${config.apiUrl}/api/email/oauth2/url`)
+      const response = await authFetch(`${config.apiUrl}/api/email/oauth2/url`)
       
       if (!response.ok) {
         throw new Error('Failed to get authentication URL')
@@ -117,7 +130,7 @@ export default function Settings() {
     } catch (error) {
       console.error('Authentication error:', error)
       setAuthStatus('error')
-      setAuthMessage(`❌ Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
+      setAuthMessage(`Authentication failed: ${error instanceof Error ? error.message : 'Unknown error'}`)
       
       addNotification({
         type: 'error',

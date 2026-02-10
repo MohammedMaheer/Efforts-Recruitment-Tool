@@ -6,7 +6,7 @@ export interface Notification {
   type: 'info' | 'success' | 'warning' | 'error'
   title: string
   message: string
-  timestamp: Date
+  timestamp: string
   read: boolean
   actionUrl?: string
 }
@@ -31,7 +31,7 @@ export const useNotificationStore = create<NotificationState>()(
         const newNotification: Notification = {
           ...notification,
           id: Date.now().toString() + Math.random(),
-          timestamp: new Date(),
+          timestamp: new Date().toISOString(),
           read: false,
         }
         

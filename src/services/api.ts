@@ -3,10 +3,10 @@
  * Centralized API client with error handling, retries, and type safety
  */
 import config from '@/config';
+import { useAuthStore } from '@/store/authStore';
 import type {
   Candidate,
   CandidateListResponse,
-  StatsResponse,
   UploadResponse,
   BatchUploadResponse,
   HealthResponse,
@@ -68,11 +68,18 @@ class ApiClient {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), timeout);
 
+        // Inject auth token from store if available
+        const token = useAuthStore.getState().token;
+        const authHeaders: Record<string, string> = token
+          ? { Authorization: `Bearer ${token}` }
+          : {};
+
         const response = await fetch(url, {
           ...fetchOptions,
           signal: controller.signal,
           headers: {
             'Content-Type': 'application/json',
+            ...authHeaders,
             ...fetchOptions.headers,
           },
         });
@@ -175,10 +182,16 @@ class ApiClient {
         options?.timeout || 60000
       ); // 60s for uploads
 
+      const token = useAuthStore.getState().token;
+      const authHeaders: Record<string, string> = token
+        ? { Authorization: `Bearer ${token}` }
+        : {};
+
       const response = await fetch(url, {
         method: 'POST',
         body: formData,
         signal: controller.signal,
+        headers: authHeaders,
         // Don't set Content-Type - let browser set it with boundary
       });
 
@@ -260,10 +273,18 @@ export const candidateApi = {
   },
 
   /**
-   * Update candidate
+   * Update candidate status (Shortlisted, Rejected, etc.)
+   * This is the primary update method - use for all candidate updates
+   * When status is 'Shortlisted', backend auto-sends notification email
    */
-  async update(id: string, data: Partial<Candidate>): Promise<ApiResponse<Candidate>> {
-    return client.put(`/api/candidates/${id}`, data);
+  async updateStatus(id: string, status: string): Promise<ApiResponse<{
+    status: string;
+    message: string;
+    candidate_id: string;
+    new_status: string;
+    email_sent?: { status: string; message?: string };
+  }>> {
+    return client.put(`/api/candidates/${id}/status`, { status });
   },
 
   /**
@@ -325,8 +346,8 @@ export const statsApi = {
   /**
    * Get dashboard statistics
    */
-  async getDashboard(): Promise<ApiResponse<StatsResponse>> {
-    return client.get('/api/stats/dashboard');
+  async getDashboard(): Promise<ApiResponse<any>> {
+    return client.get('/api/stats');
   },
 
   /**
@@ -396,7 +417,7 @@ export const healthApi = {
 
 export const oauthApi = {
   /**
-   * Get OAuth config
+   * Get OAuth URL for authentication
    */
   async getConfig(): Promise<ApiResponse<{
     auth_url: string;
@@ -404,7 +425,7 @@ export const oauthApi = {
     redirect_uri: string;
     scope: string;
   }>> {
-    return client.get('/api/oauth2/config');
+    return client.get('/api/email/oauth2/url');
   },
 
   /**
@@ -415,7 +436,7 @@ export const oauthApi = {
     email: string;
     expires_at: string;
   }>> {
-    return client.post('/api/oauth2/callback', { code, redirect_uri: redirectUri });
+    return client.post('/api/email/oauth2/callback', { code, redirect_uri: redirectUri });
   },
 
   /**
@@ -426,7 +447,7 @@ export const oauthApi = {
     email?: string;
     expires_at?: string;
   }>> {
-    return client.get('/api/oauth2/status');
+    return client.get('/api/oauth/status');
   },
 };
 
@@ -754,6 +775,88 @@ export const api = {
   oauth: oauthApi,
   advanced: advancedApi,
   linkedin: linkedInApi,
+};
+
+// ============================================================================
+// Taxonomy API
+// ============================================================================
+
+export const taxonomyApi = {
+  /**
+   * Get full job taxonomy (categories + subcategories)
+   */
+  async getAll(): Promise<ApiResponse<{ categories: string[]; taxonomy: Record<string, string[]> }>> {
+    return client.get('/api/taxonomy');
+  },
+
+  /**
+   * Get subcategories for a specific category
+   */
+  async getSubcategories(category: string): Promise<ApiResponse<{ category: string; subcategories: string[] }>> {
+    return client.get(`/api/taxonomy/${encodeURIComponent(category)}/subcategories`);
+  },
+
+  /**
+   * Classify a free-text job title into category + subcategory
+   */
+  async classify(title: string): Promise<ApiResponse<{ title: string; category: string; subcategory: string }>> {
+    return client.post('/api/taxonomy/classify', { title });
+  },
+};
+
+// ============================================================================
+// AI Smart Search API
+// ============================================================================
+
+export const aiApi = {
+  /**
+   * Smart search using LLM-powered semantic matching
+   */
+  async smartSearch(query: string, topN = 10): Promise<ApiResponse<{
+    query: string;
+    results: Array<{
+      candidate: Candidate;
+      relevance_score: number;
+      match_reasons: string[];
+    }>;
+    total_searched: number;
+    source: string;
+  }>> {
+    return client.post('/api/ai/smart-search', { query, top_n: topN }, { timeout: 60000 });
+  },
+
+  /**
+   * AI chat with database context
+   */
+  async chat(message: string, includeCandidates = true): Promise<ApiResponse<{
+    response: string;
+    ai_powered: boolean;
+    context_included: boolean;
+    source: string;
+  }>> {
+    return client.post('/api/ai/chat', { message, include_candidates: includeCandidates });
+  },
+
+  /**
+   * Generate interview questions
+   */
+  async interviewQuestions(candidate: Record<string, unknown>, jobDescription: Record<string, unknown>, numQuestions = 5): Promise<ApiResponse<{
+    questions: string[];
+    source: string;
+  }>> {
+    return client.post('/api/ai/interview-questions', { candidate, job_description: jobDescription, num_questions: numQuestions });
+  },
+
+  /**
+   * Get AI status
+   */
+  async getStatus(): Promise<ApiResponse<{
+    local_ai: { status: string; model: string };
+    openai: { status: string; model?: string };
+    llm: { status: string; model?: string };
+  }>> {
+    return client.get('/api/ai/status');
+  },
 };
 
 export default api;

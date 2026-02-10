@@ -1,4 +1,4 @@
-"""
+﻿"""
 OAuth2 Token Storage Service
 Stores and manages access tokens for email accounts
 """
@@ -41,7 +41,7 @@ class TokenStorage:
             with open(self.storage_file, 'w') as f:
                 json.dump(tokens, f, indent=2)
             
-            logger.info(f"✅ Saved OAuth2 token for {email}")
+            logger.info(f"âœ… Saved OAuth2 token for {email}")
             return True
         except Exception as e:
             logger.error(f"Error saving token: {str(e)}")
@@ -99,7 +99,7 @@ class TokenStorage:
         try:
             with open(self.storage_file, 'r') as f:
                 return json.load(f)
-        except:
+        except Exception:
             return {}
 
 # Global instance

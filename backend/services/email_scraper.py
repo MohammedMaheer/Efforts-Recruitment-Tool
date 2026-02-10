@@ -1,4 +1,4 @@
-"""
+﻿"""
 Multi-Email Account Scraper Service
 Supports multiple email services simultaneously with full history processing
 Now with Indeed, LinkedIn, and other job portal email parsing
@@ -192,7 +192,7 @@ def parse_indeed_email(body: str, subject: str) -> Optional[Dict]:
         if exp_match:
             try:
                 result['experience'] = int(exp_match.group(1))
-            except:
+            except Exception:
                 pass
             break
     
@@ -310,7 +310,7 @@ def parse_linkedin_email(body: str, subject: str) -> Optional[Dict]:
         if match:
             try:
                 result['experience'] = int(match.group(1))
-            except:
+            except Exception:
                 pass
             break
     
@@ -402,7 +402,7 @@ def is_valid_name(name: str) -> bool:
         return False
     
     # Contains patterns that look like dates (e.g., "2 0 1 3 - 2 0 1 5")
-    if re.search(r'\d{4}\s*[-–]\s*\d{4}', name.replace(' ', '')):
+    if re.search(r'\d{4}\s*[-â€“]\s*\d{4}', name.replace(' ', '')):
         return False
     if re.search(r'[0-9]\s+[0-9]\s+[0-9]\s+[0-9]', name):
         return False
@@ -504,7 +504,7 @@ class EmailScraperService:
             ))
             i += 1
         
-        print(f"📧 Loaded {len(accounts)} email account(s)")
+        print(f"ðŸ“§ Loaded {len(accounts)} email account(s)")
         return accounts
     
     def connect_to_inbox(self, account: EmailAccount):
@@ -522,7 +522,7 @@ class EmailScraperService:
             socket.setdefaulttimeout(None)
             return mail
         except Exception as e:
-            logger.warning(f"❌ Connection failed for {account.name} ({account.email}): {str(e)[:100]}")
+            logger.warning(f"âŒ Connection failed for {account.name} ({account.email}): {str(e)[:100]}")
             return None
     
     async def fetch_emails(self, mail, process_all: bool = False, since_date=None) -> List[Dict]:
@@ -550,7 +550,7 @@ class EmailScraperService:
             
             email_ids = messages[0].split()
             total_emails = len(email_ids)
-            logger.info(f"📬 Found {total_emails} emails to process...")
+            logger.info(f"ðŸ“¬ Found {total_emails} emails to process...")
             
             # Track filtering stats
             total_checked = 0
@@ -561,7 +561,7 @@ class EmailScraperService:
             for idx, email_id in enumerate(email_ids, 1):
                 # Progress logging for large fetches
                 if total_emails > 100 and idx % 50 == 0:
-                    logger.info(f"📊 Fetching progress: {idx}/{total_emails} emails checked...")
+                    logger.info(f"ðŸ“Š Fetching progress: {idx}/{total_emails} emails checked...")
                 status, msg_data = mail.fetch(email_id, '(RFC822)')
                 
                 if status != 'OK':
@@ -587,7 +587,7 @@ class EmailScraperService:
                             filtered_count += 1
             
             if filtered_count > 0:
-                logger.info(f"📧 Email filter: {total_checked} checked, {len(new_emails)} job applications, {filtered_count} filtered out")
+                logger.info(f"ðŸ“§ Email filter: {total_checked} checked, {len(new_emails)} job applications, {filtered_count} filtered out")
             
             return new_emails
             
@@ -617,7 +617,7 @@ class EmailScraperService:
                                 # Unknown encoding, try utf-8 then latin-1
                                 try:
                                     subject += content.decode('utf-8', errors='ignore')
-                                except:
+                                except Exception:
                                     subject += content.decode('latin-1', errors='ignore')
                         else:
                             subject += str(content)
@@ -629,7 +629,7 @@ class EmailScraperService:
                             subject = raw_subject.decode('utf-8', errors='ignore')
                         else:
                             subject = str(raw_subject)
-                    except:
+                    except Exception:
                         subject = "(no subject)"
             
             # Filter out non-job-application emails based on subject
@@ -667,7 +667,7 @@ class EmailScraperService:
             try:
                 from email.utils import parsedate_to_datetime
                 received_date = parsedate_to_datetime(date_str)
-            except:
+            except Exception:
                 received_date = datetime.now()
             
             # Extract body
@@ -683,7 +683,7 @@ class EmailScraperService:
                     if content_type == "text/plain" and "attachment" not in content_disposition:
                         try:
                             body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
-                        except:
+                        except Exception:
                             pass
                     
                     # Get attachments (resumes)
@@ -698,7 +698,7 @@ class EmailScraperService:
             else:
                 try:
                     body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
-                except:
+                except Exception:
                     pass
             
             # Final filter: Check if email has resume attachment OR job application content
@@ -750,7 +750,7 @@ class EmailScraperService:
             for pattern in skip_email_patterns:
                 if re.search(pattern, sender_email, re.IGNORECASE):
                     # This is a system email - we need to extract the REAL candidate from the body
-                    logger.info(f"📧 System email detected: {sender_email} - will extract candidate from body")
+                    logger.info(f"ðŸ“§ System email detected: {sender_email} - will extract candidate from body")
                     break
             
             # FIRST: Try LLM-powered email parsing (100% accurate)
@@ -765,7 +765,7 @@ class EmailScraperService:
                         sender=sender_email
                     )
                     if llm_portal_data:
-                        logger.info(f"🤖 LLM parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
+                        logger.info(f"ðŸ¤– LLM parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
             except Exception as llm_err:
                 logger.debug(f"LLM email parsing skipped: {llm_err}")
             
@@ -779,7 +779,7 @@ class EmailScraperService:
                 if indeed_data:
                     job_portal_data = indeed_data
                     portal_source = 'Indeed'
-                    logger.info(f"📧 Parsed Indeed application: {indeed_data.get('name', 'Unknown')}")
+                    logger.info(f"ðŸ“§ Parsed Indeed application: {indeed_data.get('name', 'Unknown')}")
                 
                 # Check LinkedIn
                 if not job_portal_data:
@@ -787,7 +787,7 @@ class EmailScraperService:
                     if linkedin_data:
                         job_portal_data = linkedin_data
                         portal_source = 'LinkedIn'
-                        logger.info(f"📧 Parsed LinkedIn application: {linkedin_data.get('name', 'Unknown')}")
+                        logger.info(f"ðŸ“§ Parsed LinkedIn application: {linkedin_data.get('name', 'Unknown')}")
             
             # Parse resume if attached
             resume_data = None
@@ -812,7 +812,7 @@ class EmailScraperService:
                             # Store the raw file for download
                             resume_file_data = file_data
                             resume_filename = filename
-                            logger.info(f"📄 Parsed resume: {filename}")
+                            logger.info(f"ðŸ“„ Parsed resume: {filename}")
                             break
                     except Exception as parse_err:
                         logger.warning(f"Error parsing attachment {attachment.get('filename', 'unknown')}: {str(parse_err)[:50]}")
@@ -855,7 +855,9 @@ class EmailScraperService:
             candidate_id = hashlib.md5(actual_candidate_email.encode()).hexdigest()
             
             # Use AI to infer job category/role
+            self._last_subcategory = ''
             job_category = await self.infer_job_category(email_data, resume_data)
+            job_subcategory = getattr(self, '_last_subcategory', '')
             
             # Determine best name:
             # 1. From job portal data (Indeed/LinkedIn) - most reliable
@@ -896,7 +898,7 @@ class EmailScraperService:
             
             # FINAL VALIDATION: Skip if name is still invalid
             if not candidate_name or not is_valid_name(candidate_name):
-                logger.warning(f"⚠️ Skipping candidate - invalid name: {candidate_name}")
+                logger.warning(f"âš ï¸ Skipping candidate - invalid name: {candidate_name}")
                 return None
             
             # Note: actual_candidate_email was already determined earlier (before ID generation)
@@ -938,6 +940,7 @@ class EmailScraperService:
                 'matchScore': 0,  # Will be calculated by AI
                 'appliedDate': email_data['received_date'].isoformat(),
                 'job_category': job_category,
+                'job_subcategory': job_subcategory,
                 'raw_email_subject': email_data['subject'],
                 'last_updated': datetime.now().isoformat(),
                 # Resume file for download
@@ -953,59 +956,51 @@ class EmailScraperService:
     
     async def infer_job_category(self, email_data: Dict, resume_data: Dict) -> str:
         """
-        Determine job category using LOCAL keyword matching only (NO OpenAI calls)
-        This saves API costs - job categorization doesn't need expensive AI
+        Determine job category AND subcategory using the job taxonomy.
+        Returns category string. Also sets self._last_subcategory for the caller.
         """
+        from services.job_taxonomy import classify_job_title
+        
+        # If LLM already classified, use that
+        if resume_data.get('job_category') and resume_data['job_category'] != 'General':
+            self._last_subcategory = resume_data.get('job_subcategory', '')
+            return resume_data['job_category']
+        
         # Build text to analyze
-        text = f"{email_data.get('subject', '')} {email_data.get('body', '')[:500]} {' '.join(resume_data.get('skills', []))}"
-        text_lower = text.lower()
+        subject = email_data.get('subject', '')
         
-        # Check for job portal source first
-        if resume_data.get('source') == 'indeed':
-            job_title = resume_data.get('job_title_applied', '')
-            if job_title:
-                return job_title
+        # Try job title from portal data
+        job_title = resume_data.get('job_title_applied', '') or resume_data.get('job_applied_for', '')
+        if job_title:
+            cat, sub = classify_job_title(job_title)
+            self._last_subcategory = sub
+            if cat != 'General':
+                return cat
         
-        # Comprehensive keyword matching for job categories
-        categories = {
-            'Software Engineer': ['software engineer', 'developer', 'programmer', 'full stack', 'backend', 'frontend', 'web developer', 'mobile developer', 'ios', 'android'],
-            'DevOps Engineer': ['devops', 'sre', 'site reliability', 'infrastructure', 'kubernetes', 'docker', 'ci/cd', 'cloud engineer'],
-            'Data Scientist': ['data scientist', 'machine learning', 'ml engineer', 'ai engineer', 'deep learning', 'data analyst', 'analytics'],
-            'Data Engineer': ['data engineer', 'etl', 'data pipeline', 'spark', 'hadoop', 'airflow', 'big data'],
-            'QA Engineer': ['qa', 'quality assurance', 'test engineer', 'automation test', 'selenium', 'testing'],
-            'Product Manager': ['product manager', 'product owner', 'scrum master', 'agile'],
-            'UI/UX Designer': ['ui designer', 'ux designer', 'product designer', 'figma', 'sketch', 'user experience'],
-            'Marketing Manager': ['marketing', 'digital marketing', 'seo', 'social media', 'content marketing', 'brand'],
-            'Sales Executive': ['sales', 'business development', 'account manager', 'client relations'],
-            'HR Manager': ['hr', 'human resources', 'recruiter', 'talent acquisition', 'people operations'],
-            'Finance Analyst': ['finance', 'accountant', 'accounting', 'financial analyst', 'bookkeeper', 'auditor'],
-            'Project Manager': ['project manager', 'program manager', 'pmo', 'project coordinator'],
-            'System Administrator': ['system admin', 'sysadmin', 'it support', 'network admin', 'helpdesk'],
-            'Security Engineer': ['security engineer', 'cybersecurity', 'infosec', 'penetration test', 'soc analyst'],
-            'Database Administrator': ['dba', 'database admin', 'sql server', 'oracle dba', 'mysql admin'],
-        }
+        # Try from email subject
+        if subject:
+            cat, sub = classify_job_title(subject)
+            if cat != 'General':
+                self._last_subcategory = sub
+                return cat
         
-        # Find best matching category
-        for category, keywords in categories.items():
-            if any(keyword in text_lower for keyword in keywords):
-                return category
+        # Try from most recent work history title
+        work_history = resume_data.get('work_history', [])
+        if work_history and isinstance(work_history, list) and len(work_history) > 0:
+            first_job = work_history[0]
+            if isinstance(first_job, dict) and first_job.get('title'):
+                cat, sub = classify_job_title(first_job['title'])
+                if cat != 'General':
+                    self._last_subcategory = sub
+                    return cat
         
-        # Fallback to skill-based categorization
+        # Fallback to skill-based categorization using taxonomy keyword matcher
         skills = resume_data.get('skills', [])
-        skills_lower = ' '.join(skills).lower()
-        
-        if any(s in skills_lower for s in ['python', 'java', 'javascript', 'react', 'node', 'c++', 'c#']):
-            return 'Software Engineer'
-        elif any(s in skills_lower for s in ['docker', 'kubernetes', 'aws', 'azure', 'terraform']):
-            return 'DevOps Engineer'
-        elif any(s in skills_lower for s in ['machine learning', 'tensorflow', 'pytorch', 'pandas']):
-            return 'Data Scientist'
-        elif any(s in skills_lower for s in ['sql', 'tableau', 'power bi', 'excel']):
-            return 'Data Analyst'
-        elif any(s in skills_lower for s in ['figma', 'sketch', 'adobe xd', 'photoshop']):
-            return 'UI/UX Designer'
-        
-        return 'General'
+        skills_text = ' '.join(skills).lower() if skills else ''
+        text = f"{subject} {skills_text}"
+        cat, sub = classify_job_title(text)
+        self._last_subcategory = sub
+        return cat
     
     async def process_batch(self, candidates: List[Dict], db_connection):
         """
@@ -1051,9 +1046,9 @@ class EmailScraperService:
         - First run: Process ALL historical emails
         - Subsequent runs: Process only NEW emails
         """
-        print(f"🔄 Multi-account email scraper started")
-        print(f"📧 Monitoring {len(self.email_accounts)} email account(s)")
-        print(f"⏱️  Checking every {interval_seconds} seconds")
+        print(f"ðŸ”„ Multi-account email scraper started")
+        print(f"ðŸ“§ Monitoring {len(self.email_accounts)} email account(s)")
+        print(f"â±ï¸  Checking every {interval_seconds} seconds")
         
         first_run = True
         
@@ -1070,7 +1065,7 @@ class EmailScraperService:
                         new_emails = await self.fetch_emails(mail, process_all=process_all)
                         
                         if new_emails:
-                            print(f"📧 [{account.name}] Found {len(new_emails)} emails to process")
+                            print(f"ðŸ“§ [{account.name}] Found {len(new_emails)} emails to process")
                             
                             # Extract candidates from emails
                             candidates = []
@@ -1079,25 +1074,25 @@ class EmailScraperService:
                                 if candidate:
                                     candidates.append(candidate)
                             
-                            print(f"👥 [{account.name}] Extracted {len(candidates)} candidates")
+                            print(f"ðŸ‘¥ [{account.name}] Extracted {len(candidates)} candidates")
                             account.processed_count += len(candidates)
                             
                             # TODO: Process batch and save to database
                             # result = await self.process_batch(candidates, db_connection)
-                            # print(f"✅ Processed: {result['new']} new, {result['updated']} updated")
+                            # print(f"âœ… Processed: {result['new']} new, {result['updated']} updated")
                         
                         mail.logout()
                         account.last_check = datetime.now()
                         
                     except Exception as e:
-                        print(f"❌ [{account.name}] Error: {e}")
+                        print(f"âŒ [{account.name}] Error: {e}")
                 
                 first_run = False  # After first run, only process new emailslast_check = datetime.now()
                 
                 await asyncio.sleep(interval_seconds)
                 
             except Exception as e:
-                print(f"❌ Scraper error: {e}")
+                print(f"âŒ Scraper error: {e}")
                 await asyncio.sleep(interval_seconds)
 
 # Singleton instance

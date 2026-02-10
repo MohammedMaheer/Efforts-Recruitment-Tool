@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/Input'
 import { Badge } from '@/components/ui/Badge'
 import { useNotificationStore } from '@/store/notificationStore'
 import config from '@/config'
+import { authFetch } from '@/lib/authFetch'
 
 interface EmailProvider {
   id: string
@@ -63,7 +64,7 @@ export default function EmailIntegration() {
 
   const fetchOAuthStatus = async () => {
     try {
-      const response = await fetch(`${config.apiUrl}/api/oauth/status`)
+      const response = await authFetch(`${config.apiUrl}/api/oauth/status`)
       if (response.ok) {
         const data = await response.json()
         setOauthStatus(data)
@@ -76,7 +77,7 @@ export default function EmailIntegration() {
   const handleForceRefresh = async () => {
     setIsRefreshingToken(true)
     try {
-      const response = await fetch(`${config.apiUrl}/api/oauth/refresh`, { method: 'POST' })
+      const response = await authFetch(`${config.apiUrl}/api/oauth/refresh`, { method: 'POST' })
       const data = await response.json()
       
       if (data.status === 'success') {
@@ -109,7 +110,7 @@ export default function EmailIntegration() {
   const handleManualSync = async () => {
     setIsManualSyncing(true)
     try {
-      const response = await fetch(`${config.apiUrl}/api/email/manual-sync`, { method: 'POST' })
+      const response = await authFetch(`${config.apiUrl}/api/email/manual-sync`, { method: 'POST' })
       const data = await response.json()
       
       if (data.status === 'syncing') {
@@ -213,7 +214,7 @@ export default function EmailIntegration() {
   const handleConnect = async () => {
     setIsConnecting(true)
     try {
-      const response = await fetch(`${config.apiUrl}/api/email/connect`, {
+      const response = await authFetch(`${config.apiUrl}/api/email/connect`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -244,7 +245,7 @@ export default function EmailIntegration() {
   const handleSync = async () => {
     setIsSyncing(true)
     try {
-      const response = await fetch(`${config.apiUrl}/api/email/sync`, {
+      const response = await authFetch(`${config.apiUrl}/api/email/sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -277,7 +278,7 @@ export default function EmailIntegration() {
 
   const handleSetupAutoSync = async () => {
     try {
-      const response = await fetch(`${config.apiUrl}/api/email/setup-auto-sync`, {
+      const response = await authFetch(`${config.apiUrl}/api/email/setup-auto-sync`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

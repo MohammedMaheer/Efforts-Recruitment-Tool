@@ -8,7 +8,7 @@ export interface Candidate {
   location: string
   experience: number
   matchScore: number
-  status: 'Strong' | 'Partial' | 'Reject'
+  status: 'Strong' | 'Partial' | 'Reject' | 'Shortlisted' | 'Rejected' | 'New' | 'Reviewed' | 'Interviewing' | 'Offered' | 'Hired' | 'Withdrawn'
   skills: string[]
   resumeUrl: string
   appliedDate: string
@@ -17,6 +17,7 @@ export interface Candidate {
   isShortlisted?: boolean
   hasResume?: boolean
   jobCategory: string
+  jobSubcategory?: string
   linkedin?: string
   education: {
     degree: string
@@ -35,6 +36,10 @@ export interface Candidate {
     gaps: string[]
     recommendation: string
   }
+  certifications?: string[]
+  languages?: string[]
+  resumeText?: string
+  aiAnalysis?: any
 }
 
 interface CandidateState {

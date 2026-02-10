@@ -1,4 +1,4 @@
-"""
+﻿"""
 High-Performance Async Database Manager
 Silicon Valley-grade database operations with:
 - True async connection pooling
@@ -175,7 +175,7 @@ class AsyncConnectionPool:
             self._health_task = asyncio.create_task(self._health_check_loop())
             
             self._initialized = True
-            logger.info(f"✅ Connection pool initialized with {len(self._all_connections)} connections")
+            logger.info(f"âœ… Connection pool initialized with {len(self._all_connections)} connections")
     
     async def _create_connection(self) -> Optional[Connection]:
         """Create a new database connection"""
@@ -232,7 +232,7 @@ class AsyncConnectionPool:
             self.stats.is_healthy = unhealthy_count == 0
             
             if unhealthy_count > 0:
-                logger.warning(f"⚠️ {unhealthy_count} unhealthy connections detected")
+                logger.warning(f"âš ï¸ {unhealthy_count} unhealthy connections detected")
     
     @asynccontextmanager
     async def acquire(self):
@@ -267,7 +267,7 @@ class AsyncConnectionPool:
                 # Try to reconnect
                 try:
                     await conn_wrapper.conn.close()
-                except:
+                except Exception:
                     pass
                 
                 new_conn = await self._create_connection()
@@ -305,7 +305,7 @@ class AsyncConnectionPool:
                     # Pool full, close this connection
                     try:
                         await conn_wrapper.conn.close()
-                    except:
+                    except Exception:
                         pass
     
     async def close(self) -> None:
@@ -323,7 +323,7 @@ class AsyncConnectionPool:
             for conn_wrapper in self._all_connections:
                 try:
                     await conn_wrapper.conn.close()
-                except:
+                except Exception:
                     pass
             
             self._all_connections.clear()
@@ -332,10 +332,10 @@ class AsyncConnectionPool:
             while not self._pool.empty():
                 try:
                     self._pool.get_nowait()
-                except:
+                except Exception:
                     break
         
-        logger.info("🔌 Connection pool closed")
+        logger.info("ðŸ”Œ Connection pool closed")
 
 
 class AsyncDatabaseManager:

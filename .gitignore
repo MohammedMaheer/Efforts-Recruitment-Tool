@@ -39,6 +39,13 @@ ENV/
 .env.local
 .env.production
 
+# Database
+*.db
+recruitment.db
+
+# OAuth tokens (sensitive)
+oauth_tokens.json
+
 # OS
 .DS_Store
 Thumbs.db

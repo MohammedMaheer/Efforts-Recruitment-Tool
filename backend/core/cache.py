@@ -1,4 +1,4 @@
-"""
+﻿"""
 High-Performance Caching Service
 Silicon Valley-grade caching with:
 - Multi-level cache (Memory -> Redis-like)
@@ -143,7 +143,7 @@ class MemoryCache(CacheBackend[T]):
         """Estimate memory size of a value"""
         try:
             return len(pickle.dumps(value))
-        except:
+        except Exception:
             return 1024  # Default estimate
     
     async def _evict_if_needed(self) -> None:
@@ -524,7 +524,7 @@ class CacheService:
             except Exception as e:
                 logger.error(f"Cache warmer failed: {e}")
         
-        logger.info(f"✅ Cache warming complete: {count}/{len(self._warmers)} warmers executed")
+        logger.info(f"âœ… Cache warming complete: {count}/{len(self._warmers)} warmers executed")
         return count
     
     async def get(self, key: str) -> Optional[Any]:

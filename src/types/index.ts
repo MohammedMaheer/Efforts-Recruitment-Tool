@@ -32,13 +32,28 @@ export const JobCategory = {
   SOFTWARE_ENGINEER: 'Software Engineer',
   DEVOPS_ENGINEER: 'DevOps Engineer',
   DATA_SCIENTIST: 'Data Scientist',
+  CYBERSECURITY: 'Cybersecurity',
+  QA_TESTING: 'QA / Testing',
+  IT_SYSTEMS: 'IT & Systems',
   PRODUCT_MANAGER: 'Product Manager',
-  MARKETING: 'Marketing',
-  SALES: 'Sales',
-  HR: 'HR',
-  FINANCE: 'Finance',
   DESIGN: 'Design',
+  PROJECT_MANAGEMENT: 'Project Management',
+  BUSINESS_ANALYST: 'Business Analyst',
+  CONSULTING: 'Consulting',
+  MARKETING: 'Marketing',
+  CONTENT_COMMUNICATIONS: 'Content & Communications',
+  SALES: 'Sales',
+  FINANCE: 'Finance',
+  HR: 'HR',
+  LEGAL: 'Legal',
+  OPERATIONS: 'Operations',
+  HEALTHCARE: 'Healthcare',
+  EDUCATION: 'Education',
+  ENGINEERING: 'Engineering',
   CUSTOMER_SUPPORT: 'Customer Support',
+  MEDIA_CREATIVE: 'Media & Creative',
+  REAL_ESTATE: 'Real Estate',
+  HOSPITALITY: 'Hospitality',
   GENERAL: 'General',
 } as const;
 
@@ -94,11 +109,16 @@ export interface Candidate {
   isShortlisted?: boolean;
   hasResume: boolean;
   jobCategory: JobCategoryType | string;
+  jobSubcategory?: string;
   linkedin?: string;
   education: Education[];
   workHistory: WorkExperience[];
   evaluation?: AIEvaluation;
   lastUpdated?: string;
+  certifications?: string[];
+  languages?: string[];
+  resumeText?: string;
+  aiAnalysis?: any;
 }
 
 export interface CandidateFilters {
@@ -109,6 +129,7 @@ export interface CandidateFilters {
   minExperience?: number;
   maxExperience?: number;
   jobCategory?: JobCategoryType | 'all';
+  jobSubcategory?: string | 'all';
   dateStart?: string;
   dateEnd?: string;
 }
@@ -144,12 +165,19 @@ export interface CandidateListResponse {
 }
 
 export interface StatsResponse {
-  total: number;
-  strong: number;
-  partial: number;
-  weak: number;
-  avgScore: number;
-  recentCount: number;
+  total_candidates: number;
+  categories: Record<string, { count: number; avg_score: number }>;
+  recent_24h: number;
+  job_categories: number;
+  average_match_score: number;
+  ai_cache?: Record<string, any>;
+  // Aliases for backward compat
+  total?: number;
+  strong?: number;
+  partial?: number;
+  weak?: number;
+  avgScore?: number;
+  recentCount?: number;
   byCategory?: Record<string, number>;
 }
 
@@ -172,15 +200,21 @@ export interface HealthResponse {
   status: 'healthy' | 'degraded' | 'unhealthy';
   timestamp: string;
   version: string;
-  scraperRunning: boolean;
-  system: {
+  scraper_running?: boolean;
+  scraperRunning?: boolean;
+  system?: {
+    cpu_percent?: number;
     cpuPercent?: number;
+    memory_percent?: number;
     memoryPercent?: number;
+    disk_percent?: number;
     diskPercent?: number;
   };
-  cache: {
-    responseCacheSize: number;
-    aiEmbeddingCache: number;
+  cache?: {
+    response_cache_size?: number;
+    responseCacheSize?: number;
+    ai_embedding_cache?: number;
+    aiEmbeddingCache?: number;
   };
 }
 

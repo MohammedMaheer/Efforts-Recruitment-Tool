@@ -31,7 +31,7 @@ export const config = {
     ai: `${API_URL}/api/ai`,
     stats: `${API_URL}/api/stats`,
     resumes: `${API_URL}/api/resumes`,
-    oauth: `${API_URL}/api/oauth2`,
+    oauth: `${API_URL}/api/oauth`,
     health: `${API_URL}/health`,
     setup: {
       verify: `${API_URL}/api/setup/verify`,

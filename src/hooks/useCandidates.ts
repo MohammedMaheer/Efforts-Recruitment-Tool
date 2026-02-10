@@ -1,5 +1,6 @@
 import { useEffect, useCallback, useState } from 'react'
 import { useCandidateStore, type Candidate } from '@/store/candidateStore'
+import { useAuthStore } from '@/store/authStore'
 import config from '@/config'
 
 interface UseCandidatesOptions {
@@ -68,9 +69,12 @@ const transformCandidate = (c: any): Candidate => {
   const rawScore = c.matchScore ?? c.ai_score ?? c.match_score ?? 50
   const matchScore = typeof rawScore === 'number' ? rawScore : parseFloat(rawScore) || 50
   
-  // Determine status based on score
-  const status = matchScore >= 70 ? 'Strong' as const : 
-                 matchScore >= 40 ? 'Partial' as const : 'Reject' as const
+  // Determine status - use backend status if available, otherwise derive from score
+  const backendStatus = c.status || c.candidate_status || ''
+  const validStatuses = ['New', 'Reviewed', 'Shortlisted', 'Interviewing', 'Offered', 'Hired', 'Rejected', 'Withdrawn', 'Strong', 'Partial', 'Reject']
+  const status = validStatuses.includes(backendStatus) ? backendStatus as any :
+                 (matchScore >= 70 ? 'Strong' as const : 
+                 matchScore >= 40 ? 'Partial' as const : 'Reject' as const)
   
   return {
     id: c.id,
@@ -94,7 +98,11 @@ const transformCandidate = (c: any): Candidate => {
       strengths: parseJSON(c.strengths, []),
       gaps: parseJSON(c.gaps, []),
       recommendation: c.job_category || 'General'
-    }
+    },
+    certifications: parseJSON(c.certifications, []),
+    languages: parseJSON(c.languages, []),
+    resumeText: c.resume_text || c.resumeText || '',
+    aiAnalysis: c.ai_analysis || c.aiAnalysis || null,
   }
 }
 
@@ -113,7 +121,10 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
     setError(null)
     
     try {
-      const response = await fetch(`${config.endpoints.candidates}?limit=10000`)
+      const token = useAuthStore.getState().token
+      const response = await fetch(`${config.endpoints.candidates}?limit=10000`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
       
       if (!response.ok) {
         throw new Error(`Failed to fetch candidates: ${response.statusText}`)

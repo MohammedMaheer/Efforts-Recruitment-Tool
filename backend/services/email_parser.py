@@ -1,4 +1,4 @@
-from typing import List, Dict, Any, Optional
+﻿from typing import List, Dict, Any, Optional
 import email
 from email import policy
 from email.parser import BytesParser
@@ -507,7 +507,7 @@ class EmailParser:
             from email.utils import parsedate_to_datetime
             dt = parsedate_to_datetime(date_str)
             return dt.isoformat()
-        except:
+        except Exception:
             return datetime.now().isoformat()
     
     def _generate_oauth2_string(self, email: str, access_token: str) -> bytes:

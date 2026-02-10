@@ -23,11 +23,9 @@ import {
   Clock,
   CheckCircle2,
   Copy,
-  Upload,
-  ThumbsUp,
-  ThumbsDown,
   Briefcase,
-  X
+  X,
+  Upload
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card, CardContent } from '@/components/ui/Card'
@@ -36,10 +34,11 @@ import { Avatar, AvatarFallback } from '@/components/ui/Avatar'
 import { useCandidates } from '@/hooks/useCandidates'
 import type { Candidate } from '@/store/candidateStore'
 import { useNavigate } from 'react-router-dom'
-import { getMatchScoreColor } from '@/lib/utils'
+import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
 import { useAIStatus } from '@/hooks/useAIStatus'
-import { advancedApi } from '@/services/api'
+import { advancedApi, aiApi, candidateApi } from '@/services/api'
 import config from '@/config'
+import { authFetch } from '@/lib/authFetch'
 
 interface Message {
   id: string
@@ -142,21 +141,60 @@ function JobMatchModal({
 }: { 
   isOpen: boolean
   onClose: () => void
-  onMatch: (jd: string, topN: number) => void 
+  onMatch: (jd: string, topN: number, file?: File) => void 
 }) {
   const [jobDescription, setJobDescription] = useState('')
   const [topN, setTopN] = useState(10)
   const [isMatching, setIsMatching] = useState(false)
+  const [activeTab, setActiveTab] = useState<'text' | 'file'>('file')
+  const [uploadedFile, setUploadedFile] = useState<File | null>(null)
+  const [dragOver, setDragOver] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const handleMatch = async () => {
-    if (jobDescription.trim().length < 50) {
+    if (activeTab === 'text' && jobDescription.trim().length < 50) {
       alert('Please enter a job description with at least 50 characters')
       return
     }
+    if (activeTab === 'file' && !uploadedFile) {
+      alert('Please upload a job description file (PDF, DOCX, or TXT)')
+      return
+    }
     setIsMatching(true)
-    await onMatch(jobDescription, topN)
+    await onMatch(
+      activeTab === 'text' ? jobDescription : '',
+      topN,
+      activeTab === 'file' ? uploadedFile! : undefined
+    )
     setIsMatching(false)
     onClose()
+    setUploadedFile(null)
+    setJobDescription('')
+  }
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (file) validateAndSetFile(file)
+  }
+
+  const validateAndSetFile = (file: File) => {
+    const ext = file.name.split('.').pop()?.toLowerCase()
+    if (!['pdf', 'docx', 'doc', 'txt'].includes(ext || '')) {
+      alert('Only PDF, DOCX, and TXT files are supported')
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      alert('File too large. Max 10MB.')
+      return
+    }
+    setUploadedFile(file)
+  }
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault()
+    setDragOver(false)
+    const file = e.dataTransfer.files[0]
+    if (file) validateAndSetFile(file)
   }
 
   if (!isOpen) return null
@@ -177,7 +215,7 @@ function JobMatchModal({
               </div>
               <div>
                 <h2 className="text-lg font-semibold text-gray-900">Match Candidates to Job</h2>
-                <p className="text-sm text-gray-500">Paste a job description to find best matches</p>
+                <p className="text-sm text-gray-500">Upload a JD file or paste text to find best matches</p>
               </div>
             </div>
             <button onClick={onClose} className="p-2 hover:bg-gray-100 rounded-lg">
@@ -185,25 +223,111 @@ function JobMatchModal({
             </button>
           </div>
         </div>
+
+        {/* Tab Switcher */}
+        <div className="flex border-b border-gray-200">
+          <button
+            onClick={() => setActiveTab('file')}
+            className={`flex-1 py-3 px-4 text-sm font-medium flex items-center justify-center gap-2 border-b-2 transition-colors ${
+              activeTab === 'file'
+                ? 'border-emerald-600 text-emerald-600 bg-emerald-50/50'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            <Upload className="w-4 h-4" />
+            Upload File
+          </button>
+          <button
+            onClick={() => setActiveTab('text')}
+            className={`flex-1 py-3 px-4 text-sm font-medium flex items-center justify-center gap-2 border-b-2 transition-colors ${
+              activeTab === 'text'
+                ? 'border-emerald-600 text-emerald-600 bg-emerald-50/50'
+                : 'border-transparent text-gray-500 hover:text-gray-700 hover:bg-gray-50'
+            }`}
+          >
+            <FileText className="w-4 h-4" />
+            Paste Text
+          </button>
+        </div>
         
         <div className="p-6 space-y-4 max-h-[60vh] overflow-y-auto">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Job Description *
-            </label>
-            <textarea
-              value={jobDescription}
-              onChange={(e) => setJobDescription(e.target.value)}
-              placeholder="Paste the full job description here...
+          {/* File Upload Tab */}
+          {activeTab === 'file' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Job Description File *
+              </label>
+              <div
+                onDragOver={(e) => { e.preventDefault(); setDragOver(true) }}
+                onDragLeave={() => setDragOver(false)}
+                onDrop={handleDrop}
+                onClick={() => fileInputRef.current?.click()}
+                className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${
+                  dragOver
+                    ? 'border-emerald-400 bg-emerald-50'
+                    : uploadedFile
+                    ? 'border-emerald-300 bg-emerald-50/50'
+                    : 'border-gray-300 hover:border-emerald-400 hover:bg-gray-50'
+                }`}
+              >
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".pdf,.docx,.doc,.txt"
+                  onChange={handleFileChange}
+                  className="hidden"
+                />
+                {uploadedFile ? (
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="w-12 h-12 bg-emerald-100 rounded-xl flex items-center justify-center">
+                      <FileText className="w-6 h-6 text-emerald-600" />
+                    </div>
+                    <p className="text-sm font-medium text-gray-900">{uploadedFile.name}</p>
+                    <p className="text-xs text-gray-500">{(uploadedFile.size / 1024).toFixed(1)} KB</p>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); setUploadedFile(null) }}
+                      className="text-xs text-red-500 hover:text-red-700 mt-1"
+                    >
+                      Remove file
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-2">
+                    <div className="w-12 h-12 bg-gray-100 rounded-xl flex items-center justify-center">
+                      <Upload className="w-6 h-6 text-gray-400" />
+                    </div>
+                    <p className="text-sm font-medium text-gray-700">
+                      Drag & drop your JD file here
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      or click to browse — PDF, DOCX, TXT (max 10MB)
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Text Input Tab */}
+          {activeTab === 'text' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Job Description *
+              </label>
+              <textarea
+                value={jobDescription}
+                onChange={(e) => setJobDescription(e.target.value)}
+                placeholder="Paste the full job description here...
 
 Example:
 We are looking for a Senior Software Engineer with 5+ years of experience in React, Node.js, and AWS. The ideal candidate should have experience with microservices architecture, CI/CD pipelines, and agile methodologies..."
-              className="w-full h-64 p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 resize-none text-sm"
-            />
-            <p className="text-xs text-gray-500 mt-1">
-              {jobDescription.length} characters (minimum 50 required)
-            </p>
-          </div>
+                className="w-full h-64 p-4 border border-gray-300 rounded-xl focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 resize-none text-sm"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                {jobDescription.length} characters (minimum 50 required)
+              </p>
+            </div>
+          )}
           
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -218,6 +342,7 @@ We are looking for a Senior Software Engineer with 5+ years of experience in Rea
               <option value={10}>Top 10</option>
               <option value={15}>Top 15</option>
               <option value={20}>Top 20</option>
+              <option value={50}>Top 50</option>
             </select>
           </div>
         </div>
@@ -232,7 +357,11 @@ We are looking for a Senior Software Engineer with 5+ years of experience in Rea
             </button>
             <button
               onClick={handleMatch}
-              disabled={isMatching || jobDescription.length < 50}
+              disabled={
+                isMatching ||
+                (activeTab === 'text' && jobDescription.length < 50) ||
+                (activeTab === 'file' && !uploadedFile)
+              }
               className="flex-1 px-4 py-3 bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 font-medium disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
             >
               {isMatching ? (
@@ -270,18 +399,18 @@ export default function AIAssistant() {
     const welcomeMessage: Message = {
       id: '0',
       type: 'ai',
-      content: `👋 Hi! I'm your **AI Recruitment Assistant** powered by advanced ML features.
+      content: `Hi! I'm your **AI Recruitment Assistant** powered by advanced ML features.
 
-${candidates.length > 0 ? `📊 I can see **${candidates.length} candidates** in your database.` : ''}
+${candidates.length > 0 ? `I can see **${candidates.length} candidates** in your database.` : ''}
 
 **Here's what I can help you with:**
-• 🧠 **ML Ranking** - Intelligently rank candidates for any role
-• 🎯 **Job Matching** - Find best fits for open positions
-• 📈 **Predictive Analytics** - Forecast hiring success
-• 🔍 **Duplicate Detection** - Clean up your candidate pool
-• ✉️ **Email Templates** - Draft professional outreach
-• 📅 **Calendar** - Schedule interviews
-• 📱 **SMS Notifications** - Send quick updates
+• **ML Ranking** — Intelligently rank candidates for any role
+• **Job Matching** — Find best fits for open positions
+• **Predictive Analytics** — Forecast hiring success
+• **Duplicate Detection** — Clean up your candidate pool
+• **Email Templates** — Draft professional outreach
+• **Calendar** — Schedule interviews
+• **SMS Notifications** — Send quick updates
 
 Try one of the suggestions below or ask me anything!`,
       timestamp: new Date(),
@@ -355,7 +484,7 @@ Try one of the suggestions below or ask me anything!`,
             .map((id: string) => candidates.find(c => c.id === id))
             .filter(Boolean) as Candidate[]
           
-          response = `🧠 **ML-Powered Ranking Complete!**\n\nI've analyzed ${candidateIds.length} candidates using machine learning. Here are the top matches ranked by predicted success:`
+          response = `**ML-Powered Ranking Complete**\n\nI've analyzed ${candidateIds.length} candidates using machine learning. Here are the top matches ranked by predicted success:`
           
           insights = [
             { title: 'Analyzed', value: candidateIds.length, icon: Brain, color: 'purple' },
@@ -367,12 +496,12 @@ Try one of the suggestions below or ask me anything!`,
         console.error('ML ranking error:', error)
         // Fallback to score-based ranking
         filteredCandidates = filteredCandidates.sort((a, b) => b.matchScore - a.matchScore).slice(0, 10)
-        response = `📊 Here are the top candidates ranked by match score (ML service unavailable):`
+        response = `Here are the top candidates ranked by match score (ML service unavailable):`
       }
       
       actions = [
-        { label: 'Email Top 5', icon: Mail, action: () => navigate('/templates'), variant: 'primary' },
-        { label: 'Schedule Interviews', icon: Calendar, action: () => navigate('/campaigns'), variant: 'secondary' }
+        { label: 'Email Top 5', icon: Mail, action: () => navigate('/email-integration'), variant: 'primary' },
+        { label: 'Schedule Interviews', icon: Calendar, action: () => navigate('/candidates'), variant: 'secondary' }
       ]
     }
     
@@ -386,7 +515,7 @@ Try one of the suggestions below or ask me anything!`,
         )
         
         filteredCandidates = topCandidates
-        response = `📈 **Predictive Analytics Report**\n\nI've analyzed your top candidates to predict hiring outcomes:`
+response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates to predict hiring outcomes:`
         
         const avgProbability = predictions.filter(Boolean).reduce((acc, p) => acc + ((p as { data?: { probability?: number } })?.data?.probability || 0.5), 0) / predictions.length
         
@@ -396,7 +525,7 @@ Try one of the suggestions below or ask me anything!`,
           { title: 'High Potential', value: predictions.filter((p) => ((p as { data?: { probability?: number } })?.data?.probability || 0) > 0.7).length, icon: Star, color: 'yellow' }
         ]
       } catch (error) {
-        response = `📈 **Quick Analytics Summary:**\n\n• Total Candidates: ${candidates.length}\n• Strong Matches: ${candidates.filter(c => c.status === 'Strong').length}\n• Average Score: ${(candidates.reduce((acc, c) => acc + c.matchScore, 0) / candidates.length).toFixed(1)}%`
+        response = `**Quick Analytics Summary**\n\n• Total Candidates: ${candidates.length}\n• Strong Matches: ${candidates.filter(c => c.status === 'Strong').length}\n• Average Score: ${(candidates.reduce((acc, c) => acc + c.matchScore, 0) / candidates.length).toFixed(1)}%`
         filteredCandidates = []
       }
       
@@ -425,7 +554,7 @@ Try one of the suggestions below or ask me anything!`,
             return result?.data?.duplicates && result.data.duplicates.length > 0
           })
           
-          response = `🔍 **Duplicate Detection Results**\n\nI found **${duplicatesFound} candidates** with potential duplicates that may need attention:`
+          response = `**Duplicate Detection Results**\n\nI found **${duplicatesFound} candidates** with potential duplicates that may need attention:`
           
           insights = [
             { title: 'Candidates Checked', value: Math.min(20, candidates.length), icon: Search, color: 'blue' },
@@ -433,11 +562,11 @@ Try one of the suggestions below or ask me anything!`,
             { title: 'Clean Records', value: Math.min(20, candidates.length) - duplicatesFound, icon: CheckCircle2, color: 'green' }
           ]
         } else {
-          response = `✅ **No Duplicates Found!**\n\nYour candidate database is clean. No duplicate entries detected.`
+          response = `**No Duplicates Found**\n\nYour candidate database is clean. No duplicate entries detected.`
           filteredCandidates = []
         }
       } catch (error) {
-        response = `🔍 Checking for duplicates... (Service temporarily unavailable)`
+        response = `Checking for duplicates... (Service temporarily unavailable)`
         filteredCandidates = []
       }
       
@@ -451,11 +580,11 @@ Try one of the suggestions below or ask me anything!`,
       intent = 'email_templates'
       filteredCandidates = candidates.filter(c => c.status === 'Strong' || c.matchScore >= 70).slice(0, 5)
       
-      response = `✉️ **Email Outreach Ready!**\n\nI've identified **${filteredCandidates.length} candidates** perfect for outreach. You can use our pre-built templates or create custom ones:`
+      response = `**Email Outreach Ready**\n\nI've identified **${filteredCandidates.length} candidates** perfect for outreach. You can use our pre-built templates or create custom ones:`
       
       actions = [
-        { label: 'Browse Templates', icon: FileText, action: () => navigate('/templates'), variant: 'primary' },
-        { label: 'Create Campaign', icon: Mail, action: () => navigate('/campaigns'), variant: 'secondary' },
+        { label: 'Browse Templates', icon: FileText, action: () => navigate('/email-integration'), variant: 'primary' },
+        { label: 'Create Campaign', icon: Mail, action: () => navigate('/email-integration'), variant: 'secondary' },
         { label: 'Quick Email', icon: Send, action: () => {
           if (filteredCandidates[0]?.email) {
             window.location.href = `mailto:${filteredCandidates[0].email}`
@@ -469,10 +598,10 @@ Try one of the suggestions below or ask me anything!`,
       intent = 'calendar'
       filteredCandidates = candidates.filter(c => c.status === 'Strong' || c.isShortlisted).slice(0, 5)
       
-      response = `📅 **Interview Scheduling**\n\nI found **${filteredCandidates.length} candidates** ready for interviews. You can schedule through our calendar integration:`
+      response = `**Interview Scheduling**\n\nI found **${filteredCandidates.length} candidates** ready for interviews. You can schedule through our calendar integration:`
       
       actions = [
-        { label: 'Open Calendar', icon: Calendar, action: () => navigate('/campaigns'), variant: 'primary' },
+        { label: 'Open Calendar', icon: Calendar, action: () => navigate('/candidates'), variant: 'primary' },
         { label: 'Bulk Schedule', icon: Users, action: () => {}, variant: 'secondary' }
       ]
     }
@@ -482,11 +611,11 @@ Try one of the suggestions below or ask me anything!`,
       intent = 'sms'
       filteredCandidates = candidates.filter(c => c.phone).slice(0, 5)
       
-      response = `📱 **SMS Notifications**\n\n**${filteredCandidates.length} candidates** have phone numbers available for SMS outreach:`
+      response = `**SMS Notifications**\n\n**${filteredCandidates.length} candidates** have phone numbers available for SMS outreach:`
       
       actions = [
         { label: 'Send Bulk SMS', icon: MessageSquare, action: () => {}, variant: 'primary' },
-        { label: 'View Templates', icon: FileText, action: () => navigate('/templates'), variant: 'secondary' }
+        { label: 'View Templates', icon: FileText, action: () => navigate('/email-integration'), variant: 'secondary' }
       ]
     }
     
@@ -499,7 +628,7 @@ Try one of the suggestions below or ask me anything!`,
       const mediumQuality = filteredCandidates.filter(c => c.matchScore >= 50 && c.matchScore < 70).length
       const lowQuality = filteredCandidates.filter(c => c.matchScore < 50).length
       
-      response = `📋 **Resume Quality Analysis**\n\nHere's a breakdown of your candidate pool quality:`
+      response = `**Resume Quality Analysis**\n\nHere's a breakdown of your candidate pool quality:`
       
       insights = [
         { title: 'High Quality (70%+)', value: highQuality, icon: Star, color: 'green' },
@@ -516,11 +645,11 @@ Try one of the suggestions below or ask me anything!`,
     else if (lowerQuery.includes('match') || lowerQuery.includes('job') || lowerQuery.includes('position') || lowerQuery.includes('fit')) {
       intent = 'job_matching'
       filteredCandidates = candidates.sort((a, b) => b.matchScore - a.matchScore).slice(0, 10)
-      response = `🎯 **Job Matching Results**\n\nTop candidates matched to your open positions:`
+      response = `**Job Matching Results**\n\nTop candidates matched to your open positions:`
       
       actions = [
-        { label: 'View Jobs', icon: Target, action: () => navigate('/jobs'), variant: 'primary' },
-        { label: 'Create Job', icon: FileText, action: () => navigate('/jobs'), variant: 'secondary' }
+        { label: 'View Candidates', icon: Target, action: () => navigate('/candidates'), variant: 'primary' },
+        { label: 'Upload JD', icon: FileText, action: () => navigate('/ai-assistant'), variant: 'secondary' }
       ]
     }
 
@@ -530,11 +659,20 @@ Try one of the suggestions below or ask me anything!`,
       const minScore = scoreMatch ? parseInt(scoreMatch[1]) : 70
       filteredCandidates = filteredCandidates.filter(c => c.matchScore >= minScore)
       intent = 'top_candidates'
-      response = `⭐ Found **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}** with ${minScore}%+ match score:`
+      response = `Found **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}** with ${minScore}%+ match score:`
       
       actions = [
-        { label: 'Email All', icon: Mail, action: () => navigate('/templates'), variant: 'primary' },
-        { label: 'Shortlist All', icon: Star, action: () => {}, variant: 'secondary' }
+        { label: 'Email All', icon: Mail, action: () => navigate('/email-integration'), variant: 'primary' },
+        { label: 'Shortlist All', icon: Star, action: async () => {
+          for (const c of filteredCandidates) {
+            try {
+              await candidateApi.updateStatus(c.id, 'Shortlisted')
+            } catch (e) {
+              console.error(`Failed to shortlist ${c.name}:`, e)
+            }
+          }
+          alert(`Shortlisted ${filteredCandidates.length} candidates — notification emails sent!`)
+        }, variant: 'secondary' }
       ]
     }
     
@@ -542,7 +680,7 @@ Try one of the suggestions below or ask me anything!`,
     else if (lowerQuery.includes('strong match') || lowerQuery.includes('strong candidate')) {
       filteredCandidates = filteredCandidates.filter(c => c.status === 'Strong')
       intent = 'strong_matches'
-      response = `💪 Here are **${filteredCandidates.length} strong match** candidate${filteredCandidates.length !== 1 ? 's' : ''}:`
+      response = `Here are **${filteredCandidates.length} strong match** candidate${filteredCandidates.length !== 1 ? 's' : ''}:`
     }
     
     // Recent/new candidates
@@ -551,7 +689,7 @@ Try one of the suggestions below or ask me anything!`,
         .sort((a, b) => new Date(b.appliedDate).getTime() - new Date(a.appliedDate).getTime())
         .slice(0, 10)
       intent = 'recent'
-      response = `🕐 Here are the **${filteredCandidates.length} most recent** applicants:`
+      response = `Here are the **${filteredCandidates.length} most recent** applicants:`
     }
     
     // Skill-based search
@@ -569,21 +707,22 @@ Try one of the suggestions below or ask me anything!`,
           )
         )
         intent = 'skill_search'
-        response = `🔧 Found **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}** with **${foundSkills.join(', ')}** skills:`
+        response = `Found **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}** with **${foundSkills.join(', ')}** skills:`
       }
     }
     
     // Location-based search
     else if (lowerQuery.includes('in ') || lowerQuery.includes('from ') || lowerQuery.includes('location')) {
-      const cities = ['dubai', 'abu dhabi', 'sharjah', 'ajman', 'ras al khaimah', 'fujairah', 'umm al quwain', 'remote', 'mumbai', 'bangalore', 'delhi', 'chennai', 'hyderabad', 'india', 'pakistan', 'uae']
-      const foundCity = cities.find(city => lowerQuery.includes(city))
+      // Extract location from query dynamically - look for text after 'in' or 'from'
+      const locationMatch = lowerQuery.match(/(?:in|from|location[:\s]+)\s*([a-z\s]+?)(?:\s*$|\s+with|\s+who|\s+that)/i)
+      const searchLocation = locationMatch ? locationMatch[1].trim() : ''
       
-      if (foundCity) {
+      if (searchLocation) {
         filteredCandidates = filteredCandidates.filter(c => 
-          c.location.toLowerCase().includes(foundCity)
+          c.location.toLowerCase().includes(searchLocation)
         )
         intent = 'location_search'
-        response = `📍 Found **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}** in **${foundCity}**:`
+        response = `Found **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}** in **${searchLocation}**:`
       }
     }
     
@@ -591,7 +730,7 @@ Try one of the suggestions below or ask me anything!`,
     else if (lowerQuery.includes('shortlist') || lowerQuery.includes('favorite') || lowerQuery.includes('saved')) {
       filteredCandidates = filteredCandidates.filter(c => c.isShortlisted)
       intent = 'shortlist'
-      response = `⭐ Your shortlist has **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}**:`
+      response = `Your shortlist has **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}**:`
       
       actions = [
         { label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' },
@@ -610,11 +749,11 @@ Try one of the suggestions below or ask me anything!`,
           c.email.toLowerCase().includes(lowerQuery)
         )
         intent = 'general_search'
-        response = `🔍 Found **${filteredCandidates.length} result${filteredCandidates.length !== 1 ? 's' : ''}** for "${query}":`
+        response = `Found **${filteredCandidates.length} result${filteredCandidates.length !== 1 ? 's' : ''}** for "${query}":`
       } else {
         filteredCandidates = filteredCandidates.slice(0, 10)
         intent = 'show_all'
-        response = `📋 Here are the first **${filteredCandidates.length} candidates** in your pipeline:`
+        response = `Here are the first **${filteredCandidates.length} candidates** in your pipeline:`
       }
     }
 
@@ -622,7 +761,7 @@ Try one of the suggestions below or ask me anything!`,
     filteredCandidates.sort((a, b) => b.matchScore - a.matchScore)
 
     if (filteredCandidates.length === 0 && !response.includes('No Duplicates') && !response.includes('Analytics')) {
-      response = "😕 I couldn't find any candidates matching that criteria. Try:\n\n• Different keywords or skills\n• Broader search terms\n• Check spelling"
+      response = "I couldn't find any candidates matching that criteria. Try:\n\n• Different keywords or skills\n• Broader search terms\n• Check spelling"
       actions = [
         { label: 'View All Candidates', icon: Users, action: () => navigate('/candidates'), variant: 'primary' },
         { label: 'Import More', icon: Mail, action: () => navigate('/email-integration'), variant: 'secondary' }
@@ -658,54 +797,68 @@ Try one of the suggestions below or ask me anything!`,
     }])
 
     try {
-      // Try OpenAI first (preferred)
-      const response = await fetch(`${config.endpoints.ai}/chat`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          message: userInput,
-          context: JSON.stringify({
-            totalCandidates: candidates.length,
-            availableSkills: [...new Set(candidates.flatMap(c => c.skills))].slice(0, 30),
-            locations: [...new Set(candidates.map(c => c.location))].slice(0, 10),
-            avgMatchScore: candidates.reduce((acc, c) => acc + c.matchScore, 0) / candidates.length || 0,
-            strongMatches: candidates.filter(c => c.status === 'Strong').length,
-            recentCount: candidates.filter(c => {
-              const weekAgo = new Date()
-              weekAgo.setDate(weekAgo.getDate() - 7)
-              return new Date(c.appliedDate) >= weekAgo
-            }).length
-          })
-        })
-      })
-
-      if (response.ok) {
-        const data = await response.json()
-        
-        // Parse candidates from local data based on query
-        const { candidates: foundCandidates, actions, insights } = await parseQuery(userInput)
-        
-        // Remove loading and add real message
-        setMessages(prev => prev.filter(m => m.id !== loadingId))
-        
-        const aiMessage: Message = {
-          id: (Date.now() + 2).toString(),
-          type: 'ai',
-          content: data.response,
-          timestamp: new Date(),
-          candidates: foundCandidates,
-          intent: 'ai_response',
-          actions,
-          insights
+      // Check if this looks like a candidate search query
+      const lowerInput = userInput.toLowerCase()
+      const isSearchQuery = lowerInput.includes('find') || lowerInput.includes('search') || 
+                            lowerInput.includes('smart search') || lowerInput.includes('who') ||
+                            lowerInput.includes('candidates for') || lowerInput.includes('developers') ||
+                            lowerInput.includes('engineers')
+      
+      let smartSearchResults: Candidate[] | null = null
+      let smartSearchResponse = ''
+      
+      // Try AI smart search for search-like queries
+      if (isSearchQuery) {
+        try {
+          const searchResult = await aiApi.smartSearch(userInput, 10)
+          if (searchResult.data?.results && searchResult.data.results.length > 0) {
+            smartSearchResults = searchResult.data.results.map((r: { candidate: Candidate }) => r.candidate)
+            smartSearchResponse = `**AI Smart Search Results** (via ${searchResult.data.source})\n\nFound **${searchResult.data.results.length}** candidates out of ${searchResult.data.total_searched} searched:\n\n`
+            searchResult.data.results.forEach((r: { candidate: Candidate; relevance_score: number; match_reasons: string[] }, idx: number) => {
+              const tier = r.relevance_score >= 80 ? '★' : r.relevance_score >= 60 ? '●' : '○'
+              smartSearchResponse += `${tier} **#${idx + 1} ${r.candidate.name}** — ${r.relevance_score}% relevance\n`
+              if (r.match_reasons?.length) {
+                smartSearchResponse += `   _${r.match_reasons.slice(0, 2).join(', ')}_\n`
+              }
+              smartSearchResponse += '\n'
+            })
+          }
+        } catch (searchErr) {
+          console.warn('Smart search unavailable:', searchErr)
         }
-
-        setMessages(prev => [...prev, aiMessage])
-      } else {
-        throw new Error('OpenAI API unavailable')
       }
+      
+      // Use AI chat (3-tier: LLM → OpenAI → rule-based)
+      const chatResult = await aiApi.chat(userInput)
+      
+      // Parse candidates from local data as fallback
+      const { candidates: foundCandidates, actions, insights } = await parseQuery(userInput)
+      
+      // Remove loading and add real message
+      setMessages(prev => prev.filter(m => m.id !== loadingId))
+      
+      const displayCandidates = smartSearchResults || foundCandidates
+      const displayContent = smartSearchResults 
+        ? smartSearchResponse + (chatResult.data?.response ? `\n---\n${chatResult.data.response}` : '')
+        : chatResult.data?.response || 'AI service unavailable. Please try again.'
+      
+      const sourceInfo = chatResult.data?.source ? ` (${chatResult.data.source})` : ''
+      
+      const aiMessage: Message = {
+        id: (Date.now() + 2).toString(),
+        type: 'ai',
+        content: displayContent + (sourceInfo ? `\n\n_Source: ${sourceInfo}_` : ''),
+        timestamp: new Date(),
+        candidates: displayCandidates,
+        intent: smartSearchResults ? 'smart_search' : 'ai_response',
+        actions,
+        insights
+      }
+
+      setMessages(prev => [...prev, aiMessage])
     } catch (error) {
       // Fallback to local NLP
-      console.warn('OpenAI unavailable, using local NLP fallback:', error)
+      console.warn('AI service unavailable, using local NLP fallback:', error)
       
       const { candidates: foundCandidates, response, intent, actions, insights } = await parseQuery(userInput)
 
@@ -740,11 +893,14 @@ Try one of the suggestions below or ask me anything!`,
   }
 
   // Handle job description matching
-  const handleJobMatch = async (jobDescription: string, topN: number) => {
+  const handleJobMatch = async (jobDescription: string, topN: number, file?: File) => {
+    const isFileUpload = !!file
     const userMessage: Message = {
       id: Date.now().toString(),
       type: 'user',
-      content: `🔍 **Job Description Matching Request**\n\nFind top ${topN} candidates for:\n\n"${jobDescription.slice(0, 200)}${jobDescription.length > 200 ? '...' : ''}"`,
+      content: isFileUpload
+        ? `**Job Description Matching Request**\n\nFind top ${topN} candidates for JD uploaded: **${file!.name}**`
+        : `**Job Description Matching Request**\n\nFind top ${topN} candidates for:\n\n"${jobDescription.slice(0, 200)}${jobDescription.length > 200 ? '...' : ''}"`,
       timestamp: new Date()
     }
 
@@ -755,22 +911,43 @@ Try one of the suggestions below or ask me anything!`,
     setMessages(prev => [...prev, {
       id: loadingId,
       type: 'ai',
-      content: '🧠 Analyzing job description and matching candidates using AI...',
+      content: isFileUpload
+        ? `Parsing "${file!.name}" and matching candidates using AI...`
+        : 'Analyzing job description and matching candidates using AI...',
       timestamp: new Date(),
       loading: true
     }])
 
     try {
-      const response = await fetch(`${config.apiUrl}/api/ai/match-job`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          job_description: jobDescription,
-          top_n: topN
-        })
-      })
+      let data: any
 
-      const data = await response.json()
+      if (isFileUpload) {
+        // File upload path — use FormData
+        const formData = new FormData()
+        formData.append('file', file!)
+        formData.append('top_n', topN.toString())
+        if (jobDescription) {
+          formData.append('job_description', jobDescription)
+        }
+
+        const response = await authFetch(`${config.apiUrl}/api/ai/match-job-file`, {
+          method: 'POST',
+          body: formData
+        })
+        data = await response.json()
+      } else {
+        // Text-only path — use JSON
+        const response = await authFetch(`${config.apiUrl}/api/ai/match-job`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            job_description: jobDescription,
+            top_n: topN
+          })
+        })
+        data = await response.json()
+      }
+
       setMessages(prev => prev.filter(m => m.id !== loadingId))
 
       if (data.rankings && data.rankings.length > 0) {
@@ -781,19 +958,19 @@ Try one of the suggestions below or ask me anything!`,
           .filter(Boolean) as Candidate[]
 
         // Build response with AI analysis
-        let responseText = `## 🎯 AI Job Matching Results\n\n`
+        let responseText = `## AI Job Matching Results\n\n`
         
         if (data.job_analysis) {
           responseText += `**Key Requirements Identified:**\n`
-          responseText += data.job_analysis.key_requirements?.map((r: string) => `• ${r}`).join('\n') || 'Not specified'
+          responseText += data.job_analysis.key_requirements?.map((r: string) => `- ${r}`).join('\n') || 'Not specified'
           responseText += `\n\n**Experience Level:** ${data.job_analysis.experience_level || 'Not specified'}\n\n`
         }
 
-        responseText += `**Top ${data.rankings.length} Matches:**\n\n`
+        responseText += `**Top ${data.rankings.length} Matches** (from ${data.total_candidates_searched || 'all'} candidates):\n\n`
         
         data.rankings.forEach((r: { rank: number; candidate_name: string; job_fit_score: number; recommendation: string; match_reasons?: string[] }, _idx: number) => {
-          const emoji = r.job_fit_score >= 80 ? '🌟' : r.job_fit_score >= 60 ? '✅' : '📋'
-          responseText += `${emoji} **#${r.rank} ${r.candidate_name}** - ${r.job_fit_score}% match\n`
+          const tier = r.job_fit_score >= 80 ? '★' : r.job_fit_score >= 60 ? '●' : '○'
+          responseText += `${tier} **#${r.rank} ${r.candidate_name}** — ${r.job_fit_score}% match\n`
           responseText += `   ${r.recommendation}\n`
           if (r.match_reasons?.length) {
             responseText += `   _${r.match_reasons.slice(0, 2).join(', ')}_\n`
@@ -804,6 +981,8 @@ Try one of the suggestions below or ask me anything!`,
         if (data.summary) {
           responseText += `\n**Summary:** ${data.summary.recommendation || ''}`
         }
+
+        responseText += `\n\nUse the **Shortlist Top Matches** button below to add them to your shortlist and automatically send notification emails.`
 
         const aiMessage: Message = {
           id: (Date.now() + 2).toString(),
@@ -818,8 +997,39 @@ Try one of the suggestions below or ask me anything!`,
             { title: 'Top Score', value: `${data.rankings[0]?.job_fit_score || 0}%`, icon: Target, color: 'green' }
           ],
           actions: [
-            { label: 'View All Candidates', icon: Users, action: () => navigate('/candidates'), variant: 'primary' },
-            { label: 'Email Top Matches', icon: Mail, action: () => navigate('/templates'), variant: 'secondary' }
+            {
+              label: 'Shortlist Top Matches',
+              icon: CheckCircle2,
+              action: async () => {
+                let shortlisted = 0
+                for (const c of matchedCandidates) {
+                  try {
+                    await candidateApi.updateStatus(c.id, 'Shortlisted')
+                    shortlisted++
+                  } catch (e) {
+                    console.error(`Failed to shortlist ${c.name}:`, e)
+                  }
+                }
+                const confirmMsg: Message = {
+                  id: Date.now().toString(),
+                  type: 'ai',
+                  content: `Successfully shortlisted **${shortlisted} candidate${shortlisted !== 1 ? 's' : ''}**. Automated notification emails have been sent to all shortlisted candidates informing them they've been selected for the next process.`,
+                  timestamp: new Date(),
+                  intent: 'shortlist_confirm',
+                  insights: [
+                    { title: 'Shortlisted', value: shortlisted, icon: CheckCircle2, color: 'green' },
+                    { title: 'Emails Sent', value: shortlisted, icon: Mail, color: 'blue' }
+                  ],
+                  actions: [
+                    { label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }
+                  ]
+                }
+                setMessages(prev => [...prev, confirmMsg])
+              },
+              variant: 'success'
+            },
+            { label: 'View All Candidates', icon: Users, action: () => navigate('/candidates'), variant: 'secondary' },
+            { label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }
           ]
         }
 
@@ -828,7 +1038,7 @@ Try one of the suggestions below or ask me anything!`,
         const aiMessage: Message = {
           id: (Date.now() + 2).toString(),
           type: 'ai',
-          content: data.message || '😕 No candidates found matching this job description. Try importing more candidates or broadening your search.',
+          content: data.message || 'No candidates found matching this job description. Try importing more candidates or broadening your search.',
           timestamp: new Date(),
           intent: 'job_match_empty'
         }
@@ -841,7 +1051,7 @@ Try one of the suggestions below or ask me anything!`,
       const aiMessage: Message = {
         id: (Date.now() + 2).toString(),
         type: 'ai',
-        content: '❌ Error matching candidates. Please ensure the backend is running and try again.',
+        content: 'Error matching candidates. Please ensure the backend is running and try again.',
         timestamp: new Date()
       }
       setMessages(prev => [...prev, aiMessage])
@@ -1029,11 +1239,10 @@ Try one of the suggestions below or ask me anything!`,
                         >
                           <Card 
                             className="cursor-pointer hover:shadow-md transition-all border-2 hover:border-primary-200"
-                            onClick={() => navigate(`/candidates/${candidate.id}`)}
                           >
                             <CardContent className="p-3">
                               <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-3">
+                                <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
                                   <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-100 to-purple-100 flex items-center justify-center text-primary-700 font-bold text-sm">
                                     {idx + 1}
                                   </div>
@@ -1064,17 +1273,38 @@ Try one of the suggestions below or ask me anything!`,
                                     </p>
                                   </div>
                                   <Badge
-                                    variant={
-                                      candidate.status === 'Strong'
-                                        ? 'success'
-                                        : candidate.status === 'Partial'
-                                        ? 'warning'
-                                        : 'danger'
-                                    }
-                                    className="text-xs"
+                                    className={`text-xs ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}
                                   >
                                     {candidate.status}
                                   </Badge>
+                                  {/* Individual Shortlist Button */}
+                                  {message.intent === 'job_match' && candidate.status !== 'Shortlisted' && (
+                                    <motion.button
+                                      whileHover={{ scale: 1.1 }}
+                                      whileTap={{ scale: 0.9 }}
+                                      onClick={async (e) => {
+                                        e.stopPropagation()
+                                        try {
+                                          await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+                                          const confirmMsg: Message = {
+                                            id: Date.now().toString(),
+                                            type: 'ai',
+                                            content: `**${candidate.name}** has been shortlisted. A notification email has been sent automatically.`,
+                                            timestamp: new Date(),
+                                            intent: 'shortlist_single',
+                                          }
+                                          setMessages(prev => [...prev, confirmMsg])
+                                        } catch (err) {
+                                          console.error('Shortlist error:', err)
+                                        }
+                                      }}
+                                      className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1"
+                                      title="Shortlist this candidate"
+                                    >
+                                      <CheckCircle2 className="w-3 h-3" />
+                                      Shortlist
+                                    </motion.button>
+                                  )}
                                 </div>
                               </div>
                             </CardContent>
@@ -1237,7 +1467,7 @@ Try one of the suggestions below or ask me anything!`,
             </motion.div>
           </div>
           <p className="text-xs text-gray-500 mt-2 text-center">
-            🧠 ML Ranking • 🎯 Job Matching • 📈 Predictive Analytics • 🔍 Duplicates • ✉️ Email Templates • 📅 Calendar • 📱 SMS
+            ML Ranking · Job Matching · Predictive Analytics · Duplicates · Email Templates · Calendar · SMS
           </p>
         </div>
       </motion.div>

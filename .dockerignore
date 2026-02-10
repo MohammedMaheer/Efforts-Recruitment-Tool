@@ -1,0 +1,14 @@
+# Root .dockerignore for frontend builds
+node_modules/
+.git/
+.gitignore
+.env
+.env.*
+__pycache__/
+*.pyc
+*.db
+backend/
+browser-extension/
+docs/
+.vscode/
+.idea/

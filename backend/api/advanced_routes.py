@@ -44,6 +44,7 @@ from services.email_templates_service import get_templates_service
 from services.calendar_integration_service import get_calendar_service
 from services.sms_notification_service import get_sms_service
 from services.followup_service import get_followup_service
+from services.database_service import get_db_service
 
 logger = logging.getLogger(__name__)
 
@@ -63,18 +64,28 @@ async def rank_candidates(request: MLRankRequest):
     """
     try:
         service = get_ranking_model()
+        db_service = get_db_service()
         
-        # Get candidates from database (mock for now)
-        # In production, fetch from database service
+        # Get candidates from database
         candidates = []
         for cid in request.candidate_ids:
-            candidates.append({
-                'id': cid,
-                'skills': [],
-                'experience': 0,
-                'education': [],
-                'location': '',
-            })
+            candidate = db_service.get_candidate_by_id(cid)
+            if candidate:
+                candidates.append({
+                    'id': cid,
+                    'skills': candidate.get('skills', []),
+                    'experience': candidate.get('experience', 0),
+                    'education': candidate.get('education', []),
+                    'location': candidate.get('location', ''),
+                })
+            else:
+                candidates.append({
+                    'id': cid,
+                    'skills': [],
+                    'experience': 0,
+                    'education': [],
+                    'location': '',
+                })
         
         job = {'id': request.job_id} if request.job_id else None
         
@@ -109,12 +120,14 @@ async def record_hiring_decision(request: HiringDecisionRequest):
     """
     try:
         service = get_ranking_model()
+        db_service = get_db_service()
         
-        # Get candidate features from database (mock)
+        # Get candidate features from database
+        db_candidate = db_service.get_candidate_by_id(request.candidate_id)
         candidate = {
             'id': request.candidate_id,
-            'skills': [],
-            'experience': 0,
+            'skills': db_candidate.get('skills', []) if db_candidate else [],
+            'experience': db_candidate.get('experience', 0) if db_candidate else 0,
         }
         job = {'id': request.job_id}
         
@@ -168,8 +181,8 @@ async def extract_skills(request: SkillExtractionRequest):
             method = "local"
         
         return SkillExtractionResponse(
-            technical_skills=[],  # Map from result
-            soft_skills=[],
+            technical_skills=result.get('technical_skills', []),
+            soft_skills=result.get('soft_skills', []),
             certifications=result.get('certifications', []),
             tools=result.get('tools', []),
             extraction_method=method
@@ -187,9 +200,11 @@ async def analyze_skill_gap(request: SkillGapRequest):
     """
     try:
         service = get_skill_extractor()
+        db_service = get_db_service()
         
-        # Mock data - in production, fetch from database
-        candidate_skills = []
+        # Fetch candidate skills from database
+        candidate_data = db_service.get_candidate_by_id(request.candidate_id) if request.candidate_id else None
+        candidate_skills = candidate_data.get('skills', []) if candidate_data else []
         job = {'required_skills': [], 'preferred_skills': []}
         
         result = service.analyze_skill_gaps(candidate_skills, job)
@@ -227,8 +242,9 @@ async def check_duplicates(request: DuplicateCheckRequest):
             'name': request.name or '',
         }
         
-        # Get all candidates from database (mock)
-        all_candidates = []
+        # Get all candidates from database for comparison
+        db_service = get_db_service()
+        all_candidates = db_service.get_candidates_paginated(1, 5000, {})
         
         duplicates = service.find_duplicates(candidate, all_candidates, request.threshold)
         
@@ -249,10 +265,17 @@ async def merge_duplicates(request: MergeCandidatesRequest):
     """
     try:
         service = get_duplicate_detector()
+        db_service = get_db_service()
         
-        # Get candidates from database (mock)
-        primary = {'id': request.primary_candidate_id}
-        duplicates = [{'id': did} for did in request.duplicate_candidate_ids]
+        # Get candidates from database
+        primary = db_service.get_candidate_by_id(request.primary_candidate_id) or {'id': request.primary_candidate_id}
+        duplicates = []
+        for did in request.duplicate_candidate_ids:
+            dup = db_service.get_candidate_by_id(did)
+            if dup:
+                duplicates.append(dup)
+            else:
+                duplicates.append({'id': did})
         
         merged = service.merge_candidates(primary, duplicates)
         
@@ -277,9 +300,10 @@ async def match_candidate_to_jobs(request: JobMatchRequest):
     """
     try:
         service = get_matching_engine()
+        db_service = get_db_service()
         
-        # Get candidate and jobs from database (mock)
-        candidate = {'id': request.candidate_id, 'name': 'Test'}
+        # Get candidate from database
+        candidate = db_service.get_candidate_by_id(request.candidate_id) or {'id': request.candidate_id, 'name': 'Unknown'}
         jobs = [{'id': jid} for jid in request.job_ids] if request.job_ids else []
         
         matches = []
@@ -305,10 +329,12 @@ async def match_job_to_candidates(request: CandidateMatchRequest):
     """
     try:
         service = get_matching_engine()
+        db_service = get_db_service()
         
-        # Get job and candidates from database (mock)
+        # Get job and candidates from database
         job = {'id': request.job_id}
-        candidates = []
+        all_candidates = db_service.get_candidates_paginated(1, 1000, {})
+        candidates = all_candidates if all_candidates else []
         
         matches = []
         for candidate in candidates:

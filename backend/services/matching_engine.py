@@ -1,4 +1,4 @@
-"""
+﻿"""
 AI-Powered Candidate Matching Engine
 =====================================
 Uses LLM for intelligent semantic matching with TF-IDF fallback.
@@ -48,7 +48,7 @@ class MatchingEngine:
             from services.llm_service import get_llm_service
             self._llm_service = await get_llm_service()
             if self._llm_service.available:
-                logger.info("✅ MatchingEngine: LLM-powered matching enabled")
+                logger.info("âœ… MatchingEngine: LLM-powered matching enabled")
         except Exception as e:
             logger.debug(f"LLM service not available for matching: {e}")
         
@@ -58,7 +58,7 @@ class MatchingEngine:
             ai = get_ai_service()
             if ai.sentence_model:
                 self._sentence_model = ai.sentence_model
-                logger.info("✅ MatchingEngine: Semantic similarity enabled")
+                logger.info("âœ… MatchingEngine: Semantic similarity enabled")
         except Exception as e:
             logger.debug(f"Sentence model not available: {e}")
         
@@ -87,7 +87,7 @@ class MatchingEngine:
                     job_description=job_description,
                     top_n=top_n
                 )
-                logger.info(f"🤖 LLM matched {len(results)} candidates")
+                logger.info(f"ðŸ¤– LLM matched {len(results)} candidates")
                 return results
             except Exception as e:
                 logger.warning(f"LLM matching failed, using fallback: {e}")
@@ -259,7 +259,7 @@ class MatchingEngine:
             vectors = self.vectorizer.fit_transform([text1, text2])
             similarity = cosine_similarity(vectors[0:1], vectors[1:2])[0][0]
             return float(similarity)
-        except:
+        except Exception:
             return 0.0
     
     def generate_recommendation(

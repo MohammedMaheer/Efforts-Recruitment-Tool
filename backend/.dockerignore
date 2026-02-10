@@ -1,0 +1,52 @@
+# Backend
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+*.db
+oauth_tokens.json
+.env
+.env.*
+.git
+.gitignore
+venv/
+.venv/
+models_trained/
+test_*.py
+
+# Frontend
+node_modules/
+src/
+public/
+*.tsx
+*.jsx
+*.ts
+*.js
+!vite.config.ts
+package*.json
+tsconfig*.json
+postcss.config.js
+tailwind.config.js
+index.html
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Docs
+docs/
+README.md
+*.md
+
+# Browser extension
+browser-extension/
+
+# Docker
+docker-compose*.yml
+Dockerfile*
+.dockerignore

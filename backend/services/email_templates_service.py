@@ -254,6 +254,30 @@ Best regards,
 {{company_name}}''',
             'category': 'interview',
         },
+
+        'shortlist_notification': {
+            'name': 'Shortlisted - Next Round Notification',
+            'subject': 'Great News! You\'ve Been Shortlisted - {{company_name}}',
+            'body': '''Dear {{candidate_name}},
+
+We are pleased to inform you that after careful review of your application, you have been shortlisted for the next round of our selection process{{#if job_title}} for the {{job_title}} position{{/if}} at {{company_name}}.
+
+Your qualifications and experience stood out among many talented applicants, and we are excited to learn more about you.
+
+What happens next:
+📋 Our team will reach out shortly with details about the next steps
+📅 You may be invited for an interview or assessment
+📧 Please keep an eye on your inbox for further communication
+
+In the meantime, if you have any questions, please don\'t hesitate to reply to this email.
+
+We look forward to continuing the process with you!
+
+Best regards,
+{{recruiter_name}}
+{{company_name}} Recruiting Team''',
+            'category': 'shortlist',
+        },
     }
     
     # Available variables
