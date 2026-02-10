@@ -11,8 +11,13 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
 
-# JWT Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_hex(32))
+# JWT Configuration - use a stable fallback key so tokens survive restarts
+# In production, ALWAYS set JWT_SECRET_KEY environment variable
+_DEFAULT_SECRET = "ai-recruiter-platform-default-secret-change-in-production"
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", _DEFAULT_SECRET)
+if SECRET_KEY == _DEFAULT_SECRET:
+    import logging as _log
+    _log.getLogger(__name__).warning("⚠️  JWT_SECRET_KEY not set - using default. Set it in .env for production!")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7  # 7 days
 
@@ -27,13 +32,8 @@ def _verify_password(plain_password: str, stored_hash: str) -> bool:
     try:
         salt, hashed = stored_hash.split('$')
         return hashlib.sha256((salt + plain_password).encode()).hexdigest() == hashed
-    except:
+    except Exception:
         return False
-
-# JWT Configuration
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", secrets.token_hex(32))
-ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7  # 7 days
 
 class AuthService:
     """Service for user authentication and authorization"""

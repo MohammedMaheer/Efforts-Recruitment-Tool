@@ -290,7 +290,7 @@ class OAuthAutomationService:
                 self.client_id, self.client_secret, self.tenant_id, self.primary_email
             )
             
-            result = graph_service.authenticate_with_credentials()
+            result = await graph_service.authenticate_with_credentials()
             
             if result['status'] == 'success':
                 # Save token (no refresh token for client credentials)

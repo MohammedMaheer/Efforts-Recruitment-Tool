@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo, useCallback } from 'react'
 import { Search, SlidersHorizontal, RefreshCw, Loader2, Users, Briefcase, ChevronDown, ChevronRight, Calendar, ArrowUpDown, Mail, MessageCircle, Linkedin, Phone } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCandidates } from '@/hooks/useCandidates'
+import { useEmailSync } from '@/hooks/useEmailSync'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
 import { Button } from '@/components/ui/Button'
@@ -60,13 +61,28 @@ const categoryColors: Record<string, { bg: string; text: string; border: string 
   'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
   'DevOps Engineer': { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
   'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
-  'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
-  'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+  'Cybersecurity': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+  'QA / Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+  'IT & Systems': { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
   'Product Manager': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
-  'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  'Finance': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
-  'Customer Support': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
   'Design': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
+  'Project Management': { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200' },
+  'Business Analyst': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
+  'Consulting': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
+  'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
+  'Content & Communications': { bg: 'bg-lime-50', text: 'text-lime-700', border: 'border-lime-200' },
+  'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+  'Finance': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
+  'Legal': { bg: 'bg-stone-50', text: 'text-stone-700', border: 'border-stone-200' },
+  'Operations': { bg: 'bg-zinc-50', text: 'text-zinc-700', border: 'border-zinc-200' },
+  'Healthcare': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
+  'Education': { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
+  'Engineering': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
+  'Customer Support': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
+  'Media & Creative': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
+  'Real Estate': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+  'Hospitality': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
   'General': { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' },
 }
 
@@ -80,6 +96,8 @@ export default function Candidates() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const { candidates, loading, refetch } = useCandidates({ autoFetch: true })
+  // Auto-refresh when email sync detects new candidates
+  useEmailSync(refetch, 30000)
   const [searchQuery, setSearchQuery] = useState(searchParams.get('search') || '')
   const [showFilters, setShowFilters] = useState(false)
   const [viewMode, setViewMode] = useState<'grouped' | 'list'>('grouped')
@@ -97,6 +115,10 @@ export default function Candidates() {
     const searchFromUrl = searchParams.get('search')
     if (searchFromUrl) {
       setSearchQuery(searchFromUrl)
+    }
+    const categoryFromUrl = searchParams.get('category')
+    if (categoryFromUrl) {
+      setSelectedCategory(categoryFromUrl)
     }
   }, [searchParams])
 
@@ -285,12 +307,12 @@ export default function Candidates() {
               onChange={(e) => setSortBy(e.target.value as SortOption)}
               className="h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-sm"
             >
-              <option value="score-desc">📊 Highest Score</option>
-              <option value="score-asc">📊 Lowest Score</option>
-              <option value="date-newest">📅 Newest First</option>
-              <option value="date-oldest">📅 Oldest First</option>
-              <option value="name-asc">🔤 Name A-Z</option>
-              <option value="name-desc">🔤 Name Z-A</option>
+              <option value="score-desc">Highest Score</option>
+              <option value="score-asc">Lowest Score</option>
+              <option value="date-newest">Newest First</option>
+              <option value="date-oldest">Oldest First</option>
+              <option value="name-asc">Name A-Z</option>
+              <option value="name-desc">Name Z-A</option>
             </select>
           </div>
 
@@ -301,7 +323,7 @@ export default function Candidates() {
           >
             {categories.map((cat) => (
               <option key={cat} value={cat}>
-                {cat === 'all' ? '📁 All Categories' : `📂 ${cat}`}
+                {cat === 'all' ? 'All Categories' : cat}
               </option>
             ))}
           </select>
@@ -373,9 +395,14 @@ export default function Candidates() {
                 className="w-full h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
               >
                 <option value="all">All Statuses</option>
-                <option value="Strong">🟢 Strong Match (70%+)</option>
-                <option value="Partial">🟡 Partial Match (40-69%)</option>
-                <option value="Reject">🔴 Below Threshold</option>
+                <option value="Strong">Strong Match (70%+)</option>
+                <option value="Partial">Partial Match (40-69%)</option>
+                <option value="Reject">Below Threshold</option>
+                <option value="Shortlisted">Shortlisted</option>
+                <option value="Interviewing">Interviewing</option>
+                <option value="Offered">Offered</option>
+                <option value="Hired">Hired</option>
+                <option value="Rejected">Rejected</option>
               </select>
             </div>
           </div>
@@ -529,10 +556,10 @@ export default function Candidates() {
                                     <p className="text-xs text-gray-500 truncate" title={candidate.email}>{candidate.email}</p>
                                     <div className="flex items-center gap-1 text-xs text-gray-400 mt-0.5 overflow-hidden">
                                       {isValidPhone(candidate.phone) && (
-                                        <span className="truncate flex-shrink-0" title={candidate.phone}>📞 {candidate.phone!.slice(0, 12)}</span>
+                                        <span className="truncate flex-shrink-0" title={candidate.phone}>{candidate.phone!.slice(0, 12)}</span>
                                       )}
                                       {candidate.location && (
-                                        <span className="truncate" title={candidate.location}>📍 {candidate.location.length > 10 ? candidate.location.slice(0, 10) + '..' : candidate.location}</span>
+                                        <span className="truncate" title={candidate.location}>{candidate.location.length > 10 ? candidate.location.slice(0, 10) + '..' : candidate.location}</span>
                                       )}
                                     </div>
                                   </div>
@@ -687,12 +714,12 @@ export default function Candidates() {
                           <div className="flex items-center gap-2 text-xs text-gray-400 mt-0.5 overflow-hidden">
                             {isValidPhone(candidate.phone) && (
                               <span className="truncate flex-shrink-0" title={candidate.phone}>
-                                📞 {candidate.phone!.slice(0, 12)}
+                                {candidate.phone!.slice(0, 12)}
                               </span>
                             )}
                             {candidate.location && (
                               <span className="truncate" title={candidate.location}>
-                                📍 {candidate.location.length > 12 ? candidate.location.slice(0, 12) + '..' : candidate.location}
+                                {candidate.location.length > 12 ? candidate.location.slice(0, 12) + '..' : candidate.location}
                               </span>
                             )}
                           </div>

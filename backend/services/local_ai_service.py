@@ -1,4 +1,4 @@
-"""
+﻿"""
 Enhanced Local AI Service - Production-Grade Candidate Analysis
 Uses state-of-the-art AI models with Intel GPU acceleration
 Features:
@@ -14,6 +14,7 @@ import json
 import logging
 import math
 import hashlib
+from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 from collections import Counter
 
@@ -31,18 +32,18 @@ def detect_intel_gpu() -> Tuple[bool, str]:
         # Check for Intel Extension for PyTorch
         try:
             import intel_extension_for_pytorch as ipex
-            logger.info("✅ Intel Extension for PyTorch (IPEX) available - GPU acceleration enabled!")
+            logger.info("âœ… Intel Extension for PyTorch (IPEX) available - GPU acceleration enabled!")
             return True, "ipex"
         except ImportError:
             pass
         
         # Check for XPU (Intel GPU via oneAPI)
         if hasattr(torch, 'xpu') and torch.xpu.is_available():
-            logger.info(f"✅ Intel XPU detected: {torch.xpu.get_device_name(0)}")
+            logger.info(f"âœ… Intel XPU detected: {torch.xpu.get_device_name(0)}")
             return True, "xpu"
         
         # Fallback to CPU with optimizations
-        logger.info("⚡ Running on CPU with Intel MKL optimizations")
+        logger.info("âš¡ Running on CPU with Intel MKL optimizations")
         return False, "cpu"
         
     except Exception as e:
@@ -92,7 +93,7 @@ class LocalAIService:
             'launched', 'built', 'scaled', 'pioneered', 'award', 'certified'
         ]
         
-        logger.info(f"✅ Enhanced Local AI Service initialized on {self.device}")
+        logger.info(f"âœ… Enhanced Local AI Service initialized on {self.device}")
     
     def _get_optimal_device(self) -> str:
         """Get the optimal device for inference"""
@@ -107,7 +108,7 @@ class LocalAIService:
                 return "cuda"
             else:
                 return "cpu"
-        except:
+        except Exception:
             return "cpu"
     
     def _init_models(self):
@@ -121,26 +122,26 @@ class LocalAIService:
             try:
                 logger.info("Loading all-mpnet-base-v2 (high accuracy model)...")
                 self.sentence_model = SentenceTransformer('all-mpnet-base-v2', device=self.device)
-                logger.info("✅ all-mpnet-base-v2 loaded - HIGH ACCURACY semantic AI enabled!")
+                logger.info("âœ… all-mpnet-base-v2 loaded - HIGH ACCURACY semantic AI enabled!")
             except Exception as e:
                 logger.warning(f"mpnet failed, trying MiniLM: {e}")
                 self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2', device=self.device)
-                logger.info("✅ all-MiniLM-L6-v2 loaded - FAST semantic AI enabled!")
+                logger.info("âœ… all-MiniLM-L6-v2 loaded - FAST semantic AI enabled!")
             
             # Apply Intel optimizations if available
             if self.device_type == "ipex":
                 try:
                     import intel_extension_for_pytorch as ipex
                     self.sentence_model = ipex.optimize(self.sentence_model)
-                    logger.info("✅ Intel IPEX optimizations applied to sentence model")
-                except:
+                    logger.info("âœ… Intel IPEX optimizations applied to sentence model")
+                except Exception:
                     pass
             
             # Warm up the model
             _ = self.sentence_model.encode("warmup", show_progress_bar=False)
             
         except ImportError:
-            logger.warning("⚠️ sentence-transformers not installed. Run: pip install sentence-transformers")
+            logger.warning("âš ï¸ sentence-transformers not installed. Run: pip install sentence-transformers")
         except Exception as e:
             logger.error(f"Sentence model init error: {e}")
         
@@ -149,7 +150,7 @@ class LocalAIService:
             import spacy
             try:
                 self.nlp = spacy.load("en_core_web_sm")
-                logger.info("✅ SpaCy NER model loaded - accurate entity extraction enabled!")
+                logger.info("âœ… SpaCy NER model loaded - accurate entity extraction enabled!")
             except OSError:
                 logger.warning("SpaCy model not found. Run: python -m spacy download en_core_web_sm")
                 self.nlp = None
@@ -371,7 +372,7 @@ class LocalAIService:
             # Cache the result
             self.analysis_cache[text_hash] = result
             
-            logger.info(f"🤖 AI Analysis: {job_category} | Score: {quality_score:.1f}% | "
+            logger.info(f"ðŸ¤– AI Analysis: {job_category} | Score: {quality_score:.1f}% | "
                        f"Skills: {len(skills)} | Exp: {experience}yrs | Edu: {len(education)}")
             
             return result
@@ -397,17 +398,24 @@ class LocalAIService:
         }
     
     async def _ensure_llm(self):
-        """Lazy-initialize LLM service"""
-        if not self._llm_initialized:
-            try:
-                from services.llm_service import get_llm_service
-                self._llm_service = await get_llm_service()
+        """Lazy-initialize LLM service with retry support"""
+        if self._llm_initialized and self._llm_service and self._llm_service.available:
+            return  # Already connected successfully
+        
+        try:
+            from services.llm_service import get_llm_service
+            self._llm_service = await get_llm_service()
+            if self._llm_service and self._llm_service.available:
                 self._llm_initialized = True
-                if self._llm_service.available:
-                    logger.info("✅ LocalAI: LLM (Ollama) integration active")
-            except Exception as e:
-                logger.debug(f"LLM service not available: {e}")
-                self._llm_initialized = True
+                logger.info("âœ… LocalAI: LLM (Ollama) integration active")
+            else:
+                # Don't mark as initialized so we retry next time
+                self._llm_initialized = False
+                logger.warning("âš ï¸ LLM service connected but no models available - will retry next call")
+        except Exception as e:
+            # Don't mark as initialized so we retry next time
+            self._llm_initialized = False
+            logger.warning(f"âš ï¸ LLM service not available: {e} - will retry next call")
     
     async def _analyze_with_llm(self, text: str) -> Optional[Dict]:
         """Analyze candidate using LLM for 100% accurate extraction"""
@@ -459,7 +467,7 @@ class LocalAIService:
                 'analyzed_by': 'llm'
             }
             
-            logger.info(f"🤖 LLM Analysis: {result.get('job_category', 'General')} | "
+            logger.info(f"ðŸ¤– LLM Analysis: {result.get('job_category', 'General')} | "
                        f"Score: {quality_score:.1f}% | Skills: {len(skills)} | "
                        f"Exp: {experience}yrs | Edu: {len(education)}")
             
@@ -562,7 +570,7 @@ class LocalAIService:
                     val = int(match)
                     if 0 < val < 50:  # Reasonable range
                         years = max(years, val)
-                except:
+                except Exception:
                     pass
         
         # Count work indicators (action verbs, achievements)
@@ -584,11 +592,11 @@ class LocalAIService:
             return years, work_indicators
         
         # Otherwise, look for date ranges to infer experience
-        date_range_pattern = r'(20\d{2}|19\d{2})\s*[-–to]+\s*(20\d{2}|19\d{2}|present|current)'
+        date_range_pattern = r'(20\d{2}|19\d{2})\s*[-â€“to]+\s*(20\d{2}|19\d{2}|present|current)'
         date_matches = re.findall(date_range_pattern, text, re.IGNORECASE)
         
         total_years_from_dates = 0
-        current_year = 2026  # Current year
+        current_year = datetime.now().year
         
         for start, end in date_matches:
             try:
@@ -601,7 +609,7 @@ class LocalAIService:
                 duration = end_year - start_year
                 if 0 < duration < 30:
                     total_years_from_dates += duration
-            except:
+            except Exception:
                 pass
         
         # Use the date-calculated years if no explicit mention
@@ -627,7 +635,7 @@ class LocalAIService:
                 edu_keywords = ['university', 'college', 'institute', 'school', 'academy']
                 universities = [org for org in orgs 
                                if any(kw in org.lower() for kw in edu_keywords)]
-            except:
+            except Exception:
                 pass
         
         # More specific degree patterns - capture field and institution separately
@@ -1222,6 +1230,59 @@ class LocalAIService:
         
         return questions[:num_questions]
     
+    def summarize_resume(self, resume_text: str) -> Optional[str]:
+        """Generate a concise summary of a resume using AI or rule-based extraction."""
+        if not resume_text or len(resume_text.strip()) < 50:
+            return None
+        
+        try:
+            # Try LLM-based summary if available
+            if self.ollama_available:
+                import asyncio
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # We're in an async context, can't use run_until_complete
+                    # Fall through to rule-based
+                    pass
+                else:
+                    result = loop.run_until_complete(self._summarize_with_llm(resume_text))
+                    if result:
+                        return result
+        except Exception:
+            pass
+        
+        # Rule-based summary fallback
+        analysis = {}
+        try:
+            clean_text = self._clean_text(resume_text)
+            skills = self._extract_skills_intelligent(clean_text)
+            experience, _ = self._extract_experience_intelligent(clean_text, resume_text)
+            education = self._extract_education_intelligent(clean_text, resume_text)
+            
+            parts = []
+            if experience:
+                parts.append(f"Professional with {experience} years of experience.")
+            if skills:
+                parts.append(f"Key skills: {', '.join(skills[:8])}.")
+            if education:
+                edu_str = education if isinstance(education, str) else ', '.join(str(e) for e in education[:2])
+                parts.append(f"Education: {edu_str}.")
+            
+            return ' '.join(parts) if parts else resume_text[:300]
+        except Exception:
+            return resume_text[:300]
+    
+    async def _summarize_with_llm(self, resume_text: str) -> Optional[str]:
+        """Use LLM to generate resume summary."""
+        try:
+            prompt = f"Summarize this resume in 2-3 sentences focusing on experience, skills, and qualifications:\\n\\n{resume_text[:3000]}"
+            result = await self._call_ollama(prompt, timeout=15)
+            if result and len(result) > 20:
+                return result
+        except Exception:
+            pass
+        return None
+    
     # ========================================================================
     # NAME EXTRACTION WITH NER
     # ========================================================================
@@ -1244,7 +1305,7 @@ class LocalAIService:
                         return name
             
             return None
-        except:
+        except Exception:
             return None
     
     # ========================================================================
@@ -1262,7 +1323,7 @@ class LocalAIService:
         results = []
         total = len(texts)
         
-        logger.info(f"🚀 Starting batch analysis of {total} candidates (batch size: {batch_size})")
+        logger.info(f"ðŸš€ Starting batch analysis of {total} candidates (batch size: {batch_size})")
         
         for i in range(0, total, batch_size):
             batch = texts[i:i + batch_size]
@@ -1281,9 +1342,9 @@ class LocalAIService:
             # Progress logging every 10%
             progress = (i + len(batch)) / total * 100
             if progress % 10 < (batch_size / total * 100):
-                logger.info(f"📊 Batch progress: {progress:.1f}% ({i + len(batch)}/{total})")
+                logger.info(f"ðŸ“Š Batch progress: {progress:.1f}% ({i + len(batch)}/{total})")
         
-        logger.info(f"✅ Batch analysis complete: {total} candidates processed")
+        logger.info(f"âœ… Batch analysis complete: {total} candidates processed")
         return results
     
     def clear_cache(self):
@@ -1291,7 +1352,7 @@ class LocalAIService:
         self.embedding_cache.clear()
         self.ner_cache.clear()
         self.analysis_cache.clear()
-        logger.info("🗑️ AI caches cleared")
+        logger.info("ðŸ—‘ï¸ AI caches cleared")
     
     def get_cache_stats(self) -> Dict:
         """Get cache statistics for monitoring"""
@@ -1329,7 +1390,7 @@ class LocalAIService:
             if context:
                 try:
                     ctx = json.loads(context) if isinstance(context, str) else context
-                except:
+                except Exception:
                     pass
             
             # Try LLM-powered chat first (most intelligent)
@@ -1357,7 +1418,7 @@ class LocalAIService:
             if context:
                 try:
                     ctx = json.loads(context) if isinstance(context, str) else context
-                except:
+                except Exception:
                     pass
             
             # Get real data from context or database
@@ -1484,7 +1545,7 @@ class LocalAIService:
                     best_score = max_sim
                     best_intent = intent
             
-            logger.info(f"🎯 Detected intent: {best_intent} (confidence: {best_score:.2f})")
+            logger.info(f"ðŸŽ¯ Detected intent: {best_intent} (confidence: {best_score:.2f})")
             return best_intent
             
         except Exception as e:
@@ -1721,15 +1782,15 @@ class LocalAIService:
         if requested_skills:
             skill_text = f"\n**Target Skills:** {', '.join(requested_skills)}"
         
-        return f"""🧠 **ML-Powered Candidate Ranking**
+        return f"""ðŸ§  **ML-Powered Candidate Ranking**
 
 I've analyzed your candidate pool using our machine learning model.
 
 **Analysis Summary:**
-• Candidates analyzed: **{total}**
-• Average quality score: **{avg_score:.1f}%**
-• Strong matches (70%+): **{strong}**
-• Expected results at {threshold}%+ threshold: **~{expected_matches}**
+â€¢ Candidates analyzed: **{total}**
+â€¢ Average quality score: **{avg_score:.1f}%**
+â€¢ Strong matches (70%+): **{strong}**
+â€¢ Expected results at {threshold}%+ threshold: **~{expected_matches}**
 {skill_text}
 
 **ML Ranking Factors:**
@@ -1746,13 +1807,13 @@ The candidates shown in the results are ranked by our ML model's confidence scor
     def _get_ranking_recommendation(self, total, avg_score, strong, threshold) -> str:
         """Generate contextual recommendation"""
         if strong >= 10 and avg_score >= 65:
-            return "✅ Excellent pool! Focus on top 5-10 candidates for immediate interviews."
+            return "âœ… Excellent pool! Focus on top 5-10 candidates for immediate interviews."
         elif strong >= 5:
-            return "👍 Good candidate pool. Consider interviewing top matches within the week."
+            return "ðŸ‘ Good candidate pool. Consider interviewing top matches within the week."
         elif total >= 20:
-            return "⚠️ Large pool but few strong matches. Consider adjusting requirements or expanding search."
+            return "âš ï¸ Large pool but few strong matches. Consider adjusting requirements or expanding search."
         else:
-            return "📢 Limited candidates. Recommend expanding sourcing channels."
+            return "ðŸ“¢ Limited candidates. Recommend expanding sourcing channels."
     
     def _generate_analytics_response(self, total, avg_score, strong, recent, health) -> str:
         """Generate analytics response with real predictions"""
@@ -1761,25 +1822,25 @@ The candidates shown in the results are ranked by our ML model's confidence scor
         interview_rate = min(strong / total * 100, 100) if total > 0 else 0
         predicted_hires = max(1, int(strong * 0.3))  # ~30% of strong matches typically convert
         
-        return f"""📈 **Predictive Analytics Report**
+        return f"""ðŸ“ˆ **Predictive Analytics Report**
 
 **Pipeline Overview:**
-• Total candidates: **{total}**
-• Strong matches: **{strong}** ({interview_rate:.1f}% of pool)
-• Recent applicants: **{recent}**
-• Average quality: **{avg_score:.1f}%**
+â€¢ Total candidates: **{total}**
+â€¢ Strong matches: **{strong}** ({interview_rate:.1f}% of pool)
+â€¢ Recent applicants: **{recent}**
+â€¢ Average quality: **{avg_score:.1f}%**
 
 **Pipeline Health: {health['status'].upper()}** (Score: {health['score']:.0f}/100)
 {health['recommendation']}
 
 **Hiring Predictions:**
-• Candidates likely to accept interview: **~{int(strong * 0.8)}**
-• Predicted successful hires: **~{predicted_hires}**
-• Time to fill estimate: **{self._estimate_time_to_fill(strong, avg_score)}**
+â€¢ Candidates likely to accept interview: **~{int(strong * 0.8)}**
+â€¢ Predicted successful hires: **~{predicted_hires}**
+â€¢ Time to fill estimate: **{self._estimate_time_to_fill(strong, avg_score)}**
 
 **Conversion Funnel Analysis:**
 ```
-Applied: {total} → Screened: {strong} → Interview: ~{int(strong*0.8)} → Offer: ~{int(strong*0.4)} → Hire: ~{predicted_hires}
+Applied: {total} â†’ Screened: {strong} â†’ Interview: ~{int(strong*0.8)} â†’ Offer: ~{int(strong*0.4)} â†’ Hire: ~{predicted_hires}
 ```
 
 **Action Items:**
@@ -1813,16 +1874,16 @@ Applied: {total} → Screened: {strong} → Interview: ~{int(strong*0.8)} → Of
         """Generate duplicate detection response"""
         estimated_duplicates = max(0, int(total * 0.05))  # ~5% typical duplicate rate
         
-        return f"""🔍 **Duplicate Detection Analysis**
+        return f"""ðŸ” **Duplicate Detection Analysis**
 
 **Scan Parameters:**
-• Candidates to analyze: **{total}**
-• Detection methods: Email, Phone, Name Similarity
-• Similarity threshold: **85%**
+â€¢ Candidates to analyze: **{total}**
+â€¢ Detection methods: Email, Phone, Name Similarity
+â€¢ Similarity threshold: **85%**
 
 **Estimated Results:**
-• Potential duplicates: **~{estimated_duplicates}** ({(estimated_duplicates/total*100) if total > 0 else 0:.1f}% of pool)
-• Estimated cleanup savings: **{estimated_duplicates} records**
+â€¢ Potential duplicates: **~{estimated_duplicates}** ({(estimated_duplicates/total*100) if total > 0 else 0:.1f}% of pool)
+â€¢ Estimated cleanup savings: **{estimated_duplicates} records**
 
 **Detection Criteria:**
 1. **Exact Match** - Same email or phone number
@@ -1830,10 +1891,10 @@ Applied: {total} → Screened: {strong} → Interview: ~{int(strong*0.8)} → Of
 3. **Cross-Reference** - Same person, different sources
 
 **Benefits of Deduplication:**
-✓ Accurate candidate count
-✓ Prevent double-contacting
-✓ Cleaner reporting metrics
-✓ Better candidate experience
+âœ“ Accurate candidate count
+âœ“ Prevent double-contacting
+âœ“ Cleaner reporting metrics
+âœ“ Better candidate experience
 
 Run the duplicate scan to see actual results and merge options."""
     
@@ -1846,12 +1907,12 @@ Run the duplicate scan to see actual results and merge options."""
             "{{top_skill}}", "{{experience_years}}"
         ]
         
-        return f"""✉️ **Email Outreach Assistant**
+        return f"""âœ‰ï¸ **Email Outreach Assistant**
 
 **Outreach Targets:**
-• Strong matches available: **{strong}**
-• Recommended batch size: **{min(strong, 20)}**
-{f"• Filter by skills: {', '.join(target_skills)}" if target_skills else ""}
+â€¢ Strong matches available: **{strong}**
+â€¢ Recommended batch size: **{min(strong, 20)}**
+{f"â€¢ Filter by skills: {', '.join(target_skills)}" if target_skills else ""}
 
 **Template Recommendations:**
 Based on your candidate pool, I recommend:
@@ -1872,24 +1933,24 @@ Based on your candidate pool, I recommend:
 {', '.join(personalization_vars)}
 
 **Pro Tips:**
-• Personalized subject lines: +26% open rate
-• Including skills match: +18% response rate
-• Mobile-friendly format: +15% engagement
+â€¢ Personalized subject lines: +26% open rate
+â€¢ Including skills match: +18% response rate
+â€¢ Mobile-friendly format: +15% engagement
 
 Navigate to Templates to create or select an email template."""
     
     def _generate_schedule_response(self, strong, entities) -> str:
         """Generate scheduling response"""
-        return f"""📅 **Interview Scheduling Assistant**
+        return f"""ðŸ“… **Interview Scheduling Assistant**
 
 **Candidates Ready for Interview:**
-• Strong matches: **{strong}**
-• Recommended to schedule: **{min(strong, 10)}** this week
+â€¢ Strong matches: **{strong}**
+â€¢ Recommended to schedule: **{min(strong, 10)}** this week
 
 **Scheduling Options:**
 
 1. **Quick Schedule**
-   - Select candidate → Pick time slot → Send invite
+   - Select candidate â†’ Pick time slot â†’ Send invite
    - Auto-generates calendar event + email
 
 2. **Bulk Schedule**
@@ -1902,15 +1963,15 @@ Navigate to Templates to create or select an email template."""
    - They pick from your availability
 
 **Interview Types:**
-• 📞 Phone Screen (15-30 min)
-• 💻 Video Call (30-45 min)
-• 🏢 On-site (60-90 min)
-• 📝 Technical Assessment (60-120 min)
+â€¢ ðŸ“ž Phone Screen (15-30 min)
+â€¢ ðŸ’» Video Call (30-45 min)
+â€¢ ðŸ¢ On-site (60-90 min)
+â€¢ ðŸ“ Technical Assessment (60-120 min)
 
 **Calendar Integration:**
-✓ Google Calendar
-✓ Microsoft Outlook
-✓ Custom calendar link
+âœ“ Google Calendar
+âœ“ Microsoft Outlook
+âœ“ Custom calendar link
 
 **Next Steps:**
 1. Go to Campaigns page for scheduling
@@ -1924,32 +1985,32 @@ Navigate to Templates to create or select an email template."""
         top_skills = analysis.get('top_skills', [])[:8]
         gaps = analysis.get('gaps', [])
         
-        skill_list = "\n".join([f"• **{skill}**: {count} candidates" for skill, count in top_skills]) if top_skills else "• No skill data available"
+        skill_list = "\n".join([f"â€¢ **{skill}**: {count} candidates" for skill, count in top_skills]) if top_skills else "â€¢ No skill data available"
         
         query_text = ""
         if query_skills:
             matched = analysis.get('matched', [])
             if matched:
-                query_text = f"\n**Your Search:** {', '.join(query_skills)}\n✅ Found candidates with: {', '.join(matched)}"
+                query_text = f"\n**Your Search:** {', '.join(query_skills)}\nâœ… Found candidates with: {', '.join(matched)}"
             if gaps:
-                query_text += f"\n⚠️ Limited candidates with: {', '.join(gaps)}"
+                query_text += f"\nâš ï¸ Limited candidates with: {', '.join(gaps)}"
         
-        return f"""🔧 **Skills Analysis**
+        return f"""ðŸ”§ **Skills Analysis**
 
 **Top Skills in Your Pool ({total} candidates):**
 {skill_list}
 {query_text}
 
 **Search Tips:**
-• Combine skills: "Python AND AWS"
-• Add experience: "React developers with 3+ years"
-• Include level: "Senior Java engineer"
+â€¢ Combine skills: "Python AND AWS"
+â€¢ Add experience: "React developers with 3+ years"
+â€¢ Include level: "Senior Java engineer"
 
 **Skill Categories Available:**
-• **Frontend:** React, Angular, Vue, JavaScript
-• **Backend:** Python, Java, Node.js, Go
-• **Cloud:** AWS, Azure, GCP, Docker
-• **Data:** SQL, MongoDB, Machine Learning
+â€¢ **Frontend:** React, Angular, Vue, JavaScript
+â€¢ **Backend:** Python, Java, Node.js, Go
+â€¢ **Cloud:** AWS, Azure, GCP, Docker
+â€¢ **Data:** SQL, MongoDB, Machine Learning
 
 **Recommendation:**
 {self._get_skill_recommendation(query_skills, analysis)}"""
@@ -1960,44 +2021,44 @@ Navigate to Templates to create or select an email template."""
             return "Specify skills in your search to find matching candidates."
         coverage = analysis.get('coverage', 0)
         if coverage >= 80:
-            return f"✅ Great coverage! Most candidates have the skills you need."
+            return f"âœ… Great coverage! Most candidates have the skills you need."
         elif coverage >= 50:
-            return f"👍 Good coverage. Consider candidates with transferable skills."
+            return f"ðŸ‘ Good coverage. Consider candidates with transferable skills."
         else:
-            return f"⚠️ Limited matches. Consider expanding skill requirements or sourcing."
+            return f"âš ï¸ Limited matches. Consider expanding skill requirements or sourcing."
     
     def _generate_location_response(self, entities, all_locations, total, analysis) -> str:
         """Generate location search response"""
         query_locations = entities.get('locations', [])
         top_locations = analysis.get('top_locations', [])[:5]
         
-        loc_list = "\n".join([f"• **{loc.title()}**: {count} candidates" for loc, count in top_locations]) if top_locations else "• Location data not available"
+        loc_list = "\n".join([f"â€¢ **{loc.title()}**: {count} candidates" for loc, count in top_locations]) if top_locations else "â€¢ Location data not available"
         
         query_text = ""
         if query_locations:
             query_text = f"\n**Your Search:** {', '.join([l.title() for l in query_locations])}"
         
-        return f"""📍 **Location Analysis**
+        return f"""ðŸ“ **Location Analysis**
 
 **Candidate Distribution ({total} total):**
 {loc_list}
 {query_text}
 
 **Location Filters:**
-• **UAE:** Dubai, Abu Dhabi, Sharjah
-• **Remote:** Work from anywhere
-• **India:** Mumbai, Bangalore, Delhi
-• **Global:** USA, UK, Canada, Singapore
+â€¢ **UAE:** Dubai, Abu Dhabi, Sharjah
+â€¢ **Remote:** Work from anywhere
+â€¢ **India:** Mumbai, Bangalore, Delhi
+â€¢ **Global:** USA, UK, Canada, Singapore
 
 **Insights:**
-• {analysis.get('total_locations', 0)} unique locations in your pool
-• Remote candidates: Flexible for any position
-• Local candidates: Faster onboarding
+â€¢ {analysis.get('total_locations', 0)} unique locations in your pool
+â€¢ Remote candidates: Flexible for any position
+â€¢ Local candidates: Faster onboarding
 
 **Tips:**
-• Consider remote-friendly roles to expand pool
-• Check visa/work permit requirements
-• Factor in timezone for remote workers"""
+â€¢ Consider remote-friendly roles to expand pool
+â€¢ Check visa/work permit requirements
+â€¢ Factor in timezone for remote workers"""
     
     def _generate_top_candidates_response(self, entities, total, avg_score, strong) -> str:
         """Generate top candidates response"""
@@ -2009,20 +2070,20 @@ Navigate to Templates to create or select an email template."""
         good = strong - excellent
         potential = int((total - strong) * 0.4)  # 40% of remaining are 50-70%
         
-        return f"""⭐ **Top Candidates Analysis**
+        return f"""â­ **Top Candidates Analysis**
 
 **Quality Distribution ({total} candidates):**
-• 🏆 **Excellent (85%+):** ~{excellent} candidates
-• ✅ **Strong (70-85%):** ~{good} candidates  
-• 👍 **Good (50-70%):** ~{potential} candidates
-• 📋 **Review (<50%):** ~{total - strong - potential} candidates
+â€¢ ðŸ† **Excellent (85%+):** ~{excellent} candidates
+â€¢ âœ… **Strong (70-85%):** ~{good} candidates  
+â€¢ ðŸ‘ **Good (50-70%):** ~{potential} candidates
+â€¢ ðŸ“‹ **Review (<50%):** ~{total - strong - potential} candidates
 
 **Your Request:** Top {count} with {threshold}%+ score
 
 **Current Stats:**
-• Average score: **{avg_score:.1f}%**
-• Strong matches: **{strong}**
-• Pool quality: **{self._get_quality_label(avg_score)}**
+â€¢ Average score: **{avg_score:.1f}%**
+â€¢ Strong matches: **{strong}**
+â€¢ Pool quality: **{self._get_quality_label(avg_score)}**
 
 **Scoring Factors:**
 1. Skills match (40%)
@@ -2048,27 +2109,27 @@ Navigate to Templates to create or select an email template."""
     def _get_top_candidates_recommendation(self, strong, avg_score, threshold) -> str:
         """Get recommendation for top candidates"""
         if strong >= 10:
-            return "✅ Strong pipeline! Prioritize interviews with top 5 this week."
+            return "âœ… Strong pipeline! Prioritize interviews with top 5 this week."
         elif strong >= 5:
-            return "👍 Good candidates available. Schedule interviews soon to secure talent."
+            return "ðŸ‘ Good candidates available. Schedule interviews soon to secure talent."
         elif avg_score >= 50:
-            return "⚠️ Consider candidates in 60-70% range - may have hidden potential."
+            return "âš ï¸ Consider candidates in 60-70% range - may have hidden potential."
         else:
-            return "📢 Limited top talent. Expand sourcing or adjust requirements."
+            return "ðŸ“¢ Limited top talent. Expand sourcing or adjust requirements."
     
     def _generate_recent_response(self, recent, total) -> str:
         """Generate recent candidates response"""
-        return f"""🕐 **Recent Applicants**
+        return f"""ðŸ• **Recent Applicants**
 
 **New Candidates:**
-• Applied this week: **{recent}**
-• Total in pipeline: **{total}**
-• Fresh talent ratio: **{(recent/total*100) if total > 0 else 0:.1f}%**
+â€¢ Applied this week: **{recent}**
+â€¢ Total in pipeline: **{total}**
+â€¢ Fresh talent ratio: **{(recent/total*100) if total > 0 else 0:.1f}%**
 
 **Why Recent Matters:**
-• Fresh candidates = Higher engagement
-• Faster response = Better impression
-• Beat competitors to top talent
+â€¢ Fresh candidates = Higher engagement
+â€¢ Faster response = Better impression
+â€¢ Beat competitors to top talent
 
 **Recommended Actions:**
 1. Review new applicants within 24-48 hours
@@ -2086,47 +2147,47 @@ Filter by "Recent" or "New" to see the latest applicants."""
         skills_text = ", ".join(top_skills) if top_skills else "Various skills"
         locations_text = ", ".join(top_locations) if top_locations else "Multiple locations"
         
-        return f"""👋 **AI Recruitment Assistant**
+        return f"""ðŸ‘‹ **AI Recruitment Assistant**
 
 I'm here to help you find and manage the best candidates!
 
 **Your Database at a Glance:**
-• 📊 Total candidates: **{total}**
-• ⭐ Strong matches: **{strong}**
-• 📈 Average score: **{avg_score:.1f}%**
-• 🔧 Top skills: {skills_text}
-• 📍 Locations: {locations_text}
+â€¢ ðŸ“Š Total candidates: **{total}**
+â€¢ â­ Strong matches: **{strong}**
+â€¢ ðŸ“ˆ Average score: **{avg_score:.1f}%**
+â€¢ ðŸ”§ Top skills: {skills_text}
+â€¢ ðŸ“ Locations: {locations_text}
 
 **What I Can Do:**
 
-🧠 **"Rank candidates for [role]"**
+ðŸ§  **"Rank candidates for [role]"**
    Use ML to find best matches
 
-📈 **"Show analytics"**
+ðŸ“ˆ **"Show analytics"**
    Pipeline health and predictions
 
-🔍 **"Check for duplicates"**
+ðŸ” **"Check for duplicates"**
    Clean your database
 
-✉️ **"Draft outreach email"**
+âœ‰ï¸ **"Draft outreach email"**
    Create personalized templates
 
-📅 **"Schedule interviews"**
+ðŸ“… **"Schedule interviews"**
    Book meetings with candidates
 
-🔧 **"Find [skill] developers"**
+ðŸ”§ **"Find [skill] developers"**
    Search by technical skills
 
-📍 **"Show candidates in [location]"**
+ðŸ“ **"Show candidates in [location]"**
    Filter by geography
 
-⭐ **"Show top candidates"**
+â­ **"Show top candidates"**
    View highest-scoring matches
 
 **Quick Actions:**
-• Click suggested prompts below
-• Or type your question naturally
-• I understand context and intent!"""
+â€¢ Click suggested prompts below
+â€¢ Or type your question naturally
+â€¢ I understand context and intent!"""
     
     def _generate_fallback_response(self, message: str, ctx: Dict) -> str:
         """Generate helpful fallback when main processing fails"""
@@ -2134,14 +2195,14 @@ I'm here to help you find and manage the best candidates!
         return f"""I'm processing your request about: "{message[:50]}..."
 
 **Quick Stats:**
-• Candidates: {total}
-• Strong matches: {ctx.get('strongMatches', 0)}
+â€¢ Candidates: {total}
+â€¢ Strong matches: {ctx.get('strongMatches', 0)}
 
 **Try These Commands:**
-• "Show top candidates"
-• "Find React developers"
-• "Check for duplicates"
-• "Schedule interviews"
+â€¢ "Show top candidates"
+â€¢ "Find React developers"
+â€¢ "Check for duplicates"
+â€¢ "Schedule interviews"
 
 Or rephrase your question and I'll help!"""
 

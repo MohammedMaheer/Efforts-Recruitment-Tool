@@ -1,4 +1,4 @@
-"""
+﻿"""
 ML-Based Resume Ranking Service
 Learns from hiring decisions to rank future candidates
 Uses scikit-learn for training and inference
@@ -65,7 +65,7 @@ class ResumeRankingModel:
                     self.model = pickle.load(f)
                 with open(scaler_file, 'rb') as f:
                     self.scaler = pickle.load(f)
-                logger.info("✅ Loaded trained ranking model")
+                logger.info("âœ… Loaded trained ranking model")
             except Exception as e:
                 logger.warning(f"Could not load model: {e}")
                 self._initialize_default_model()
@@ -146,7 +146,7 @@ class ResumeRankingModel:
             # Save the initialized model
             self._save_model()
             
-            logger.info("✅ Initialized ranking model with best-practice weights")
+            logger.info("âœ… Initialized ranking model with best-practice weights")
             
         except ImportError:
             logger.warning("scikit-learn not installed, using simple scoring")
@@ -161,7 +161,7 @@ class ResumeRankingModel:
                     pickle.dump(self.model, f)
                 with open(MODEL_PATH / "ranking_scaler.pkl", 'wb') as f:
                     pickle.dump(self.scaler, f)
-                logger.info("💾 Saved ranking model")
+                logger.info("ðŸ’¾ Saved ranking model")
             except Exception as e:
                 logger.error(f"Could not save model: {e}")
     
@@ -379,7 +379,7 @@ class ResumeRankingModel:
             # Save
             self._save_model()
             
-            logger.info(f"✅ Retrained model on {len(self.training_history)} decisions")
+            logger.info(f"âœ… Retrained model on {len(self.training_history)} decisions")
             
         except Exception as e:
             logger.error(f"Retraining failed: {e}")
@@ -392,7 +392,7 @@ class ResumeRankingModel:
         try:
             importances = self.model.feature_importances_
             return dict(zip(self.feature_names, importances.tolist()))
-        except:
+        except Exception:
             return {}
 
 

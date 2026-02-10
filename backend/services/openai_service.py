@@ -1,6 +1,7 @@
 """
 OpenAI Service for AI-powered candidate matching and analysis
-Enhanced with deep candidate analysis, pros/cons, and job-specific scoring
+Enhanced with deep candidate analysis, pros/cons, and job-specific scoring.
+Serves as EMERGENCY FALLBACK when local LLM (Ollama) is unavailable.
 """
 import os
 import json
@@ -19,10 +20,133 @@ class OpenAIService:
             raise ValueError("OPENAI_API_KEY not found in environment variables")
         
         self.client = OpenAI(api_key=api_key)
-        self.model = os.getenv('OPENAI_MODEL', 'gpt-4o')  # Use GPT-4o for better analysis
-        self.max_tokens = int(os.getenv('OPENAI_MAX_TOKENS', '2000'))  # More tokens for detailed analysis
-        self.temperature = float(os.getenv('OPENAI_TEMPERATURE', '0.3'))  # Lower temp for consistency
+        self.model = os.getenv('OPENAI_MODEL', 'gpt-4o')
+        self.max_tokens = int(os.getenv('OPENAI_MAX_TOKENS', '2000'))
+        self.temperature = float(os.getenv('OPENAI_TEMPERATURE', '0.3'))
     
+    # ===========================================================================
+    # FALLBACK: Resume Parsing
+    # ===========================================================================
+    
+    def parse_resume(self, text: str) -> Optional[Dict]:
+        """Parse resume text using OpenAI — emergency fallback for Ollama."""
+        from services.job_taxonomy import get_taxonomy_prompt_text, classify_job_title
+        taxonomy = get_taxonomy_prompt_text()
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": """You are an expert resume parser with 15+ years experience in talent acquisition.
+Extract ALL information with maximum accuracy. Return ONLY valid JSON.
+CRITICAL: Extract every skill, every job position, every degree. Never fabricate data.
+For work history, include detailed descriptions with responsibilities and achievements.
+For the summary, write 4-6 sentences covering career focus, expertise, achievements, and strengths."""},
+                    {"role": "user", "content": f"""Parse this resume and extract ALL information.
+
+RESUME:
+{text[:8000]}
+
+JOB TAXONOMY:
+{taxonomy}
+
+Return JSON:
+{{
+    "name": "Full name",
+    "email": "email",
+    "phone": "phone with country code",
+    "location": "City, Country",
+    "linkedin": "URL if mentioned",
+    "summary": "Detailed 4-6 sentence professional summary covering career focus, key strengths, notable achievements, domain expertise, technical depth, and what they bring to a team.",
+    "skills": ["ALL skills, tools, frameworks, languages, methodologies mentioned"],
+    "experience_years": 0,
+    "work_history": [{{"title": "Exact title", "company": "Company", "period": "MMM YYYY - MMM YYYY or Present", "description": "Detailed 2-4 sentence description of responsibilities, achievements, and technologies used"}}],
+    "education": [{{"degree": "Type", "field": "Field", "institution": "Name", "year": "YYYY"}}],
+    "certifications": ["certification names with issuing body"],
+    "languages": ["languages spoken"],
+    "job_category": "EXACT category from taxonomy",
+    "job_subcategory": "EXACT subcategory from taxonomy"
+}}"""}
+                ],
+                max_tokens=3000,
+                temperature=0.05,
+                response_format={"type": "json_object"}
+            )
+            result = json.loads(response.choices[0].message.content)
+            # Validate category
+            if not result.get('job_subcategory'):
+                titles = [w.get('title', '') for w in result.get('work_history', []) if isinstance(w, dict)]
+                if titles:
+                    cat, sub = classify_job_title(titles[0])
+                    result['job_category'] = cat
+                    result['job_subcategory'] = sub
+            logger.info(f"📄 [OpenAI Fallback] Resume parsed: {result.get('name', 'Unknown')}")
+            return result
+        except Exception as e:
+            logger.error(f"OpenAI resume parse error: {e}")
+            return None
+    
+    # ===========================================================================
+    # FALLBACK: Email Parsing
+    # ===========================================================================
+    
+    def parse_candidate_email(self, subject: str, body: str, sender: str = "") -> Optional[Dict]:
+        """Parse candidate email using OpenAI — emergency fallback."""
+        from services.job_taxonomy import get_taxonomy_prompt_text, classify_job_title
+        taxonomy = get_taxonomy_prompt_text()
+        
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": "You are an expert recruitment email parser. Return valid JSON only."},
+                    {"role": "user", "content": f"""Parse this job application email.
+
+SUBJECT: {subject}
+SENDER: {sender}
+BODY:
+{body[:3000]}
+
+JOB TAXONOMY:
+{taxonomy}
+
+Return JSON:
+{{
+    "name": "Candidate name",
+    "email": "email",
+    "phone": "phone if mentioned",
+    "location": "location if mentioned",
+    "skills": ["skill1", "skill2"],
+    "experience_years": 0,
+    "education": [{{"degree": "", "field": "", "institution": "", "year": ""}}],
+    "summary": "Brief summary from email",
+    "linkedin": "URL if present",
+    "job_applied_for": "Job title they applied for",
+    "job_category": "EXACT category from taxonomy",
+    "job_subcategory": "EXACT subcategory from taxonomy",
+    "is_candidate_email": true
+}}"""}
+                ],
+                max_tokens=1500,
+                temperature=0.1,
+                response_format={"type": "json_object"}
+            )
+            result = json.loads(response.choices[0].message.content)
+            if not result.get('is_candidate_email', True):
+                return None
+            # Validate category
+            if not result.get('job_subcategory'):
+                title = result.get('job_applied_for', '')
+                if title:
+                    cat, sub = classify_job_title(title)
+                    result['job_category'] = cat
+                    result['job_subcategory'] = sub
+            logger.info(f"📧 [OpenAI Fallback] Email parsed: {result.get('name', 'Unknown')}")
+            return result
+        except Exception as e:
+            logger.error(f"OpenAI email parse error: {e}")
+            return None
+
     def analyze_candidate_match(
         self, 
         candidate_data: Dict, 

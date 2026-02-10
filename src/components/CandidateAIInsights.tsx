@@ -5,6 +5,7 @@
 import React, { useState, useEffect } from 'react';
 import { advancedApi } from '@/services/api';
 import config from '@/config';
+import { authFetch } from '@/lib/authFetch';
 import {
   Brain,
   Target,
@@ -135,7 +136,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
   const fetchDeepAnalysis = async () => {
     setLoadingDeepAnalysis(true);
     try {
-      const response = await fetch(`${config.apiUrl}/api/ai/candidate/${candidateId}/analysis`);
+      const response = await authFetch(`${config.apiUrl}/api/ai/candidate/${candidateId}/analysis`);
       if (response.ok) {
         const data = await response.json();
         setDeepAnalysis(data);

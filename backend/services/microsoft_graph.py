@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from urllib.parse import quote
 import base64
 import logging
+import asyncio
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ class MicrosoftGraphService:
         }
         
         try:
-            response = requests.post(token_url, data=data)
+            response = await asyncio.to_thread(lambda: requests.post(token_url, data=data, timeout=15))
             response.raise_for_status()
             
             token_data = response.json()
@@ -67,7 +68,7 @@ class MicrosoftGraphService:
                 'error': str(e)
             }
     
-    def authenticate_with_credentials(self) -> Dict[str, Any]:
+    async def authenticate_with_credentials(self) -> Dict[str, Any]:
         """
         Authenticate using OAuth2 client credentials flow (application permissions)
         This allows server-to-server authentication without user interaction
@@ -83,7 +84,7 @@ class MicrosoftGraphService:
         }
         
         try:
-            response = requests.post(token_url, data=data)
+            response = await asyncio.to_thread(lambda: requests.post(token_url, data=data, timeout=15))
             response.raise_for_status()
             
             token_data = response.json()
@@ -150,7 +151,9 @@ class MicrosoftGraphService:
             page_count = 0
             while url:
                 page_count += 1
-                response = requests.get(url, headers=headers, params=params)
+                response = await asyncio.to_thread(
+                    lambda u=url, p=params: requests.get(u, headers=headers, params=p, timeout=30)
+                )
                 response.raise_for_status()
                 
                 data = response.json()
@@ -209,13 +212,13 @@ class MicrosoftGraphService:
                 base_url = f"{self.graph_url}/me/messages/{message_id}"
             
             # Get message
-            message_response = requests.get(base_url, headers=headers)
+            message_response = await asyncio.to_thread(lambda: requests.get(base_url, headers=headers, timeout=30))
             message_response.raise_for_status()
             message_data = message_response.json()
             
             # Get attachments
             attachments_url = f"{base_url}/attachments"
-            attachments_response = requests.get(attachments_url, headers=headers)
+            attachments_response = await asyncio.to_thread(lambda: requests.get(attachments_url, headers=headers, timeout=30))
             attachments_response.raise_for_status()
             attachments_data = attachments_response.json()
             
@@ -288,7 +291,7 @@ class MicrosoftGraphService:
         
         try:
             url = f"{self.graph_url}/me/messages/{message_id}/attachments/{attachment_id}"
-            response = requests.get(url, headers=headers)
+            response = await asyncio.to_thread(lambda: requests.get(url, headers=headers, timeout=30))
             response.raise_for_status()
             
             attachment_data = response.json()
@@ -323,7 +326,7 @@ class MicrosoftGraphService:
         
         try:
             url = f"{self.graph_url}/me/mailFolders/{parent_folder}/childFolders"
-            response = requests.post(url, headers=headers, json=data)
+            response = await asyncio.to_thread(lambda: requests.post(url, headers=headers, json=data, timeout=15))
             response.raise_for_status()
             
             folder_data = response.json()
@@ -356,7 +359,7 @@ class MicrosoftGraphService:
         
         try:
             url = f"{self.graph_url}/me/messages/{message_id}/move"
-            response = requests.post(url, headers=headers, json=data)
+            response = await asyncio.to_thread(lambda: requests.post(url, headers=headers, json=data, timeout=15))
             response.raise_for_status()
             
             return {'status': 'success', 'message': 'Message moved successfully'}
@@ -364,6 +367,60 @@ class MicrosoftGraphService:
         except Exception as e:
             return {'status': 'error', 'message': str(e)}
     
+    async def send_mail(self, to_email: str, subject: str, body: str, content_type: str = "HTML") -> Dict[str, Any]:
+        """
+        Send an email via Microsoft Graph API.
+        Works with both delegated and application permissions.
+        Requires Mail.Send permission.
+        """
+        if not self._is_token_valid():
+            return {'status': 'error', 'message': 'Token expired or invalid'}
+
+        headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/json'
+        }
+
+        email_payload = {
+            'message': {
+                'subject': subject,
+                'body': {
+                    'contentType': content_type,
+                    'content': body
+                },
+                'toRecipients': [
+                    {
+                        'emailAddress': {
+                            'address': to_email
+                        }
+                    }
+                ]
+            },
+            'saveToSentItems': True
+        }
+
+        try:
+            if self.auth_type == 'application' and self.user_email:
+                url = f"{self.graph_url}/users/{self.user_email}/sendMail"
+            else:
+                url = f"{self.graph_url}/me/sendMail"
+
+            response = await asyncio.to_thread(lambda: requests.post(url, headers=headers, json=email_payload, timeout=30))
+            response.raise_for_status()
+
+            logger.info(f"✅ Email sent to {to_email}: {subject}")
+            return {
+                'status': 'success',
+                'message': f'Email sent to {to_email}'
+            }
+
+        except Exception as e:
+            logger.error(f"❌ Failed to send email to {to_email}: {str(e)}")
+            return {
+                'status': 'error',
+                'message': str(e)
+            }
+
     def _is_token_valid(self) -> bool:
         """Check if access token is still valid"""
         if not self.access_token or not self.token_expiry:
@@ -387,7 +444,7 @@ class MicrosoftGraphService:
         }
         
         try:
-            response = requests.post(token_url, data=data)
+            response = await asyncio.to_thread(lambda: requests.post(token_url, data=data, timeout=15))
             response.raise_for_status()
             
             token_data = response.json()

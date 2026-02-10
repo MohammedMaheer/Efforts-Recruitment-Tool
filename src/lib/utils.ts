@@ -135,6 +135,12 @@ export function getStatusBadgeColor(status: string): { bg: string; text: string;
       return { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' }
     case 'new':
       return { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' }
+    case 'reviewed':
+      return { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' }
+    case 'withdrawn':
+      return { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' }
+    case 'rejected':
+      return { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' }
     default:
       return { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' }
   }

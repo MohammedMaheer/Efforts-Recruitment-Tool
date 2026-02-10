@@ -18,7 +18,7 @@ import Settings from '@/pages/Settings'
 import EmailIntegration from '@/components/EmailIntegration'
 import AIAssistant from '@/pages/AIAssistant'
 import AnalyticsDashboard from '@/components/AnalyticsDashboard'
-import JobDescriptions from '@/pages/JobDescriptions'
+// JobDescriptions removed - JD matching integrated into AI Assistant
 import SetupWizard from '@/pages/SetupWizard'
 
 /**
@@ -113,7 +113,6 @@ function App() {
           <Route path="analytics" element={<AnalyticsDashboard />} />
           <Route path="candidates" element={<Candidates />} />
           <Route path="candidates/:id" element={<CandidateDetail />} />
-          <Route path="jobs" element={<JobDescriptions />} />
           <Route path="shortlist" element={<Shortlist />} />
           <Route path="email-integration" element={<EmailIntegration />} />
           <Route path="settings" element={<Settings />} />

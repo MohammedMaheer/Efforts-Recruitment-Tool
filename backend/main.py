@@ -1,8 +1,8 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Header, Body
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Header, Body, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
-from typing import List, Optional
+from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 import uvicorn
 import asyncio
@@ -27,6 +27,7 @@ from services.database_service import get_db_service
 from services.oauth_automation_service import get_oauth_automation, OAuthAutomationService
 from services.auth_service import get_auth_service
 from models.candidate import Candidate, JobDescription, MatchResult
+from core.config import get_settings
 
 # Advanced AI services
 from api.advanced_routes import router as advanced_router
@@ -58,11 +59,14 @@ class OAuth2CallbackRequest(BaseModel):
 # Load environment variables
 load_dotenv()
 
-# Configuration
-DEBUG = os.getenv('DEBUG', 'true').lower() == 'true'
-AI_TIMEOUT = float(os.getenv('AI_TIMEOUT_SECONDS', '15'))  # Increased for local AI
+# Get centralized settings
+_settings = get_settings()
+
+# Configuration - use centralized config with env var overrides
+DEBUG = _settings.debug
+AI_TIMEOUT = float(os.getenv('AI_TIMEOUT_SECONDS', str(_settings.ai_timeout)))
 AI_ANALYSIS_TIMEOUT = float(os.getenv('AI_ANALYSIS_TIMEOUT', '180'))  # LLM inference needs time on CPU
-MAX_CONCURRENT_REQUESTS = int(os.getenv('MAX_CONCURRENT_REQUESTS', '100'))
+MAX_CONCURRENT_REQUESTS = _settings.max_concurrent_requests
 USE_OPENAI_FALLBACK = os.getenv('USE_OPENAI_FALLBACK', 'false').lower() == 'true'  # Disabled by default
 
 # Configure logging with structured format
@@ -82,16 +86,23 @@ db_semaphore = asyncio.Semaphore(50)  # Max 50 concurrent DB operations
 background_sync_task = None
 oauth_automation_service: OAuthAutomationService = None
 
+# Track last sync timestamp for incremental fetching
+_last_email_sync_time: str = None
+
 async def auto_sync_emails():
     """
     FULLY AUTOMATED email sync with OAuth2 Client Credentials Flow
     NO user intervention required - authenticates automatically using app credentials
+    
+    Uses incremental sync: first run fetches all emails, subsequent runs only fetch
+    emails received AFTER the last successful sync (using receivedDateTime filter).
     
     Authentication Priority:
     1. Client Credentials (Application Permissions) - FULLY AUTOMATIC
     2. Refresh Token (if available from previous delegated auth)
     3. IMAP fallback (if OAuth2 not configured)
     """
+    global _last_email_sync_time
     # Wait 5 seconds before first sync to allow server to fully start
     await asyncio.sleep(5)
     
@@ -146,7 +157,7 @@ async def auto_sync_emails():
                         # If refresh failed or no refresh token, use Client Credentials (AUTOMATIC)
                         if not auth_success:
                             logger.info("🤖 Using Client Credentials Flow (automatic authentication)...")
-                            cred_result = graph_service.authenticate_with_credentials()
+                            cred_result = await graph_service.authenticate_with_credentials()
                             
                             if cred_result['status'] == 'success':
                                 token_storage.save_token(
@@ -183,14 +194,26 @@ async def auto_sync_emails():
                         candidate_count = await asyncio.to_thread(
                             lambda: db_service.get_total_candidates()
                         )
-                        process_all = (candidate_count == 0)
+                        is_first_sync = (candidate_count == 0 and _last_email_sync_time is None)
                         
-                        # Fetch emails
-                        logger.info(f"📧 {'Initial setup - fetching ALL emails...' if process_all else 'Syncing emails...'}")
+                        # Build incremental filter for Graph API
+                        filter_query = None
+                        if not is_first_sync and _last_email_sync_time:
+                            filter_query = f"receivedDateTime gt {_last_email_sync_time}"
+                            logger.info(f"📧 Incremental sync - fetching emails after {_last_email_sync_time}...")
+                        else:
+                            logger.info(f"📧 {'Initial setup - fetching ALL emails...' if is_first_sync else 'Full sync...'}")
+                        
+                        # Record sync start time (ISO 8601 format for Graph API)
+                        sync_start_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                        
+                        # Fetch emails - incremental when possible
+                        fetch_top = 100000 if is_first_sync else 500
                         result = await graph_service.get_messages(
                             folder='inbox', 
-                            top=100000,
-                            fetch_all=True
+                            top=fetch_top,
+                            fetch_all=is_first_sync,
+                            filter_query=filter_query
                         )
                     
                         if result['status'] == 'success':
@@ -226,7 +249,7 @@ async def auto_sync_emails():
                                     if received_dt:
                                         try:
                                             received_date = datetime.fromisoformat(received_dt.replace('Z', '+00:00'))
-                                        except:
+                                        except Exception:
                                             received_date = datetime.now()
                                     else:
                                         received_date = datetime.now()
@@ -252,11 +275,15 @@ async def auto_sync_emails():
                                     if not existing:
                                         needs_ai = True
                                         new_count += 1
-                                    elif not existing.get('ai_score'):
+                                    elif not existing.get('ai_analysis') and existing.get('matchScore', 0) <= 0:
                                         needs_ai = True
                                     
                                     # AI processing - use resume text OR email summary
                                     analysis_text = candidate.get('resume_text') or candidate.get('summary', '')
+                                    # Store resume text for future AI chat access
+                                    if analysis_text:
+                                        candidate['resume_text'] = analysis_text[:10000]
+                                    
                                     if needs_ai and analysis_text and len(analysis_text) > 20:
                                         try:
                                             ai_analysis = await asyncio.wait_for(
@@ -275,17 +302,41 @@ async def auto_sync_emails():
                                                     'phone': ai_analysis.get('phone') or candidate.get('phone', ''),
                                                     'location': ai_analysis.get('location') or candidate.get('location', ''),
                                                     'linkedin': ai_analysis.get('linkedin') or candidate.get('linkedin', ''),
+                                                    'certifications': ai_analysis.get('certifications', []),
+                                                    'languages': ai_analysis.get('languages', []),
+                                                    'work_history': ai_analysis.get('work_history', []),
                                                 })
-                                                logger.info(f"✅ AI scored {candidate.get('name')}: {ai_analysis.get('quality_score')}%")
+                                                # Determine status from score
+                                                score = ai_analysis.get('quality_score', 50)
+                                                candidate['status'] = 'Strong' if score >= 70 else ('Partial' if score >= 40 else 'Reject')
+                                                logger.info(f"✅ AI scored {candidate.get('name')}: {score}%")
                                         except Exception as ai_err:
-                                            logger.warning(f"AI analysis failed: {str(ai_err)[:50]}")
-                                            candidate['matchScore'] = 45  # Default score for error
+                                            logger.warning(f"AI analysis failed: {str(ai_err)[:100]}")
+                                            candidate['matchScore'] = 45
                                     
                                     # Save to database
                                     if existing:
                                         await asyncio.to_thread(db_service.update_candidate, candidate)
                                     else:
                                         await asyncio.to_thread(db_service.insert_candidate, candidate)
+                                    
+                                    # Save AI analysis if we got one
+                                    if needs_ai and analysis_text and len(analysis_text) > 20:
+                                        try:
+                                            await asyncio.to_thread(
+                                                db_service.save_ai_analysis,
+                                                candidate.get('id', ''),
+                                                {
+                                                    'score': candidate.get('matchScore', 50),
+                                                    'job_category': candidate.get('job_category', 'General'),
+                                                    'summary': candidate.get('summary', ''),
+                                                    'skills': candidate.get('skills', []),
+                                                    'experience': candidate.get('experience', 0),
+                                                    'analyzed_at': datetime.now().isoformat(),
+                                                }
+                                            )
+                                        except Exception:
+                                            pass
                                         
                                 except Exception as e:
                                     logger.warning(f"Error processing message: {str(e)[:100]}")
@@ -301,6 +352,8 @@ async def auto_sync_emails():
                             
                             logger.info(f"✅ OAuth2 sync: {primary_email} - {len(messages)} emails, {new_count} new candidates")
                             oauth2_success = True
+                            # Update last sync time on success
+                            _last_email_sync_time = sync_start_time
                             
                         else:
                             error_msg = result.get('message', 'Unknown error')
@@ -387,7 +440,7 @@ async def auto_sync_emails():
                                 if not existing:
                                     needs_ai_processing = True
                                     new_count += 1
-                                elif not existing.get('ai_score') or not existing.get('job_category'):
+                                elif not existing.get('ai_analysis') or not existing.get('job_category') or existing.get('job_category') == 'General':
                                     # Existing candidate without AI analysis
                                     needs_ai_processing = True
                                 
@@ -396,6 +449,10 @@ async def auto_sync_emails():
                                     try:
                                         # Use resume text OR summary for analysis
                                         analysis_text = candidate.get('resume_text', '') or candidate.get('summary', '')
+                                        # Store resume text for future AI chat access
+                                        if analysis_text:
+                                            candidate['resume_text'] = analysis_text[:10000]
+                                        
                                         if analysis_text and len(analysis_text) > 20:
                                             ai_analysis = await asyncio.wait_for(
                                                 ai_service.analyze_candidate(analysis_text),
@@ -403,9 +460,10 @@ async def auto_sync_emails():
                                             )
                                             if ai_analysis and ai_analysis.get('quality_score'):
                                                 # Map quality_score to matchScore for database
+                                                score = ai_analysis.get('quality_score', 50)
                                                 candidate.update({
                                                     'job_category': ai_analysis.get('job_category', 'General'),
-                                                    'matchScore': ai_analysis.get('quality_score', 50),
+                                                    'matchScore': score,
                                                     'summary': ai_analysis.get('summary', candidate.get('summary', '')),
                                                     'skills': ai_analysis.get('skills', candidate.get('skills', [])),
                                                     'experience': ai_analysis.get('experience', candidate.get('experience', 0)),
@@ -413,8 +471,11 @@ async def auto_sync_emails():
                                                     'phone': ai_analysis.get('phone') or candidate.get('phone', ''),
                                                     'location': ai_analysis.get('location') or candidate.get('location', ''),
                                                     'linkedin': ai_analysis.get('linkedin') or candidate.get('linkedin', ''),
+                                                    'certifications': ai_analysis.get('certifications', []),
+                                                    'languages': ai_analysis.get('languages', []),
+                                                    'status': 'Strong' if score >= 70 else ('Partial' if score >= 40 else 'Reject'),
                                                 })
-                                                logger.info(f"✅ AI scored {candidate.get('name')}: {ai_analysis.get('quality_score')}%")
+                                                logger.info(f"✅ AI scored {candidate.get('name')}: {score}%")
                                     except asyncio.TimeoutError:
                                         logger.warning(f"AI timeout for {candidate.get('name')} - using default score")
                                         candidate['matchScore'] = 45
@@ -446,8 +507,8 @@ async def auto_sync_emails():
                     except Exception as e:
                         logger.error(f"Auto-sync error for {account.name}: {str(e)}")
             
-            # Wait for next sync
-            sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', '15')) * 60
+            # Wait for next sync - default 2 minutes for near-real-time new email detection
+            sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', '2')) * 60
             logger.info(f"⏰ Auto-sync: Next sync in {sync_interval//60} minutes")
             await asyncio.sleep(sync_interval)
             
@@ -488,23 +549,39 @@ async def lifespan(app: FastAPI):
     # Initialize OAuth Automation Service
     oauth_automation_service = get_oauth_automation()
     
-    # Check if OAuth is properly configured
-    if oauth_automation_service.is_configured:
-        logger.info(f"🔐 OAuth2 Automation: Configured for {oauth_automation_service.primary_email}")
-        
-        # Check and auto-refresh token if needed
-        auth_status = await oauth_automation_service.check_auth_status()
-        logger.info(f"🔐 OAuth2 Status: {auth_status.value}")
-        
-        if auth_status.value in ['expired', 'no_token']:
-            # Try to auto-authenticate
-            result = await oauth_automation_service.ensure_valid_token()
-            if result['status'] == 'success':
-                logger.info(f"✅ OAuth2 auto-authenticated successfully")
+    # Check if OAuth is properly configured — do this in background to avoid blocking startup
+    async def _init_oauth_background():
+        """Initialize OAuth in background so server starts accepting requests immediately"""
+        try:
+            if oauth_automation_service.is_configured:
+                logger.info(f"🔐 OAuth2 Automation: Configured for {oauth_automation_service.primary_email}")
+                
+                # Check and auto-refresh token if needed (with timeout)
+                try:
+                    auth_status = await asyncio.wait_for(
+                        oauth_automation_service.check_auth_status(),
+                        timeout=10
+                    )
+                    logger.info(f"🔐 OAuth2 Status: {auth_status.value}")
+                    
+                    if auth_status.value in ['expired', 'no_token']:
+                        result = await asyncio.wait_for(
+                            oauth_automation_service.ensure_valid_token(),
+                            timeout=15
+                        )
+                        if result['status'] == 'success':
+                            logger.info(f"✅ OAuth2 auto-authenticated successfully")
+                        else:
+                            logger.warning(f"⚠️ OAuth2 auto-auth failed: {result.get('message')} - manual auth may be needed")
+                except asyncio.TimeoutError:
+                    logger.warning("⚠️ OAuth2 initialization timed out — will retry during sync")
             else:
-                logger.warning(f"⚠️ OAuth2 auto-auth failed: {result.get('message')} - manual auth may be needed")
-    else:
-        logger.info("📧 OAuth2 Automation: Not configured (missing credentials)")
+                logger.info("📧 OAuth2 Automation: Not configured (missing credentials)")
+        except Exception as e:
+            logger.warning(f"⚠️ OAuth2 background init error: {e}")
+    
+    # Launch OAuth init as background task — don't block server startup
+    asyncio.create_task(_init_oauth_background())
     
     # Auto-sync enabled? - Use new OAuth automation
     auto_sync_enabled = os.getenv('AUTO_SYNC_ENABLED', 'true').lower() == 'true'
@@ -513,9 +590,9 @@ async def lifespan(app: FastAPI):
     if auto_sync_enabled and (has_email_accounts or oauth_automation_service.is_configured):
         logger.info(f"🔄 Auto-sync: ENABLED (every {os.getenv('SYNC_INTERVAL_MINUTES', '15')} minutes)")
         
-        # Start OAuth automation service (handles token refresh and scheduling)
-        await oauth_automation_service.start()
-        logger.info("🔐 OAuth Automation Service: Started (auto-refresh enabled)")
+        # Start OAuth automation service in background (handles token refresh and scheduling)
+        asyncio.create_task(oauth_automation_service.start())
+        logger.info("🔐 OAuth Automation Service: Starting in background")
         
         # Also start legacy auto-sync for IMAP fallback
         try:
@@ -556,9 +633,9 @@ async def lifespan(app: FastAPI):
     response_cache.clear()
 
 app = FastAPI(
-    title="AI Recruiter API - High Performance Edition",
+    title=_settings.app_name,
     description="Optimized recruitment platform with email scraping, AI job matching, ML ranking, and automated campaigns",
-    version="4.0.0",
+    version=_settings.app_version,
     docs_url="/api/docs" if DEBUG else None,
     redoc_url="/api/redoc" if DEBUG else None,
     lifespan=lifespan
@@ -567,8 +644,11 @@ app = FastAPI(
 # Include advanced AI services router
 app.include_router(advanced_router)
 
-# CORS configuration - Environment-based with performance headers
-allowed_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000,http://localhost:3001,http://localhost:5173').split(',')
+# CORS configuration - from centralized config with env override
+allowed_origins = os.getenv('CORS_ORIGINS', _settings.cors_origins).split(',')
+# Ensure localhost:3001 is included for dev
+if 'http://localhost:3001' not in allowed_origins:
+    allowed_origins.append('http://localhost:3001')
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -629,8 +709,8 @@ scraper_task = None
 @app.get("/")
 async def root():
     return {
-        "message": "AI Recruiter API - High Performance Edition",
-        "version": "3.0.0",
+        "message": _settings.app_name,
+        "version": _settings.app_version,
         "status": "operational",
         "performance": {
             "max_concurrent_requests": MAX_CONCURRENT_REQUESTS,
@@ -660,7 +740,7 @@ async def health_check():
             "memory_percent": psutil.virtual_memory().percent,
             "disk_percent": psutil.disk_usage('/').percent
         }
-    except:
+    except Exception:
         system_info = {"status": "unavailable"}
     
     return {
@@ -1020,7 +1100,7 @@ async def reset_and_reparse_all_emails():
         scraper_service.processed_message_ids.clear()
         
         # Step 3: Trigger full email sync via OAuth2 (Microsoft Graph)
-        primary_email = os.getenv('EMAIL_ADDRESS', 'hr@effortz.com')
+        primary_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
         token_storage = get_token_storage()
         token_data = token_storage.get_token(primary_email)
         
@@ -1080,7 +1160,7 @@ async def reset_and_reparse_all_emails():
                 if received_dt:
                     try:
                         received_date = datetime.fromisoformat(received_dt.replace('Z', '+00:00'))
-                    except:
+                    except Exception:
                         received_date = datetime.now()
                 else:
                     received_date = datetime.now()
@@ -1246,17 +1326,16 @@ async def reprocess_candidate_scores():
     This fixes candidates that were imported before AI scoring was properly connected.
     """
     try:
-        conn = db_service.get_connection()
-        cursor = conn.cursor()
-        
-        # Get candidates with 0 score (not yet scored)
-        cursor.execute("""
-            SELECT id, email, name, skills, summary, education, work_history 
-            FROM candidates 
-            WHERE match_score = 0 OR match_score IS NULL
-        """)
-        rows = cursor.fetchall()
-        conn.close()
+        with db_service.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get candidates with 0 score (not yet scored)
+            cursor.execute("""
+                SELECT id, email, name, skills, summary, education, work_history 
+                FROM candidates 
+                WHERE match_score = 0 OR match_score IS NULL
+            """)
+            rows = cursor.fetchall()
         
         if not rows:
             return {"status": "success", "message": "No candidates need reprocessing", "processed": 0}
@@ -1283,7 +1362,7 @@ async def reprocess_candidate_scores():
                         for job in wh:
                             if isinstance(job, dict):
                                 text_parts.append(f"{job.get('title', '')} at {job.get('company', '')}")
-                    except:
+                    except Exception:
                         pass
                 
                 resume_text = ' '.join(text_parts)
@@ -1301,18 +1380,17 @@ async def reprocess_candidate_scores():
                         )
                         new_score = ai_analysis.get('quality_score', 50)
                         new_category = ai_analysis.get('job_category', 'General')
-                    except:
+                    except Exception:
                         new_score = 50
                         new_category = 'General'
                 
                 # Update database
-                update_conn = db_service.get_connection()
-                update_cursor = update_conn.cursor()
-                update_cursor.execute("""
-                    UPDATE candidates SET match_score = ?, job_category = ? WHERE id = ?
-                """, (new_score, new_category, candidate_id))
-                update_conn.commit()
-                update_conn.close()
+                with db_service.get_connection() as update_conn:
+                    update_cursor = update_conn.cursor()
+                    update_cursor.execute("""
+                        UPDATE candidates SET match_score = ?, job_category = ? WHERE id = ?
+                    """, (new_score, new_category, candidate_id))
+                    update_conn.commit()
                 
                 processed += 1
                 logger.info(f"✅ Reprocessed {name}: Score={new_score}%, Category={new_category}")
@@ -1336,12 +1414,11 @@ async def reprocess_candidate_scores():
 async def get_candidate(candidate_id: str):
     """Get single candidate by ID"""
     try:
-        conn = db_service.get_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (candidate_id,))
-        row = cursor.fetchone()
-        conn.close()
+        with db_service.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (candidate_id,))
+            row = cursor.fetchone()
         
         if not row:
             raise HTTPException(404, "Candidate not found")
@@ -1422,8 +1499,15 @@ async def upload_resume(file: UploadFile = File(...)):
                     ai_score = ai_analysis.get('quality_score', 50.0)
                     job_category = ai_analysis.get('job_category', 'General')
                     summary = ai_analysis.get('summary', summary)
+                    # Merge AI skills with parsed skills instead of overwriting
                     if ai_analysis.get('skills'):
-                        parsed['skills'] = ai_analysis['skills']
+                        existing_skills = set(s.lower() for s in parsed.get('skills', []))
+                        merged_skills = list(parsed.get('skills', []))
+                        for skill in ai_analysis['skills']:
+                            if skill.lower() not in existing_skills:
+                                merged_skills.append(skill)
+                                existing_skills.add(skill.lower())
+                        parsed['skills'] = merged_skills
                     if ai_analysis.get('experience'):
                         parsed['experience'] = ai_analysis['experience']
             except Exception as ai_err:
@@ -1452,9 +1536,13 @@ async def upload_resume(file: UploadFile = File(...)):
             'status': status,
             'matchScore': round(ai_score, 1),
             'job_category': job_category,
+            'job_subcategory': parsed.get('job_subcategory', ''),
             'appliedDate': datetime.now().isoformat(),
             'last_updated': datetime.now().isoformat(),
             'raw_email_subject': f"Resume Upload: {filename}",
+            'certifications': parsed.get('certifications', []),
+            'languages': parsed.get('languages', []),
+            'resume_text': resume_text[:10000] if resume_text else '',
         }
 
         # Check if candidate with same email exists
@@ -1466,6 +1554,30 @@ async def upload_resume(file: UploadFile = File(...)):
         else:
             db_service.insert_candidate(candidate)
             logger.info(f"✨ New candidate from upload: {candidate['name']} ({candidate['email']}) - Score: {ai_score}")
+
+        # Save detailed AI analysis if available
+        if resume_text.strip():
+            try:
+                db_service.save_ai_analysis(candidate['id'], {
+                    'score': round(ai_score, 1),
+                    'job_category': job_category,
+                    'summary': summary,
+                    'skills': parsed.get('skills', []),
+                    'experience': parsed.get('experience', 0),
+                    'education': parsed.get('education', []),
+                    'certifications': parsed.get('certifications', []),
+                    'languages': parsed.get('languages', []),
+                    'analyzed_at': datetime.now().isoformat(),
+                })
+            except Exception as e:
+                logger.warning(f"Failed to save AI analysis: {e}")
+
+        # Save resume file for future re-analysis
+        try:
+            content_type = 'application/pdf' if filename.lower().endswith('.pdf') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' if filename.lower().endswith('.docx') else 'application/octet-stream'
+            db_service.save_resume(candidate['id'], filename, content, content_type)
+        except Exception as e:
+            logger.warning(f"Failed to save resume file: {e}")
 
         return {
             "status": "success",
@@ -1533,7 +1645,13 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...)):
                         job_category = ai_analysis.get('job_category', 'General')
                         summary = ai_analysis.get('summary', summary)
                         if ai_analysis.get('skills'):
-                            parsed['skills'] = ai_analysis['skills']
+                            existing_skills = set(s.lower() for s in parsed.get('skills', []))
+                            merged_skills = list(parsed.get('skills', []))
+                            for skill in ai_analysis['skills']:
+                                if skill.lower() not in existing_skills:
+                                    merged_skills.append(skill)
+                                    existing_skills.add(skill.lower())
+                            parsed['skills'] = merged_skills
                         if ai_analysis.get('experience'):
                             parsed['experience'] = ai_analysis['experience']
                 except Exception:
@@ -1560,9 +1678,13 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...)):
                 'status': status,
                 'matchScore': round(ai_score, 1),
                 'job_category': job_category,
+                'job_subcategory': parsed.get('job_subcategory', ''),
                 'appliedDate': datetime.now().isoformat(),
                 'last_updated': datetime.now().isoformat(),
                 'raw_email_subject': f"Resume Upload: {filename}",
+                'certifications': parsed.get('certifications', []),
+                'languages': parsed.get('languages', []),
+                'resume_text': resume_text[:10000] if resume_text else '',
             }
 
             existing = db_service.get_candidate_by_email(parsed['email'])
@@ -1571,6 +1693,28 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...)):
                 db_service.update_candidate(candidate)
             else:
                 db_service.insert_candidate(candidate)
+
+            # Save AI analysis
+            try:
+                db_service.save_ai_analysis(candidate['id'], {
+                    'score': round(ai_score, 1),
+                    'job_category': job_category,
+                    'summary': summary,
+                    'skills': parsed.get('skills', []),
+                    'experience': parsed.get('experience', 0),
+                    'education': parsed.get('education', []),
+                    'certifications': parsed.get('certifications', []),
+                    'languages': parsed.get('languages', []),
+                    'analyzed_at': datetime.now().isoformat(),
+                })
+            except Exception:
+                pass
+
+            # Save resume file
+            try:
+                db_service.save_resume(candidate['id'], filename, content)
+            except Exception:
+                pass
 
             logger.info(f"✨ Processed upload: {candidate['name']} - Score: {ai_score}")
 
@@ -1606,7 +1750,7 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...)):
 # ============================================================================
 
 @app.get("/api/ai/candidate/{candidate_id}/analysis")
-async def get_candidate_ai_analysis(candidate_id: str):
+async def get_candidate_deep_analysis(candidate_id: str):
     """
     Get deep AI analysis of a candidate including:
     - Detailed pros and cons
@@ -1616,11 +1760,10 @@ async def get_candidate_ai_analysis(candidate_id: str):
     """
     try:
         # Get candidate from database
-        conn = db_service.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (candidate_id,))
-        row = cursor.fetchone()
-        conn.close()
+        with db_service.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (candidate_id,))
+            row = cursor.fetchone()
         
         if not row:
             raise HTTPException(404, "Candidate not found")
@@ -1634,53 +1777,196 @@ async def get_candidate_ai_analysis(candidate_id: str):
             cached['from_cache'] = True
             return cached
         
-        # Get OpenAI service
+        # TIER 1: Try Local LLM (Ollama) — Free
+        try:
+            from services.llm_service import get_llm_service
+            llm_svc = await get_llm_service()
+            if llm_svc and llm_svc.available:
+                analysis = await llm_svc.analyze_candidate_deep(candidate)
+                if analysis and analysis.get('overall_assessment', '') != 'Unable to perform deep analysis':
+                    result = {
+                        "candidate_id": candidate_id,
+                        "candidate_name": candidate['name'],
+                        **analysis,
+                        "ai_powered": True,
+                        "source": "local_llm"
+                    }
+                    response_cache[cache_key] = result
+                    return result
+        except Exception as llm_err:
+            logger.warning(f"LLM deep analysis failed: {llm_err}")
+        
+        # TIER 2: Try OpenAI — Emergency fallback
         from services.openai_service import get_openai_service
         openai_svc = get_openai_service()
         
-        if not openai_svc:
-            # Fallback: generate basic analysis without AI
-            return {
+        if openai_svc:
+            analysis = openai_svc.analyze_candidate_deep(candidate)
+            result = {
                 "candidate_id": candidate_id,
                 "candidate_name": candidate['name'],
-                "overall_score": candidate.get('matchScore', 50),
-                "pros": [
-                    f"Has {candidate.get('experience', 0)} years of experience",
-                    f"Skills include: {', '.join(candidate.get('skills', [])[:5]) or 'Not specified'}",
-                    "Resume available in database"
-                ],
-                "cons": [
-                    "AI analysis unavailable - configure OPENAI_API_KEY"
-                ],
-                "hiring_recommendation": {
-                    "verdict": "Review Needed",
-                    "confidence": 50,
-                    "ideal_roles": [],
-                    "interview_focus_areas": ["Technical skills", "Experience verification"]
-                },
-                "ai_powered": False
+                **analysis,
+                "ai_powered": True,
+                "source": "openai_fallback"
             }
+            response_cache[cache_key] = result
+            return result
         
-        # Run deep AI analysis
-        analysis = openai_svc.analyze_candidate_deep(candidate)
-        
-        result = {
+        # TIER 3: Basic fallback — No AI
+        return {
             "candidate_id": candidate_id,
             "candidate_name": candidate['name'],
-            **analysis,
-            "ai_powered": True
+            "overall_score": candidate.get('matchScore', 50),
+            "pros": [
+                f"Has {candidate.get('experience', 0)} years of experience",
+                f"Skills include: {', '.join(candidate.get('skills', [])[:5]) or 'Not specified'}",
+                "Resume available in database"
+            ],
+            "cons": [
+                "AI analysis unavailable - configure Ollama or OPENAI_API_KEY"
+            ],
+            "hiring_recommendation": {
+                "verdict": "Review Needed",
+                "confidence": 50,
+                "ideal_roles": [],
+                "interview_focus_areas": ["Technical skills", "Experience verification"]
+            },
+            "ai_powered": False,
+            "source": "rule_based"
         }
-        
-        # Cache for 1 hour
-        response_cache[cache_key] = result
-        
-        return result
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"AI analysis error: {e}")
         raise HTTPException(500, f"Error analyzing candidate: {str(e)}")
+
+
+@app.post("/api/ai/match-job-file")
+async def match_candidates_to_job_file(
+    file: UploadFile = File(None),
+    job_description: str = Form(None),
+    top_n: int = Form(10),
+):
+    """
+    Match candidates from database against a job description supplied as a file (PDF/DOCX/TXT) or text.
+    At least one of 'file' or 'job_description' is required.
+    Parses the file to extract JD text, then runs AI matching against all DB candidates.
+    """
+    try:
+        jd_text = ""
+
+        # 1. Extract text from uploaded file
+        if file and file.filename:
+            filename = file.filename
+            ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+            if ext not in ('pdf', 'docx', 'doc', 'txt'):
+                raise HTTPException(400, "Only PDF, DOCX and TXT files are supported for job descriptions.")
+            content = await file.read()
+            if len(content) > 10 * 1024 * 1024:
+                raise HTTPException(400, "File too large. Max 10MB.")
+
+            if ext == 'txt':
+                jd_text = content.decode('utf-8', errors='ignore')
+            else:
+                # Use resume_parser to extract text from PDF/DOCX
+                parsed = await resume_parser.parse_resume(content, filename)
+                jd_text = parsed.get('raw_text', '') or parsed.get('summary', '')
+
+        # 2. Use text input as fallback or supplement
+        if job_description:
+            if jd_text:
+                jd_text = jd_text + "\n\n" + job_description
+            else:
+                jd_text = job_description
+
+        if not jd_text or len(jd_text.strip()) < 30:
+            raise HTTPException(400, "Could not extract sufficient text from the job description. Please provide a file or paste the JD text.")
+
+        # Forward to existing match-job logic
+        from starlette.datastructures import FormData
+        # Reuse the same logic
+        candidates_list = await asyncio.to_thread(
+            db_service.get_candidates_paginated,
+            1, 500, {}  # Get up to 500 candidates
+        )
+
+        if not candidates_list:
+            return {
+                "status": "no_candidates",
+                "message": "No candidates in database to match",
+                "rankings": [],
+                "job_analysis": {},
+                "jd_text_length": len(jd_text)
+            }
+
+        total_searched = len(candidates_list)
+
+        # TIER 1: Try Local LLM (Ollama)
+        try:
+            from services.llm_service import get_llm_service
+            llm_svc = await get_llm_service()
+            if llm_svc and llm_svc.available:
+                ranked = await llm_svc.rank_candidates_for_job(candidates_list, jd_text, top_n)
+                return {
+                    "status": "success",
+                    "rankings": ranked,
+                    "ai_powered": True,
+                    "source": "local_llm",
+                    "total_candidates_searched": total_searched,
+                    "jd_text_length": len(jd_text)
+                }
+        except Exception as llm_err:
+            logger.warning(f"LLM job file matching failed: {llm_err}")
+
+        # TIER 2: Try OpenAI
+        from services.openai_service import get_openai_service
+        openai_svc = get_openai_service()
+
+        if openai_svc:
+            result = openai_svc.match_candidates_to_job(jd_text, candidates_list, top_n)
+            result['ai_powered'] = True
+            result['source'] = 'openai_fallback'
+            result['total_candidates_searched'] = total_searched
+            result['jd_text_length'] = len(jd_text)
+            return result
+
+        # TIER 3: Enhanced keyword matching fallback
+        jd_lower = jd_text.lower()
+        for c in candidates_list:
+            skill_matches = sum(1 for s in c.get('skills', []) if s.lower() in jd_lower)
+            exp = c.get('experience', 0) or 0
+            base_score = c.get('matchScore', 50) or 50
+            c['job_fit_score'] = min(30 + skill_matches * 12 + min(exp, 10) * 2 + base_score * 0.2, 98)
+
+        candidates_list.sort(key=lambda x: x.get('job_fit_score', 0), reverse=True)
+
+        return {
+            "status": "basic_match",
+            "message": "Keyword-based matching (AI models unavailable)",
+            "rankings": [
+                {
+                    "rank": i + 1,
+                    "candidate_id": c['id'],
+                    "candidate_name": c.get('name', 'Unknown'),
+                    "job_fit_score": round(c.get('job_fit_score', 50), 1),
+                    "match_reasons": [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
+                    "recommendation": "Strong Fit" if c.get('job_fit_score', 0) >= 70 else "Potential Fit" if c.get('job_fit_score', 0) >= 50 else "Review Needed"
+                }
+                for i, c in enumerate(candidates_list[:top_n])
+            ],
+            "job_analysis": {},
+            "ai_powered": False,
+            "source": "keyword_fallback",
+            "total_candidates_searched": total_searched,
+            "jd_text_length": len(jd_text)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Job file matching error: {e}")
+        raise HTTPException(500, f"Error matching candidates to job description: {str(e)}")
 
 
 @app.post("/api/ai/match-job")
@@ -1720,43 +2006,59 @@ async def match_candidates_to_job_description(
                 "job_analysis": {}
             }
         
-        # Get OpenAI service
+        # TIER 1: Try Local LLM (Ollama) — Free
+        try:
+            from services.llm_service import get_llm_service
+            llm_svc = await get_llm_service()
+            if llm_svc and llm_svc.available:
+                ranked = await llm_svc.rank_candidates_for_job(candidates, job_description, top_n)
+                return {
+                    "status": "success",
+                    "rankings": ranked,
+                    "ai_powered": True,
+                    "source": "local_llm",
+                    "total_candidates_searched": len(candidates)
+                }
+        except Exception as llm_err:
+            logger.warning(f"LLM job matching failed: {llm_err}")
+        
+        # TIER 2: Try OpenAI — Emergency fallback
         from services.openai_service import get_openai_service
         openai_svc = get_openai_service()
         
-        if not openai_svc:
-            # Fallback: basic keyword matching
-            jd_lower = job_description.lower()
-            for c in candidates:
-                skill_matches = sum(1 for s in c.get('skills', []) if s.lower() in jd_lower)
-                c['job_fit_score'] = min(40 + skill_matches * 10, 95)
-            
-            candidates.sort(key=lambda x: x.get('job_fit_score', 0), reverse=True)
-            
-            return {
-                "status": "basic_match",
-                "message": "Basic keyword matching (AI unavailable)",
-                "rankings": [
-                    {
-                        "rank": i + 1,
-                        "candidate_id": c['id'],
-                        "candidate_name": c['name'],
-                        "job_fit_score": c.get('job_fit_score', 50),
-                        "match_reasons": [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
-                        "recommendation": "Review Needed"
-                    }
-                    for i, c in enumerate(candidates[:top_n])
-                ],
-                "job_analysis": {},
-                "ai_powered": False
-            }
+        if openai_svc:
+            result = openai_svc.match_candidates_to_job(job_description, candidates, top_n)
+            result['ai_powered'] = True
+            result['source'] = 'openai_fallback'
+            result['total_candidates_searched'] = len(candidates)
+            return result
         
-        # Run AI job matching
-        result = openai_svc.match_candidates_to_job(job_description, candidates, top_n)
-        result['ai_powered'] = True
-        result['total_candidates_searched'] = len(candidates)
+        # TIER 3: Basic keyword matching fallback
+        jd_lower = job_description.lower()
+        for c in candidates:
+            skill_matches = sum(1 for s in c.get('skills', []) if s.lower() in jd_lower)
+            c['job_fit_score'] = min(40 + skill_matches * 10, 95)
         
-        return result
+        candidates.sort(key=lambda x: x.get('job_fit_score', 0), reverse=True)
+        
+        return {
+            "status": "basic_match",
+            "message": "Basic keyword matching (AI unavailable)",
+            "rankings": [
+                {
+                    "rank": i + 1,
+                    "candidate_id": c['id'],
+                    "candidate_name": c['name'],
+                    "job_fit_score": c.get('job_fit_score', 50),
+                    "match_reasons": [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
+                    "recommendation": "Review Needed"
+                }
+                for i, c in enumerate(candidates[:top_n])
+            ],
+            "job_analysis": {},
+            "ai_powered": False,
+            "source": "keyword_fallback"
+        }
         
     except HTTPException:
         raise
@@ -1782,54 +2084,65 @@ async def compare_candidates(
         
         # Get candidates from database
         candidates = []
-        conn = db_service.get_connection()
-        cursor = conn.cursor()
-        
-        for cid in candidate_ids:
-            cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (cid,))
-            row = cursor.fetchone()
-            if row:
-                candidates.append(db_service._row_to_candidate(row))
-        
-        conn.close()
+        with db_service.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            for cid in candidate_ids:
+                cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (cid,))
+                row = cursor.fetchone()
+                if row:
+                    candidates.append(db_service._row_to_candidate(row))
         
         if len(candidates) < 2:
             raise HTTPException(404, "Could not find enough candidates to compare")
         
-        # Get OpenAI service
+        # TIER 1: Try Local LLM — Free
+        try:
+            from services.llm_service import get_llm_service
+            llm_svc = await get_llm_service()
+            if llm_svc and llm_svc.available:
+                result = await llm_svc.compare_candidates(candidates, job_description)
+                if result and not result.get('error'):
+                    result['ai_powered'] = True
+                    result['source'] = 'local_llm'
+                    return result
+        except Exception as llm_err:
+            logger.warning(f"LLM comparison failed: {llm_err}")
+        
+        # TIER 2: OpenAI fallback
         from services.openai_service import get_openai_service
         openai_svc = get_openai_service()
         
-        if not openai_svc:
-            # Basic comparison without AI
-            candidates.sort(key=lambda x: x.get('matchScore', 0), reverse=True)
-            return {
-                "comparison_matrix": [
-                    {
-                        "name": c['name'],
-                        "overall_rank": i + 1,
-                        "score": c.get('matchScore', 50),
-                        "key_strengths": c.get('skills', [])[:3],
-                        "key_weaknesses": ["AI analysis unavailable"],
-                        "best_for": "General roles",
-                        "risk_level": "unknown"
-                    }
-                    for i, c in enumerate(candidates)
-                ],
-                "head_to_head": {
-                    "winner": candidates[0]['name'],
-                    "reasoning": "Highest match score",
-                    "runner_up": candidates[1]['name'] if len(candidates) > 1 else None
-                },
-                "recommendation": "Configure OPENAI_API_KEY for detailed comparison",
-                "ai_powered": False
-            }
+        if openai_svc:
+            result = openai_svc.generate_candidate_comparison(candidates, job_description)
+            result['ai_powered'] = True
+            result['source'] = 'openai_fallback'
+            return result
         
-        # Run AI comparison
-        result = openai_svc.generate_candidate_comparison(candidates, job_description)
-        result['ai_powered'] = True
-        
-        return result
+        # TIER 3: Rule-based fallback
+        candidates.sort(key=lambda x: x.get('matchScore', 0), reverse=True)
+        return {
+            "comparison_matrix": [
+                {
+                    "name": c['name'],
+                    "overall_rank": i + 1,
+                    "score": c.get('matchScore', 50),
+                    "key_strengths": c.get('skills', [])[:3],
+                    "key_weaknesses": ["AI analysis unavailable"],
+                    "best_for": c.get('jobCategory', 'General'),
+                    "risk_level": "unknown"
+                }
+                for i, c in enumerate(candidates)
+            ],
+            "head_to_head": {
+                "winner": candidates[0]['name'],
+                "reasoning": "Highest match score",
+                "runner_up": candidates[1]['name'] if len(candidates) > 1 else None
+            },
+            "recommendation": "Configure Ollama or OPENAI_API_KEY for detailed comparison",
+            "ai_powered": False,
+            "source": "rule_based"
+        }
         
     except HTTPException:
         raise
@@ -1845,43 +2158,76 @@ async def ai_chat(
 ):
     """
     Enhanced AI chat with database context.
-    The AI has access to your candidate database for intelligent responses.
+    3-TIER FALLBACK: LLM → OpenAI → Rule-based
+    Passes full candidate data for detailed, context-rich responses.
     """
     try:
         candidates_data = None
         context = None
         
         if include_candidates:
-            # Get candidate summary for context
             stats = await asyncio.to_thread(db_service.get_statistics)
+            # Fetch more candidates (up to 200) for comprehensive AI context
             candidates = await asyncio.to_thread(
-                db_service.get_candidates_paginated, 1, 20, {}
+                db_service.get_candidates_paginated, 1, 200, {}
             )
             candidates_data = candidates
-            context = f"Database has {stats.get('total_candidates', 0)} candidates across {len(stats.get('categories', {}))} job categories."
+            context = {
+                'totalCandidates': stats.get('total_candidates', 0),
+                'avgMatchScore': stats.get('avg_score', 0),
+                'strongMatches': stats.get('strong_matches', 0),
+                'recentCount': stats.get('recent_count', 0),
+                'categories': stats.get('categories', {}),
+            }
         
+        # TIER 1: Try Local LLM (Ollama) — Free
+        try:
+            llm_svc = await get_llm_service()
+            if llm_svc and llm_svc.available:
+                llm_response = await asyncio.wait_for(
+                    llm_svc.chat(message, context, candidates_data=candidates_data),
+                    timeout=AI_TIMEOUT
+                )
+                if llm_response:
+                    return {
+                        "response": llm_response,
+                        "ai_powered": True,
+                        "context_included": include_candidates,
+                        "source": "local_llm"
+                    }
+        except asyncio.TimeoutError:
+            logger.warning(f"LLM chat timeout (>{AI_TIMEOUT}s)")
+        except Exception as llm_err:
+            logger.warning(f"LLM chat error: {llm_err}")
+        
+        # TIER 2: OpenAI fallback
         from services.openai_service import get_openai_service
         openai_svc = get_openai_service()
         
-        if not openai_svc:
+        if openai_svc:
+            response = openai_svc.chat_with_ai(message, context, candidates_data)
             return {
-                "response": "AI service unavailable. Please configure OPENAI_API_KEY in your environment.",
-                "ai_powered": False
+                "response": response,
+                "ai_powered": True,
+                "context_included": include_candidates,
+                "source": "openai_fallback"
             }
         
-        response = openai_svc.chat_with_ai(message, context, candidates_data)
-        
+        # TIER 3: Rule-based fallback
         return {
-            "response": response,
-            "ai_powered": True,
-            "context_included": include_candidates
+            "response": f"I understand you're asking about: '{message}'. Currently both LLM and OpenAI are unavailable. "
+                        f"Please configure Ollama or OPENAI_API_KEY for intelligent responses.",
+            "ai_powered": False,
+            "context_included": include_candidates,
+            "source": "rule_based"
         }
         
     except Exception as e:
         logger.error(f"AI chat error: {e}")
         return {
             "response": f"Error: {str(e)}",
-            "ai_powered": False
+            "ai_powered": False,
+            "source": "error"
         }
 
 
@@ -1896,36 +2242,34 @@ async def get_live_stats():
     Lightweight endpoint for frequent polling.
     """
     try:
-        conn = db_service.get_connection()
-        cursor = conn.cursor()
-        
-        # Get counts efficiently
-        cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1")
-        total = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT COUNT(*) FROM candidates 
-            WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-24 hours')
-        """)
-        new_24h = cursor.fetchone()[0]
-        
-        cursor.execute("""
-            SELECT job_category, COUNT(*) as count, AVG(match_score) as avg_score
-            FROM candidates WHERE is_active = 1
-            GROUP BY job_category
-        """)
-        categories = {row[0]: {"count": row[1], "avg_score": round(row[2] or 0, 1)} for row in cursor.fetchall()}
-        
-        cursor.execute("SELECT AVG(match_score) FROM candidates WHERE is_active = 1")
-        avg_score = cursor.fetchone()[0] or 0
-        
-        cursor.execute("""
-            SELECT COUNT(*) FROM candidates 
-            WHERE is_active = 1 AND match_score >= 70
-        """)
-        strong_matches = cursor.fetchone()[0]
-        
-        conn.close()
+        with db_service.get_connection() as conn:
+            cursor = conn.cursor()
+            
+            # Get counts efficiently
+            cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1")
+            total = cursor.fetchone()[0]
+            
+            cursor.execute("""
+                SELECT COUNT(*) FROM candidates 
+                WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-24 hours')
+            """)
+            new_24h = cursor.fetchone()[0]
+            
+            cursor.execute("""
+                SELECT job_category, COUNT(*) as count, AVG(match_score) as avg_score
+                FROM candidates WHERE is_active = 1
+                GROUP BY job_category
+            """)
+            categories = {row[0]: {"count": row[1], "avg_score": round(row[2] or 0, 1)} for row in cursor.fetchall()}
+            
+            cursor.execute("SELECT AVG(match_score) FROM candidates WHERE is_active = 1")
+            avg_score = cursor.fetchone()[0] or 0
+            
+            cursor.execute("""
+                SELECT COUNT(*) FROM candidates 
+                WHERE is_active = 1 AND match_score >= 70
+            """)
+            strong_matches = cursor.fetchone()[0]
         
         return {
             "total_candidates": total,
@@ -2146,9 +2490,10 @@ async def import_linkedin_profile(profile: LinkedInProfileImport):
         
         # Store in database
         if existing:
-            db_service.update_candidate(candidate_id, candidate_data)
+            candidate_data['id'] = candidate_id
+            db_service.update_candidate(candidate_data)
         else:
-            db_service.add_candidate(candidate_data)
+            db_service.insert_candidate(candidate_data)
         
         logger.info(f"✅ LinkedIn profile imported: {profile.name} (Score: {candidate_data['matchScore']})")
         
@@ -2203,25 +2548,23 @@ async def match_candidates(
     """
     try:
         # Resolve job description from database
-        conn = db_service.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT description, title, required_skills FROM job_descriptions WHERE id = ?", (job_description_id,))
-        jd_row = cursor.fetchone()
-        if not jd_row:
-            conn.close()
-            raise HTTPException(404, f"Job description not found: {job_description_id}")
-        
-        job_text = f"{jd_row[1] or ''}\n{jd_row[0] or ''}\nRequired Skills: {jd_row[2] or ''}"
-        
-        # Resolve candidates
-        if candidate_ids:
-            placeholders = ','.join(['?' for _ in candidate_ids])
-            cursor.execute(f"SELECT * FROM candidates WHERE id IN ({placeholders}) AND is_active = 1", candidate_ids)
-        else:
-            cursor.execute("SELECT * FROM candidates WHERE is_active = 1 ORDER BY match_score DESC LIMIT 100")
-        
-        rows = cursor.fetchall()
-        conn.close()
+        with db_service.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT description, title, required_skills FROM job_descriptions WHERE id = ?", (job_description_id,))
+            jd_row = cursor.fetchone()
+            if not jd_row:
+                raise HTTPException(404, f"Job description not found: {job_description_id}")
+            
+            job_text = f"{jd_row[1] or ''}\n{jd_row[0] or ''}\nRequired Skills: {jd_row[2] or ''}"
+            
+            # Resolve candidates
+            if candidate_ids:
+                placeholders = ','.join(['?' for _ in candidate_ids])
+                cursor.execute(f"SELECT * FROM candidates WHERE id IN ({placeholders}) AND is_active = 1", candidate_ids)
+            else:
+                cursor.execute("SELECT * FROM candidates WHERE is_active = 1 ORDER BY match_score DESC LIMIT 100")
+            
+            rows = cursor.fetchall()
         
         candidates = [db_service._row_to_candidate(row) for row in rows]
         
@@ -2243,20 +2586,18 @@ async def evaluate_candidate(candidate_id: str, job_description_id: str):
     """
     try:
         # Resolve job description
-        conn = db_service.get_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT description, title, required_skills FROM job_descriptions WHERE id = ?", (job_description_id,))
-        jd_row = cursor.fetchone()
-        if not jd_row:
-            conn.close()
-            raise HTTPException(404, f"Job description not found: {job_description_id}")
-        
-        job_text = f"{jd_row[1] or ''}\n{jd_row[0] or ''}\nRequired Skills: {jd_row[2] or ''}"
-        
-        # Resolve candidate
-        cursor.execute("SELECT * FROM candidates WHERE id = ?", (candidate_id,))
-        cand_row = cursor.fetchone()
-        conn.close()
+        with db_service.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT description, title, required_skills FROM job_descriptions WHERE id = ?", (job_description_id,))
+            jd_row = cursor.fetchone()
+            if not jd_row:
+                raise HTTPException(404, f"Job description not found: {job_description_id}")
+            
+            job_text = f"{jd_row[1] or ''}\n{jd_row[0] or ''}\nRequired Skills: {jd_row[2] or ''}"
+            
+            # Resolve candidate
+            cursor.execute("SELECT * FROM candidates WHERE id = ?", (candidate_id,))
+            cand_row = cursor.fetchone()
         
         if not cand_row:
             raise HTTPException(404, f"Candidate not found: {candidate_id}")
@@ -2306,6 +2647,7 @@ async def sync_email_applications(request: EmailSyncRequest):
     Supports both OAuth2 (Microsoft Graph) and IMAP
     """
     try:
+        sync_start_time = time.time()
         # OAuth2 Mode - Use Microsoft Graph API directly
         if request.access_token:
             client_id = os.getenv('MICROSOFT_CLIENT_ID', 'dummy')
@@ -2449,7 +2791,7 @@ async def sync_email_applications(request: EmailSyncRequest):
             'ai_processed': ai_processed_count,
             'candidates': candidates,
             'auth_type': 'imap',
-            'processing_time': f"{(time.time() - time.time()):.2f}s"
+            'processing_time': f"{(time.time() - sync_start_time):.2f}s"
         }
     
     except Exception as e:
@@ -2478,7 +2820,7 @@ async def auto_authenticate():
         graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=email_address)
         
         # Use client credentials flow (doesn't require user interaction)
-        result = graph_service.authenticate_with_credentials()
+        result = await graph_service.authenticate_with_credentials()
         
         if result['status'] == 'success':
             # Save token to storage
@@ -2602,7 +2944,7 @@ async def trigger_reset_and_reparse(email_address: str):
                 if received_dt:
                     try:
                         received_date = datetime.fromisoformat(received_dt.replace('Z', '+00:00'))
-                    except:
+                    except Exception:
                         received_date = datetime.now()
                 else:
                     received_date = datetime.now()
@@ -2863,6 +3205,30 @@ async def sync_emails_now():
         logger.error(f"Sync error: {str(e)}")
         raise HTTPException(500, f"Error starting sync: {str(e)}")
 
+@app.get("/api/email/sync-status")
+async def get_sync_status():
+    """
+    Get current email sync status including last sync time and candidate count.
+    Frontend can poll this to detect new candidates.
+    """
+    try:
+        candidate_count = await asyncio.to_thread(lambda: db_service.get_total_candidates())
+        sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', '2'))
+        return {
+            'last_sync_time': _last_email_sync_time,
+            'candidate_count': candidate_count,
+            'sync_interval_minutes': sync_interval,
+            'status': 'active'
+        }
+    except Exception as e:
+        return {
+            'last_sync_time': _last_email_sync_time,
+            'candidate_count': 0,
+            'sync_interval_minutes': int(os.getenv('SYNC_INTERVAL_MINUTES', '2')),
+            'status': 'error',
+            'error': str(e)
+        }
+
 
 # ============================================
 # REAL-TIME EMAIL PROCESSING
@@ -2895,7 +3261,7 @@ async def process_single_email(message_id: str, graph_service):
         if received_dt:
             try:
                 received_date = datetime.fromisoformat(received_dt.replace('Z', '+00:00'))
-            except:
+            except Exception:
                 received_date = datetime.now()
         else:
             received_date = datetime.now()
@@ -3406,7 +3772,7 @@ async def manual_email_sync():
             tenant_id = os.getenv('MICROSOFT_TENANT_ID')
             
             if client_id and tenant_id:
-                auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?client_id={client_id}&response_type=code&redirect_uri=http://localhost:5173/email&scope=https://graph.microsoft.com/Mail.Read%20https://graph.microsoft.com/User.Read%20offline_access"
+                auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?client_id={client_id}&response_type=code&redirect_uri={os.getenv('MICROSOFT_REDIRECT_URI', 'http://localhost:3000/auth/callback')}&scope=https://graph.microsoft.com/Mail.Read%20https://graph.microsoft.com/User.Read%20offline_access"
                 return {
                     'status': 'needs_auth',
                     'message': 'No OAuth token found. Please authenticate manually.',
@@ -3644,26 +4010,125 @@ async def update_password(password_update: PasswordUpdate, authorization: Option
 
 # Candidate management endpoints - status update only, other routes defined earlier
 class CandidateStatusUpdate(BaseModel):
-    status: str  # 'Strong', 'Partial', 'Reject'
+    status: str  # 'Shortlisted', 'Strong', 'Partial', 'Reject', 'Interviewing', 'Offered', 'Hired', 'Rejected'
+
+async def _send_shortlist_email(candidate: Dict):
+    """Send shortlist notification email to candidate via Microsoft Graph"""
+    try:
+        candidate_email = candidate.get('email', '')
+        candidate_name = candidate.get('name', 'Candidate')
+        if not candidate_email:
+            logger.warning(f"⚠️ Cannot send shortlist email - no email for {candidate_name}")
+            return {'status': 'skipped', 'reason': 'no_email'}
+
+        # Get OAuth token for sending email
+        client_id = os.getenv('MICROSOFT_CLIENT_ID')
+        client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
+        tenant_id = os.getenv('MICROSOFT_TENANT_ID')
+        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
+        company_name = os.getenv('COMPANY_NAME', _settings.company_name)
+        recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name)
+
+        if not all([client_id, client_secret, tenant_id]):
+            logger.warning("⚠️ Cannot send shortlist email - Microsoft Graph credentials not configured")
+            return {'status': 'skipped', 'reason': 'no_credentials'}
+
+        # Render the shortlist email template
+        templates_svc = get_templates_service()
+        job_title = candidate.get('jobCategory', '') or candidate.get('job_category', '')
+        job_sub = candidate.get('jobSubcategory', '') or candidate.get('job_subcategory', '')
+        display_title = job_sub if job_sub else job_title
+
+        template_vars = {
+            'candidate_name': candidate_name,
+            'company_name': company_name,
+            'recruiter_name': recruiter_name,
+            'job_title': display_title,
+        }
+
+        rendered = templates_svc.render_template('shortlist_notification', template_vars)
+        subject = rendered['subject']
+        body_text = rendered['body']
+
+        # Convert plain text to HTML
+        body_html = body_text.replace('\n', '<br>')
+        body_html = f'<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333;">{body_html}</div>'
+
+        # Setup Graph service and authenticate
+        graph = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=sender_email)
+        token_storage = get_token_storage()
+        token_data = token_storage.get_token(sender_email)
+
+        if token_data and token_data.get('access_token'):
+            graph.access_token = token_data['access_token']
+            graph.auth_type = token_data.get('auth_type', 'delegated')
+            from datetime import timedelta
+            graph.token_expiry = datetime.now() + timedelta(hours=1)
+        else:
+            # Try client credentials flow
+            auth_result = await graph.authenticate_with_credentials()
+            if auth_result.get('status') != 'success':
+                logger.warning(f"⚠️ Cannot authenticate to send email: {auth_result.get('error')}")
+                return {'status': 'failed', 'reason': 'auth_failed'}
+
+        # Send the email
+        result = await graph.send_mail(
+            to_email=candidate_email,
+            subject=subject,
+            body=body_html,
+            content_type='HTML'
+        )
+
+        if result.get('status') == 'success':
+            logger.info(f"✅ Shortlist email sent to {candidate_name} ({candidate_email})")
+        else:
+            logger.warning(f"⚠️ Failed to send shortlist email to {candidate_email}: {result.get('message')}")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"❌ Error sending shortlist email: {str(e)}")
+        return {'status': 'error', 'message': str(e)}
 
 @app.put("/api/candidates/{candidate_id}/status")
-async def update_candidate_status(candidate_id: str, status_update: CandidateStatusUpdate):
+async def update_candidate_status(candidate_id: str, status_update: CandidateStatusUpdate, background_tasks: BackgroundTasks = None):
     """
     Update candidate status (shortlist, reject, etc.)
+    When status is 'Shortlisted', automatically sends a notification email to the candidate.
     """
     try:
-        # Update in database
-        await asyncio.to_thread(db_service.update_candidate, {
-            'id': candidate_id,
-            'status': status_update.status
-        })
+        # Persist status in database
+        updated = await asyncio.to_thread(
+            db_service.update_candidate_status,
+            candidate_id,
+            status_update.status
+        )
+
+        if not updated:
+            raise HTTPException(404, f"Candidate {candidate_id} not found")
+
+        email_result = None
+
+        # Auto-send email when candidate is shortlisted
+        if status_update.status.lower() in ('shortlisted', 'shortlist'):
+            candidate = await asyncio.to_thread(db_service.get_candidate_by_id, candidate_id)
+            if candidate:
+                # Send email in background so the API responds immediately
+                email_result = await _send_shortlist_email(candidate)
+            else:
+                email_result = {'status': 'skipped', 'reason': 'candidate_not_found'}
+
         return {
             'status': 'success',
             'message': f'Candidate {candidate_id} status updated to {status_update.status}',
             'candidate_id': candidate_id,
-            'new_status': status_update.status
+            'new_status': status_update.status,
+            'email_sent': email_result
         }
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Status update error: {str(e)}")
         raise HTTPException(500, f"Error updating candidate status: {str(e)}")
 
 # NOTE: Resume download route is defined earlier (line ~953) with proper database query
@@ -3673,74 +4138,6 @@ class ChatMessage(BaseModel):
     message: str
     context: Optional[str] = None
 
-class ChatResponse(BaseModel):
-    response: str
-    timestamp: str
-
-@app.post("/api/ai/chat", response_model=ChatResponse)
-async def ai_chat(chat_message: ChatMessage):
-    """
-    Chat with AI assistant - INTELLIGENT DATABASE SEARCH
-    Can search entire candidate database using natural language
-    Examples: "Find Python developers with 5+ years"
-    PRIMARY: Local AI (FREE, 8s timeout)
-    FALLBACK: OpenAI (auto-triggers on timeout or error)
-    """
-    try:
-        from datetime import datetime
-        import asyncio
-        from concurrent.futures import ThreadPoolExecutor
-        
-        # Try Local AI first with TIMEOUT (8 seconds)
-        try:
-            executor = ThreadPoolExecutor(max_workers=1)
-            loop = asyncio.get_event_loop()
-            
-            # Run Local AI with timeout
-            response_text = await asyncio.wait_for(
-                loop.run_in_executor(
-                    executor,
-                    ai_service.chat_with_ai,
-                    chat_message.message,
-                    chat_message.context,
-                    db_service
-                ),
-                timeout=AI_TIMEOUT  # Use configured timeout
-            )
-            source = "local_ai"
-            logger.info("✅ Local AI responded (fast & free)")
-            
-        except asyncio.TimeoutError:
-            # TIMEOUT - use OpenAI for fast response
-            if fallback_service:
-                logger.warning(f"⏱️ Local AI timeout (>{AI_TIMEOUT}s), using OpenAI for instant response")
-                response_text = fallback_service.chat_with_ai(
-                    chat_message.message,
-                    chat_message.context
-                )
-                source = "openai_timeout_fallback"
-            else:
-                raise HTTPException(500, "Local AI timeout and no OpenAI fallback configured")
-                
-        except Exception as local_error:
-            # ERROR - fallback to OpenAI
-            if fallback_service:
-                logger.warning(f"⚠️ Local AI error, using OpenAI fallback: {local_error}")
-                response_text = fallback_service.chat_with_ai(
-                    chat_message.message,
-                    chat_message.context
-                )
-                source = "openai_error_fallback"
-            else:
-                raise HTTPException(500, f"Local AI error and no fallback: {str(local_error)}")
-        
-        return {
-            "response": response_text,
-            "timestamp": datetime.now().isoformat()
-        }
-    except Exception as e:
-        raise HTTPException(500, f"Error processing chat: {str(e)}")
-
 class AnalyzeMatchRequest(BaseModel):
     candidate: dict
     job_description: dict
@@ -3748,6 +4145,126 @@ class AnalyzeMatchRequest(BaseModel):
 # Global thread pool for AI operations (reusable, efficient)
 from concurrent.futures import ThreadPoolExecutor
 _ai_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai_worker")
+
+
+@app.get("/api/candidates/{candidate_id}/ai-analysis")
+async def get_candidate_ai_analysis(candidate_id: str, refresh: bool = False):
+    """
+    Get or generate detailed AI analysis for a candidate.
+    Returns comprehensive paragraph-style assessment with pros, cons,
+    executive summary, career trajectory, and hiring recommendation.
+    Results are persisted in DB for fast retrieval.
+    """
+    try:
+        # Check if we already have a stored analysis (unless refresh requested)
+        if not refresh:
+            stored = await asyncio.to_thread(db_service.get_ai_analysis, candidate_id)
+            if stored and stored.get('executive_summary'):
+                stored['from_cache'] = True
+                return stored
+        
+        # Get full candidate data
+        with db_service.get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (candidate_id,))
+            row = cursor.fetchone()
+        
+        if not row:
+            raise HTTPException(404, "Candidate not found")
+        
+        candidate = db_service._row_to_candidate(row)
+        
+        # Also try to get resume text for richer analysis
+        resume_text = candidate.get('resume_text', '') or ''
+        if not resume_text:
+            try:
+                resume_data = await asyncio.to_thread(db_service.get_resume, candidate_id)
+                if resume_data and resume_data.get('file_data'):
+                    parsed = await resume_parser.parse_resume(resume_data['file_data'], resume_data['filename'])
+                    resume_text = parsed.get('raw_text', '') if parsed else ''
+            except Exception:
+                pass
+        
+        # Build enriched candidate data for analysis
+        candidate_for_analysis = {
+            'name': candidate.get('name', 'Unknown'),
+            'email': candidate.get('email', ''),
+            'location': candidate.get('location', ''),
+            'skills': candidate.get('skills', []),
+            'experience': candidate.get('experience', 0),
+            'education': candidate.get('education', []),
+            'work_history': candidate.get('workHistory', []),
+            'summary': candidate.get('summary', ''),
+            'matchScore': candidate.get('matchScore', 0),
+            'job_category': candidate.get('jobCategory', candidate.get('job_category', 'General')),
+            'job_subcategory': candidate.get('jobSubcategory', candidate.get('job_subcategory', '')),
+        }
+        
+        # If we have resume text, add it for richer context
+        if resume_text:
+            candidate_for_analysis['resume_text'] = resume_text[:4000]
+        
+        # TIER 1: Try LLM deep analysis
+        analysis = None
+        try:
+            llm_svc = await get_llm_service()
+            if llm_svc and llm_svc.available:
+                analysis = await asyncio.wait_for(
+                    llm_svc.analyze_candidate_deep(candidate_for_analysis),
+                    timeout=AI_ANALYSIS_TIMEOUT
+                )
+                if analysis:
+                    analysis['source'] = 'local_llm'
+        except asyncio.TimeoutError:
+            logger.warning(f"LLM deep analysis timeout for {candidate_id}")
+        except Exception as llm_err:
+            logger.warning(f"LLM deep analysis error: {llm_err}")
+        
+        # TIER 2: Try OpenAI
+        if not analysis:
+            try:
+                openai_svc = get_openai_service()
+                if openai_svc:
+                    analysis = openai_svc.deep_analyze_candidate(candidate_for_analysis)
+                    if analysis:
+                        analysis['source'] = 'openai'
+            except Exception as oai_err:
+                logger.warning(f"OpenAI deep analysis error: {oai_err}")
+        
+        # TIER 3: Fallback
+        if not analysis:
+            skills = candidate_for_analysis.get('skills', [])
+            exp = candidate_for_analysis.get('experience', 0)
+            name = candidate_for_analysis.get('name', 'Unknown')
+            analysis = {
+                'executive_summary': f'{name} is a professional with {exp} years of experience specializing in {", ".join(skills[:5]) if skills else "their field"}. Their profile indicates competency in their domain, though a more detailed assessment would benefit from AI model availability. Based on the information available, they appear to be a viable candidate worth considering for roles aligned with their skill set.',
+                'technical_assessment': f'The candidate lists {len(skills)} technical skills including {", ".join(skills[:8]) if skills else "unspecified technologies"}. The breadth of their technical stack suggests {"a well-rounded professional" if len(skills) > 5 else "a focused specialist"} capable of contributing to relevant projects.',
+                'experience_assessment': f'With {exp} years of professional experience, {name} {"demonstrates significant industry tenure" if exp > 5 else "is building their career foundation"}. Further details about career progression should be explored in interview.',
+                'education_assessment': 'Educational credentials are listed in their profile. Verification of qualifications is recommended during the screening process.',
+                'pros': [f'Brings {exp} years of domain experience', f'Skills portfolio includes {len(skills)} listed competencies', 'Profile is complete and in active pipeline'],
+                'cons': ['AI deep analysis unavailable — manual review recommended', 'Detailed assessment pending AI model availability'],
+                'career_trajectory': f'Based on {exp} years of experience, the candidate appears to be at a {"senior" if exp > 7 else "mid" if exp > 3 else "junior"}-level career stage.',
+                'ideal_roles': [candidate_for_analysis.get('job_category', 'General')],
+                'interview_focus_areas': ['Technical depth verification', 'Cultural alignment', 'Career motivation'],
+                'hiring_recommendation': 'CONSIDER',
+                'hiring_recommendation_rationale': 'Automated deep analysis was not available. Manual review and interview recommended.',
+                'confidence_score': 40,
+                'overall_rating': 'C+',
+                'source': 'fallback',
+            }
+        
+        # Persist analysis to database
+        await asyncio.to_thread(db_service.save_ai_analysis, candidate_id, analysis)
+        analysis['from_cache'] = False
+        
+        return analysis
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI analysis error for {candidate_id}: {e}")
+        raise HTTPException(500, f"Error generating AI analysis: {str(e)}")
+
 
 @app.post("/api/ai/analyze-match")
 async def analyze_match(request: AnalyzeMatchRequest):
@@ -3783,15 +4300,39 @@ async def analyze_match(request: AnalyzeMatchRequest):
             
         except asyncio.TimeoutError:
             logger.warning(f"⏱️ Local AI timeout (>{AI_ANALYSIS_TIMEOUT}s)")
-            # Quick fallback analysis
-            result = _quick_fallback_analysis(request.candidate, request.job_description)
-            result['source'] = 'fallback_timeout'
+            # Try OpenAI before rule-based
+            if fallback_service:
+                try:
+                    result = fallback_service.analyze_candidate_match(
+                        request.candidate,
+                        request.job_description
+                    )
+                    result['source'] = 'openai_fallback'
+                    logger.info("✅ OpenAI fallback analysis completed")
+                except Exception:
+                    result = _quick_fallback_analysis(request.candidate, request.job_description)
+                    result['source'] = 'fallback_timeout'
+            else:
+                result = _quick_fallback_analysis(request.candidate, request.job_description)
+                result['source'] = 'fallback_timeout'
                 
         except Exception as local_error:
             logger.warning(f"⚠️ Local AI error: {local_error}")
-            # Quick fallback analysis
-            result = _quick_fallback_analysis(request.candidate, request.job_description)
-            result['source'] = 'fallback_error'
+            # Try OpenAI before rule-based
+            if fallback_service:
+                try:
+                    result = fallback_service.analyze_candidate_match(
+                        request.candidate,
+                        request.job_description
+                    )
+                    result['source'] = 'openai_fallback'
+                    logger.info("✅ OpenAI fallback analysis completed")
+                except Exception:
+                    result = _quick_fallback_analysis(request.candidate, request.job_description)
+                    result['source'] = 'fallback_error'
+            else:
+                result = _quick_fallback_analysis(request.candidate, request.job_description)
+                result['source'] = 'fallback_error'
         
         # Cache result in background (non-blocking)
         result['from_cache'] = False
@@ -3850,29 +4391,53 @@ class InterviewQuestionsRequest(BaseModel):
 async def generate_interview_questions(request: InterviewQuestionsRequest):
     """
     Generate AI-powered interview questions
-    PRIMARY: Local AI (FREE)
-    FALLBACK: OpenAI (emergency only)
+    3-TIER FALLBACK: Local AI → OpenAI → Rule-based
     """
     try:
-        # Try Local AI first
+        # TIER 1: Try Local AI first (FREE)
         try:
             questions = ai_service.generate_interview_questions(
                 request.candidate,
                 request.job_description,
                 request.num_questions
             )
+            if questions:
+                return {"questions": questions, "source": "local_ai"}
         except Exception as local_error:
-            # Emergency fallback to OpenAI
-            if fallback_service:
-                logger.warning(f"Local AI questions failed, using OpenAI fallback")
+            logger.warning(f"⚠️ Local AI interview questions failed: {local_error}")
+        
+        # TIER 2: OpenAI fallback
+        if fallback_service:
+            try:
                 questions = fallback_service.generate_interview_questions(
                     request.candidate,
                     request.job_description,
                     request.num_questions
                 )
-            else:
-                raise local_error
-        return {"questions": questions}
+                if questions:
+                    return {"questions": questions, "source": "openai_fallback"}
+            except Exception as openai_err:
+                logger.warning(f"⚠️ OpenAI interview questions failed: {openai_err}")
+        
+        # TIER 3: Rule-based fallback
+        candidate_skills = request.candidate.get('skills', [])
+        job_title = request.job_description.get('title', 'the position')
+        default_questions = [
+            f"Tell me about your experience that's most relevant to {job_title}.",
+            f"How do you stay current with developments in your field?",
+            f"Describe a challenging project you worked on and how you overcame obstacles.",
+            f"What interests you most about this role?",
+            f"Where do you see yourself in the next 3-5 years?"
+        ]
+        if candidate_skills:
+            skill_q = f"Can you describe your experience with {', '.join(candidate_skills[:3])}?"
+            default_questions[1] = skill_q
+        
+        return {
+            "questions": default_questions[:request.num_questions],
+            "source": "rule_based",
+            "note": "Configure Ollama or OpenAI for AI-generated interview questions"
+        }
     except Exception as e:
         raise HTTPException(500, f"Error generating questions: {str(e)}")
 
@@ -3883,21 +4448,33 @@ class SummarizeResumeRequest(BaseModel):
 async def summarize_resume(request: SummarizeResumeRequest):
     """
     Generate AI summary of resume
-    PRIMARY: Local AI (FREE)
-    FALLBACK: OpenAI (emergency only)
+    3-TIER FALLBACK: Local AI → OpenAI → Rule-based
     """
     try:
-        # Try Local AI first
+        # TIER 1: Try Local AI first (FREE)
         try:
             summary = ai_service.summarize_resume(request.resume_text)
+            if summary:
+                return {"summary": summary, "source": "local_ai"}
         except Exception as local_error:
-            # Emergency fallback to OpenAI
-            if fallback_service:
-                logger.warning(f"Local AI summarize failed, using OpenAI fallback")
+            logger.warning(f"⚠️ Local AI summarize failed: {local_error}")
+        
+        # TIER 2: OpenAI fallback
+        if fallback_service:
+            try:
                 summary = fallback_service.summarize_resume(request.resume_text)
-            else:
-                raise local_error
-        return {"summary": summary}
+                if summary:
+                    return {"summary": summary, "source": "openai_fallback"}
+            except Exception as openai_err:
+                logger.warning(f"⚠️ OpenAI summarize failed: {openai_err}")
+        
+        # TIER 3: Rule-based fallback
+        text = request.resume_text[:500]
+        return {
+            "summary": f"Resume summary (basic extraction): {text}...",
+            "source": "rule_based",
+            "note": "Configure Ollama or OpenAI for AI-powered summaries"
+        }
     except Exception as e:
         raise HTTPException(500, f"Error summarizing resume: {str(e)}")
 
@@ -4046,6 +4623,164 @@ async def llm_status():
             "error": str(e),
             "setup": "Install Ollama from https://ollama.com/download, then: ollama pull qwen2.5:7b"
         }
+
+# ===========================================================================
+# JOB TAXONOMY ENDPOINTS
+# ===========================================================================
+
+@app.get("/api/taxonomy")
+async def get_job_taxonomy():
+    """Get the full hierarchical job taxonomy (categories → subcategories)"""
+    from services.job_taxonomy import get_all_categories_with_subcategories, ALL_CATEGORIES
+    return {
+        "categories": ALL_CATEGORIES,
+        "taxonomy": get_all_categories_with_subcategories(),
+    }
+
+@app.get("/api/taxonomy/{category}/subcategories")
+async def get_subcategories(category: str):
+    """Get subcategories for a specific category"""
+    from services.job_taxonomy import get_subcategories as _get_subs
+    subs = _get_subs(category)
+    if not subs:
+        raise HTTPException(404, f"Category '{category}' not found")
+    return {"category": category, "subcategories": subs}
+
+@app.post("/api/taxonomy/classify")
+async def classify_title(title: str = Body(..., embed=True)):
+    """Classify a free-text job title into category + subcategory"""
+    from services.job_taxonomy import classify_job_title
+    cat, sub = classify_job_title(title)
+    return {"title": title, "category": cat, "subcategory": sub}
+
+# ===========================================================================
+# AI SMART SEARCH — LLM-powered candidate search
+# ===========================================================================
+
+def _format_search_results(raw_results: list, candidates: list) -> list:
+    """Normalize search results into {candidate, relevance_score, match_reasons} format."""
+    formatted = []
+    for item in raw_results:
+        if isinstance(item, dict):
+            # If it already has the expected shape
+            if 'candidate' in item and 'relevance_score' in item:
+                formatted.append(item)
+            # If it's a raw candidate dict with a score field
+            elif 'id' in item or 'name' in item:
+                score = item.get('score', item.get('match_score', item.get('matchScore', 50)))
+                formatted.append({
+                    "candidate": item,
+                    "relevance_score": score,
+                    "match_reasons": item.get('match_reasons', item.get('key_strengths', ["AI matched"]))
+                })
+            # LLM ranking format: {candidate_id, score, ...}
+            elif 'candidate_id' in item:
+                cand = next((c for c in candidates if str(c.get('id')) == str(item['candidate_id'])), None)
+                if cand:
+                    formatted.append({
+                        "candidate": cand,
+                        "relevance_score": int(item.get('score', item.get('job_fit_score', 50))),
+                        "match_reasons": item.get('match_reasons', item.get('key_strengths', ["AI matched"]))
+                    })
+    return formatted
+
+@app.post("/api/ai/smart-search")
+async def ai_smart_search(
+    query: str = Body(..., embed=True),
+    top_n: int = Body(20, embed=True),
+):
+    """
+    LLM-powered smart search: takes a natural language query and returns
+    the best-matching candidates using semantic understanding.
+    """
+    try:
+        # 1. Get all active candidates
+        candidates = await asyncio.to_thread(
+            db_service.get_candidates_paginated, 1, 200, {}
+        )
+        if not candidates:
+            return {"results": [], "total": 0, "query": query, "message": "No candidates in database"}
+
+        # 2. Try LLM-based matching first
+        try:
+            from services.llm_service import get_llm_service
+            llm_svc = await get_llm_service()
+            if llm_svc and llm_svc.available:
+                ranked = await llm_svc.rank_candidates_for_job(candidates, query, top_n)
+                formatted = _format_search_results(ranked, candidates)
+                return {
+                    "results": formatted,
+                    "total_searched": len(candidates),
+                    "query": query,
+                    "source": "local_llm",
+                    "message": f"Found {len(formatted)} matches using AI search"
+                }
+        except Exception as llm_err:
+            logger.warning(f"LLM smart search failed: {llm_err}")
+
+        # 3. Try matching engine (semantic / TF-IDF)
+        try:
+            matching_engine = MatchingEngine()
+            results = await matching_engine.match_candidates(query, candidates, top_n)
+            formatted = _format_search_results(results, candidates)
+            return {
+                "results": formatted,
+                "total_searched": len(candidates),
+                "query": query,
+                "source": "semantic",
+                "message": f"Found {len(formatted)} matches using semantic search"
+            }
+        except Exception as sem_err:
+            logger.warning(f"Semantic search failed: {sem_err}")
+
+        # 4. OpenAI fallback
+        openai_svc = get_openai_service()
+        if openai_svc:
+            result = openai_svc.match_candidates_to_job(query, candidates, top_n)
+            raw = result.get("rankings", [])
+            formatted = _format_search_results(raw, candidates)
+            return {
+                "results": formatted,
+                "total_searched": len(candidates),
+                "query": query,
+                "source": "openai",
+                "message": "Used OpenAI for search"
+            }
+
+        # 5. Basic keyword fallback
+        q_lower = query.lower()
+        scored = []
+        for c in candidates:
+            score = 0
+            match_reasons = []
+            skills = c.get('skills', [])
+            for s in skills:
+                if s.lower() in q_lower or q_lower in s.lower():
+                    score += 15
+                    match_reasons.append(f"Skill: {s}")
+            if str(c.get('summary', '')).lower().find(q_lower) >= 0:
+                score += 10
+                match_reasons.append("Summary match")
+            if str(c.get('jobCategory', '')).lower() in q_lower:
+                score += 10
+                match_reasons.append(f"Category: {c.get('jobCategory', '')}")
+            scored.append({
+                "candidate": c,
+                "relevance_score": min(score, 100),
+                "match_reasons": match_reasons or ["Keyword match"]
+            })
+
+        scored.sort(key=lambda x: x['relevance_score'], reverse=True)
+        return {
+            "results": scored[:top_n],
+            "total_searched": len(candidates),
+            "query": query,
+            "source": "keyword",
+            "message": "Used basic keyword matching"
+        }
+    except Exception as e:
+        logger.error(f"Smart search error: {e}")
+        raise HTTPException(500, str(e))
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

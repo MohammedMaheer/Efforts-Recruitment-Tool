@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     
     # Application
     app_name: str = "AI Recruiter Platform"
-    app_version: str = "3.0.0"
+    app_version: str = "4.0.0"
     debug: bool = Field(default=True, description="Enable debug mode")
     environment: str = Field(default="development", description="Environment name")
     
@@ -51,6 +51,8 @@ class Settings(BaseSettings):
     microsoft_client_secret: Optional[str] = Field(default=None)
     microsoft_tenant_id: Optional[str] = Field(default=None)
     email_address: Optional[str] = Field(default=None, description="Primary email for sync")
+    company_name: str = Field(default="AI Recruiter Platform", description="Company name for emails")
+    recruiter_name: str = Field(default="HR Team", description="Recruiter name for emails")
     
     # Email Sync
     auto_sync_enabled: bool = Field(default=True, description="Enable auto email sync")

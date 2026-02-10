@@ -34,33 +34,31 @@ export default function OAuthCallback() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             code: code,
-            redirect_uri: 'http://localhost:3000/auth/callback'
+            redirect_uri: `${window.location.origin}/auth/callback`
           })
         })
 
         const data = await response.json()
 
         if (response.ok) {
-          console.log('✅ OAuth2 authentication successful!', data)
+          console.log('OAuth2 authentication successful!', data)
           
           // Trigger email sync in background
           try {
             await fetch(`${config.apiUrl}/api/email/sync-now`, { method: 'POST' })
-            console.log('📧 Email sync triggered')
+            console.log('Email sync triggered')
           } catch (syncError) {
             console.warn('Email sync trigger failed, will sync on next interval:', syncError)
           }
           
-          alert(`Successfully connected ${data.email}!\n\nEmail sync started - candidates will appear shortly.\n\n✅ Auto-refresh enabled - you won't need to log in again!`)
+          console.log(`Successfully connected ${data.email}! Email sync started.`)
           navigate('/candidates')
         } else {
           console.error('OAuth2 error:', data)
-          alert(`Authentication failed: ${data.detail || 'Unknown error'}`)
           navigate('/settings')
         }
       } catch (error) {
         console.error('Error during OAuth callback:', error)
-        alert('Authentication failed. Please try again.')
         navigate('/settings')
       }
     }

@@ -97,7 +97,7 @@ export default function LoginPage() {
   return (
     <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-purple-50 flex">
       {/* Left Side - Features & Branding */}
-      <div className="hidden lg:flex lg:w-1/2 xl:w-3/5 bg-gradient-to-br from-primary-600 via-primary-700 to-purple-600 p-12 flex-col justify-between relative overflow-hidden">
+      <div className="hidden lg:flex lg:w-[45%] xl:w-1/2 bg-gradient-to-br from-primary-600 via-primary-700 to-purple-600 p-12 flex-col justify-between relative overflow-hidden">
         {/* Animated background elements */}
         <motion.div
           animate={{
@@ -128,7 +128,7 @@ export default function LoginPage() {
             </div>
             <div>
               <h1 className="text-2xl font-bold text-white">AI Recruiter</h1>
-              <p className="text-primary-100 text-sm">UAE Edition</p>
+              <p className="text-primary-100 text-sm">Smart Hiring Platform</p>
             </div>
           </motion.div>
 
@@ -228,12 +228,12 @@ export default function LoginPage() {
       </div>
 
       {/* Right Side - Login Form */}
-      <div className="flex-1 flex items-center justify-center p-4 lg:p-12">
+      <div className="flex-1 flex items-center justify-center p-6 sm:p-8 lg:p-12">
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ duration: 0.5 }}
-          className="w-full max-w-md"
+          className="w-full max-w-lg"
         >
           {/* Mobile Logo */}
           <div className="lg:hidden text-center mb-8">
@@ -258,7 +258,7 @@ export default function LoginPage() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3, duration: 0.5 }}
-            className="bg-white rounded-2xl shadow-large p-8 border border-gray-200"
+            className="bg-white rounded-2xl shadow-large p-8 sm:p-10 border border-gray-200"
           >
             <div className="flex items-center gap-2 mb-2">
               <Sparkles className="w-5 h-5 text-primary-600" />
@@ -314,7 +314,7 @@ export default function LoginPage() {
                   <Input
                     id="email"
                     type={isRegistering ? "email" : "text"}
-                    placeholder={isRegistering ? "recruiter@company.ae" : "email or username"}
+                    placeholder={isRegistering ? "recruiter@company.com" : "email or username"}
                     value={email}
                     onChange={(e) => { setEmail(e.target.value); setError(null) }}
                     className="pl-10"
@@ -447,7 +447,7 @@ export default function LoginPage() {
             transition={{ delay: 0.5 }}
             className="text-center text-sm text-gray-500 mt-6"
           >
-            © 2026 AI Recruiter Platform - UAE Edition. All rights reserved.
+            © {new Date().getFullYear()} AI Recruiter Platform. All rights reserved.
           </motion.p>
         </motion.div>
       </div>

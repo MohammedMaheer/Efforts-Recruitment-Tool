@@ -16,6 +16,7 @@ Install: https://ollama.com/download
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 import hashlib
@@ -39,13 +40,13 @@ class LLMService:
     - Automatic model fallback (qwen2.5 → phi3.5 → llama3.1)
     """
     
-    # Model configuration - best performance/speed ratio
-    PRIMARY_MODEL = "qwen2.5:7b"          # Best for structured extraction
-    FAST_MODEL = "phi3.5"                  # Fast for simple tasks
-    REASONING_MODEL = "llama3.1:8b"        # Best for deep analysis
+    # Model configuration - configurable via environment variables
+    PRIMARY_MODEL = os.getenv("OLLAMA_PRIMARY_MODEL", "qwen2.5:7b")
+    FAST_MODEL = os.getenv("OLLAMA_FAST_MODEL", "phi3.5")
+    REASONING_MODEL = os.getenv("OLLAMA_REASONING_MODEL", "llama3.1:8b")
     
     # Ollama API base URL
-    OLLAMA_BASE_URL = "http://localhost:11434"
+    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
     
     def __init__(self):
         self.available = False
@@ -348,50 +349,63 @@ class LLMService:
         if cached:
             return cached
         
-        system = """You are an expert resume parser. Extract ALL information from the resume with 100% accuracy.
-You must return valid JSON. Be thorough and precise. Extract every detail mentioned.
-For skills, include ALL technical skills, tools, frameworks, languages, and soft skills mentioned.
-For work history, extract ALL positions with company, title, dates, and key responsibilities.
-For education, extract ALL degrees with institution, field, and graduation year.
-Never fabricate or hallucinate information - only extract what is explicitly stated."""
+        from services.job_taxonomy import get_taxonomy_prompt_text, classify_job_title
+        taxonomy_text = get_taxonomy_prompt_text()
+        
+        system = """You are an expert resume parser with 15+ years experience in talent acquisition. Your task is to extract ALL information from the resume with maximum accuracy.
+CRITICAL RULES:
+1. Return ONLY valid JSON — no comments, no markdown, no extra text.
+2. Extract EVERY skill, EVERY job position, EVERY degree mentioned. Do not skip anything.
+3. For skills: include ALL technical skills, programming languages, frameworks, tools, platforms, methodologies, and relevant soft skills actually mentioned.
+4. For work history: extract EVERY position with the exact job title, company name, date range, and a detailed description of responsibilities and achievements (2-4 sentences per role).
+5. For education: extract ALL degrees, diplomas, and certifications with institution name, field of study, and graduation year.
+6. For the summary: write a detailed 4-6 sentence professional summary capturing career focus, domain expertise, key achievements, technical depth, and professional trajectory.
+7. NEVER fabricate, guess, or hallucinate information — only extract what is explicitly stated in the resume.
+8. If information is not found, use empty string or empty array — never make up data.
+9. For experience_years: calculate from the earliest work start date to present, or use the number explicitly stated.
+10. For location: extract the candidate's current location or the most recently mentioned location."""
 
         prompt = f"""Parse this resume and extract ALL information into the following JSON structure.
-Be extremely thorough - extract every skill, every job, every detail mentioned.
+Be extremely thorough — extract every skill, every job, every educational qualification, every detail mentioned.
 
 RESUME TEXT:
 ---
-{text[:6000]}
+{text[:10000]}
 ---
+
+JOB TAXONOMY (use these EXACT category and subcategory names):
+{taxonomy_text}
 
 Return ONLY valid JSON with this exact structure:
 {{
-    "name": "Full name of the candidate",
+    "name": "Full name of the candidate (first and last name)",
     "email": "email@example.com",
-    "phone": "phone number with country code",
-    "location": "City, Country",
-    "linkedin": "LinkedIn URL if mentioned",
-    "summary": "2-3 sentence professional summary based on their experience",
-    "skills": ["skill1", "skill2", "skill3", ...],
+    "phone": "phone number with country code if available",
+    "location": "City, Country (extract actual location, never guess)",
+    "linkedin": "Full LinkedIn URL if mentioned, otherwise empty string",
+    "summary": "A detailed 4-6 sentence professional summary. Cover: (1) their primary role and domain expertise, (2) years of experience and career level, (3) key technical strengths and tools, (4) notable achievements or impact, (5) industries/sectors worked in, (6) what makes them stand out. Be specific — reference actual skills and experiences from the resume.",
+    "skills": ["skill1", "skill2", "skill3", "...extract ALL skills mentioned including tools, languages, frameworks, methodologies, platforms"],
     "experience_years": 0,
     "work_history": [
         {{
-            "title": "Job Title",
+            "title": "Exact Job Title as stated",
             "company": "Company Name",
-            "period": "Start Date - End Date",
-            "description": "Key responsibilities and achievements"
+            "period": "MMM YYYY - MMM YYYY or Present",
+            "description": "Detailed 2-4 sentence description of responsibilities, achievements, technologies used, and impact. Include specific metrics or accomplishments if mentioned."
         }}
     ],
     "education": [
         {{
-            "degree": "Degree Type (PhD/Masters/Bachelors/etc)",
-            "field": "Field of Study",
-            "institution": "University/College Name",
-            "year": "Graduation Year"
+            "degree": "Degree Type (PhD/Masters/Bachelors/Diploma/Associate/Certificate)",
+            "field": "Field of Study / Major",
+            "institution": "University/College/School Name",
+            "year": "Graduation Year (YYYY format)"
         }}
     ],
-    "certifications": ["cert1", "cert2"],
-    "languages": ["English", "Arabic", etc],
-    "job_category": "Most likely job role category (e.g., Software Engineer, Data Scientist, etc)"
+    "certifications": ["Full certification name with issuing body if mentioned"],
+    "languages": ["English", "Arabic", "etc — only languages explicitly mentioned"],
+    "job_category": "Pick the BEST matching category from the taxonomy above based on their most recent role",
+    "job_subcategory": "Pick the BEST matching subcategory within that category"
 }}"""
 
         result = await self._generate_json(prompt, system=system, temperature=0.05)
@@ -408,6 +422,8 @@ Return ONLY valid JSON with this exact structure:
     
     def _normalize_resume_data(self, data: Dict) -> Dict:
         """Normalize and validate parsed resume data"""
+        from services.job_taxonomy import classify_job_title, get_category_for_subcategory
+        
         normalized = {
             'name': str(data.get('name', 'Unknown')).strip(),
             'email': str(data.get('email', '')).strip(),
@@ -422,7 +438,21 @@ Return ONLY valid JSON with this exact structure:
             'certifications': [],
             'languages': [],
             'job_category': str(data.get('job_category', 'General')).strip(),
+            'job_subcategory': str(data.get('job_subcategory', '')).strip(),
         }
+        
+        # Validate category/subcategory using taxonomy fallback
+        if not normalized['job_subcategory'] or normalized['job_category'] == 'General':
+            # Try to classify from most recent job title
+            titles = []
+            for w in data.get('work_history', []):
+                if isinstance(w, dict) and w.get('title'):
+                    titles.append(w['title'])
+            if titles:
+                cat, sub = classify_job_title(titles[0])
+                if cat != 'General' or not normalized['job_category'] or normalized['job_category'] == 'General':
+                    normalized['job_category'] = cat
+                    normalized['job_subcategory'] = sub
         
         # Skills - ensure list of strings, deduplicated
         skills = data.get('skills', [])
@@ -508,6 +538,9 @@ Return ONLY valid JSON with this exact structure:
         elif "glassdoor" in body_lower or "glassdoor" in subject_lower:
             source = "Glassdoor"
         
+        from services.job_taxonomy import get_taxonomy_prompt_text, classify_job_title
+        taxonomy_text = get_taxonomy_prompt_text()
+        
         system = """You are an expert recruitment email parser. Extract candidate information from job application emails with 100% accuracy.
 These emails may come from job boards (Indeed, LinkedIn, Naukri) or direct applications.
 Extract every piece of candidate information available. Return valid JSON only.
@@ -523,6 +556,9 @@ EMAIL BODY:
 ---
 {body[:4000]}
 ---
+
+JOB TAXONOMY (use these EXACT category and subcategory names):
+{taxonomy_text}
 
 Return ONLY valid JSON:
 {{
@@ -543,6 +579,8 @@ Return ONLY valid JSON:
     "summary": "Brief summary of candidate's background from email content",
     "linkedin": "LinkedIn URL if present",
     "job_applied_for": "The job title/position they applied for",
+    "job_category": "Pick the BEST matching category from the taxonomy above",
+    "job_subcategory": "Pick the BEST matching subcategory within that category",
     "source": "{source}",
     "is_candidate_email": true
 }}
@@ -568,6 +606,8 @@ Set "is_candidate_email" to false if this email does NOT contain a job applicati
     
     def _normalize_email_data(self, data: Dict) -> Dict:
         """Normalize email-extracted candidate data"""
+        from services.job_taxonomy import classify_job_title
+        
         normalized = {
             'name': str(data.get('name', '')).strip(),
             'email': str(data.get('email', '')).strip(),
@@ -580,7 +620,17 @@ Set "is_candidate_email" to false if this email does NOT contain a job applicati
             'linkedin': str(data.get('linkedin', '')).strip(),
             'source': str(data.get('source', 'Direct')).strip(),
             'job_applied_for': str(data.get('job_applied_for', '')).strip(),
+            'job_category': str(data.get('job_category', 'General')).strip(),
+            'job_subcategory': str(data.get('job_subcategory', '')).strip(),
         }
+        
+        # Validate / fallback category from job title
+        if not normalized['job_subcategory'] or normalized['job_category'] == 'General':
+            title = normalized['job_applied_for']
+            if title:
+                cat, sub = classify_job_title(title)
+                normalized['job_category'] = cat
+                normalized['job_subcategory'] = sub
         
         # Skills
         skills = data.get('skills', [])
@@ -607,10 +657,10 @@ Set "is_candidate_email" to false if this email does NOT contain a job applicati
     
     async def analyze_candidate_deep(self, candidate_data: Dict) -> Dict:
         """
-        Deep analysis of a candidate - generates pros, cons, summary, 
-        recommendations without needing OpenAI.
+        Deep analysis of a candidate - generates detailed paragraph-style analysis
+        with pros, cons, strengths, hiring recommendation, and actionable insights.
         """
-        cache_key = self._get_cache_key("deep", json.dumps(candidate_data, default=str))
+        cache_key = self._get_cache_key("deep_v2", json.dumps(candidate_data, default=str))
         cached = self._get_cached(cache_key)
         if cached:
             return cached
@@ -619,40 +669,77 @@ Set "is_candidate_email" to false if this email does NOT contain a job applicati
         skills = candidate_data.get('skills', [])
         experience = candidate_data.get('experience', candidate_data.get('experience_years', 0))
         education = candidate_data.get('education', [])
-        work_history = candidate_data.get('work_history', [])
+        work_history = candidate_data.get('work_history', candidate_data.get('workHistory', []))
         summary = candidate_data.get('summary', '')
-        score = candidate_data.get('quality_score', candidate_data.get('score', 0))
+        score = candidate_data.get('quality_score', candidate_data.get('matchScore', candidate_data.get('score', 0)))
+        location = candidate_data.get('location', '')
+        job_category = candidate_data.get('job_category', candidate_data.get('jobCategory', ''))
         
-        system = """You are a senior recruitment consultant performing deep candidate analysis.
-Provide honest, detailed, actionable analysis. Be specific about strengths and areas for improvement.
-Base your analysis ONLY on the provided data. Do not fabricate details."""
+        system = """You are a senior talent acquisition consultant with 20+ years of experience in technical and non-technical recruitment.
+You perform thorough, detailed candidate assessments that read like professional evaluation reports.
+Your analysis must be specific, data-driven, and reference the candidate's actual experience and skills.
+Never be generic — every sentence should reference something concrete from the candidate's profile.
+Write in professional paragraphs, not bullet points. Be honest but constructive."""
 
-        prompt = f"""Analyze this candidate thoroughly and provide detailed insights.
+        prompt = f"""Perform a comprehensive talent assessment for this candidate. Write detailed, analytical paragraphs.
 
 CANDIDATE PROFILE:
-- Name: {name}
-- Skills: {', '.join(skills[:20]) if skills else 'Not specified'}
-- Experience: {experience} years
-- Education: {json.dumps(education[:3]) if education else 'Not specified'}
-- Work History: {json.dumps(work_history[:5], default=str) if work_history else 'Not specified'}
-- Summary: {summary[:300] if summary else 'Not available'}
-- Current Score: {score}%
+- Full Name: {name}
+- Location: {location or 'Not specified'}
+- Job Category: {job_category or 'Not specified'}
+- Total Experience: {experience} years
+- Technical Skills: {', '.join(skills[:30]) if skills else 'Not listed'}
+- Education: {json.dumps(education[:5], default=str) if education else 'Not specified'}
+- Work History: {json.dumps(work_history[:8], default=str) if work_history else 'Not specified'}
+- Professional Summary: {summary[:600] if summary else 'Not available'}
+- Current Match Score: {score}%
 
-Provide comprehensive analysis as JSON:
+Generate a thorough assessment as JSON with these fields. IMPORTANT: Each field marked "paragraph" must be 3-6 sentences of flowing analytical text, NOT bullet points:
+
 {{
-    "overall_assessment": "2-3 sentence overall assessment of the candidate",
-    "strengths": ["strength1", "strength2", "strength3", "strength4", "strength5"],
-    "weaknesses": ["weakness1", "weakness2", "weakness3"],
-    "pros": ["pro1", "pro2", "pro3", "pro4", "pro5"],
-    "cons": ["con1", "con2", "con3"],
-    "recommended_roles": ["role1", "role2", "role3"],
-    "interview_focus_areas": ["area1", "area2", "area3"],
-    "salary_range_estimate": "Estimated range based on skills and experience",
-    "culture_fit_notes": "Notes on potential cultural fit indicators",
-    "development_areas": ["area1", "area2"],
+    "executive_summary": "A comprehensive 4-6 sentence executive summary assessing this candidate's overall profile, career trajectory, standout qualities, and fit for their target role. Reference specific skills and experiences.",
+    
+    "technical_assessment": "A detailed 3-5 sentence analysis of their technical capabilities. Evaluate the depth and breadth of their skill set, how their skills complement each other, and whether they indicate junior/mid/senior level expertise. Mention specific technologies.",
+    
+    "experience_assessment": "A 3-5 sentence evaluation of their work history. Analyze career progression, company caliber, role complexity, and whether their experience shows growth. Note any gaps or red flags.",
+    
+    "education_assessment": "A 2-3 sentence analysis of their educational background relative to their career. Note relevance of their degree to their work, quality of institution if notable, and any certifications.",
+    
+    "pros": [
+        "Detailed pro #1 — a full sentence explaining a specific strength with context from their profile",
+        "Detailed pro #2 — another concrete advantage referencing their actual skills or experience",
+        "Detailed pro #3 — a unique differentiator that makes this candidate stand out",
+        "Detailed pro #4 — another specific positive aspect",
+        "Detailed pro #5 — a final strength backed by evidence from their profile"
+    ],
+    
+    "cons": [
+        "Detailed con #1 — a specific concern or gap with explanation of why it matters",
+        "Detailed con #2 — another area of concern or missing qualification",
+        "Detailed con #3 — a risk factor or development area to address"
+    ],
+    
+    "career_trajectory": "A 2-3 sentence analysis of where this candidate's career is heading based on their progression so far. Are they on an upward trajectory? Stagnating? Transitioning?",
+    
+    "ideal_roles": ["Specific Role Title 1", "Specific Role Title 2", "Specific Role Title 3"],
+    
+    "interview_focus_areas": [
+        "Specific topic to probe in interview #1 — with reasoning",
+        "Specific topic #2 — what to verify and why",
+        "Specific topic #3 — potential concern to explore"
+    ],
+    
+    "salary_range_estimate": "Estimated range with reasoning based on their market, skills, and experience level",
+    
+    "culture_fit_notes": "2-3 sentences about what type of company culture would suit this candidate based on their background signals.",
+    
     "hiring_recommendation": "STRONGLY_RECOMMEND | RECOMMEND | CONSIDER | PASS",
+    "hiring_recommendation_rationale": "A clear 2-3 sentence explanation of WHY this recommendation was made, referencing specific profile data.",
+    
     "confidence_score": 85,
-    "key_differentiators": ["what makes this candidate stand out"]
+    "overall_rating": "A | B+ | B | C+ | C | D",
+    
+    "key_differentiators": ["What makes this candidate stand out vs typical candidates in their field — specific, not generic"]
 }}"""
 
         result = await self._generate_json(
@@ -663,39 +750,69 @@ Provide comprehensive analysis as JSON:
         )
         
         if result:
-            # Ensure all fields exist
+            # Ensure all fields exist with meaningful defaults
             defaults = {
-                'overall_assessment': 'Analysis not available',
+                'executive_summary': f'{name} is a candidate with {experience} years of experience. Further analysis requires more detailed profile information.',
+                'technical_assessment': 'Technical assessment requires more detailed skills information.',
+                'experience_assessment': 'Experience assessment requires more detailed work history.',
+                'education_assessment': 'Educational background information is limited.',
+                'pros': [f'{name} has submitted their application and is in the pipeline'],
+                'cons': ['More information is needed for a comprehensive assessment'],
+                'career_trajectory': 'Career trajectory analysis requires more work history data.',
+                'ideal_roles': ['General'],
+                'interview_focus_areas': ['Background verification', 'Skills assessment', 'Cultural fit'],
+                'salary_range_estimate': 'Insufficient data for salary estimation',
+                'culture_fit_notes': 'Cultural fit assessment requires interview interaction.',
+                'hiring_recommendation': 'CONSIDER',
+                'hiring_recommendation_rationale': 'Insufficient data for a strong recommendation.',
+                'confidence_score': 50,
+                'overall_rating': 'C+',
+                'key_differentiators': [],
+                # Backward compatibility
+                'overall_assessment': '',
                 'strengths': [],
                 'weaknesses': [],
-                'pros': [],
-                'cons': [],
                 'recommended_roles': [],
-                'interview_focus_areas': [],
-                'salary_range_estimate': 'Not determined',
-                'culture_fit_notes': '',
                 'development_areas': [],
-                'hiring_recommendation': 'CONSIDER',
-                'confidence_score': 50,
-                'key_differentiators': [],
             }
             for key, default in defaults.items():
-                if key not in result:
+                if key not in result or not result[key]:
                     result[key] = default
             
+            # Map backward-compatible fields
+            if not result.get('overall_assessment'):
+                result['overall_assessment'] = result['executive_summary']
+            if not result.get('strengths'):
+                result['strengths'] = result['pros'][:5]
+            if not result.get('weaknesses'):
+                result['weaknesses'] = result['cons'][:3]
+            if not result.get('recommended_roles'):
+                result['recommended_roles'] = result['ideal_roles']
+            
             self._set_cache(cache_key, result)
-            logger.info(f"🔬 Deep Analysis: {name} → {result.get('hiring_recommendation', 'N/A')}")
+            logger.info(f"Deep Analysis: {name} -> {result.get('hiring_recommendation', 'N/A')} ({result.get('overall_rating', '?')})")
         
         return result or {
-            'overall_assessment': 'Unable to perform deep analysis',
+            'executive_summary': f'{name} is a candidate with {experience} years of experience. Detailed AI analysis could not be completed at this time.',
+            'technical_assessment': f'Skills listed: {", ".join(skills[:10]) if skills else "none specified"}. A thorough technical evaluation is recommended during the interview process.',
+            'experience_assessment': f'The candidate reports {experience} years of professional experience. Career progression details should be verified in an interview.',
+            'education_assessment': 'Educational credentials should be verified.',
+            'pros': [f'Has {experience} years of stated experience', f'Listed {len(skills)} skills in their profile', 'Application submitted and in pipeline'],
+            'cons': ['AI deep analysis was unavailable — manual review recommended', 'Profile details need in-person verification'],
+            'career_trajectory': 'Trajectory analysis unavailable.',
+            'ideal_roles': ['General'],
+            'interview_focus_areas': ['Technical skills verification', 'Experience validation', 'Cultural fit assessment'],
+            'salary_range_estimate': 'Not determined',
+            'culture_fit_notes': 'Requires interview assessment.',
+            'hiring_recommendation': 'CONSIDER',
+            'hiring_recommendation_rationale': 'AI analysis was not fully available. Manual review is recommended.',
+            'confidence_score': 30,
+            'overall_rating': 'C',
+            'key_differentiators': [],
+            'overall_assessment': f'{name} has {experience} years of experience. Manual review recommended.',
             'strengths': ['Resume submitted'],
             'weaknesses': ['Insufficient data for analysis'],
-            'pros': ['Candidate is in the pipeline'],
-            'cons': ['More information needed'],
             'recommended_roles': ['General'],
-            'interview_focus_areas': ['Background verification', 'Skills assessment'],
-            'hiring_recommendation': 'CONSIDER',
-            'confidence_score': 30,
         }
     
     # ========================================================================
@@ -725,25 +842,35 @@ Provide comprehensive analysis as JSON:
         education = candidate_data.get('education', [])
         summary = candidate_data.get('summary', '')
         
-        system = """You are an expert technical recruiter performing candidate-job matching analysis.
-Score candidates honestly based on their actual qualifications vs job requirements.
-Be specific about what matches and what doesn't. Provide actionable insights."""
+        system = """You are an expert technical recruiter performing detailed candidate-job matching analysis.
+Score candidates honestly and precisely based on their actual qualifications vs job requirements.
+Consider ALL aspects: skills overlap, experience relevance, career trajectory, domain expertise, and growth potential.
+Be specific about what matches and what doesn't. Reference actual data from the candidate's profile."""
 
-        prompt = f"""Evaluate how well this candidate matches the job description.
+        # Build richer candidate profile
+        work_history = candidate_data.get('work_history', candidate_data.get('workHistory', []))
+        work_text = ""
+        if work_history:
+            for w in work_history[:5]:
+                if isinstance(w, dict):
+                    work_text += f"\n  - {w.get('title', '')} at {w.get('company', '')} ({w.get('period', '')}): {w.get('description', '')[:150]}"
+        
+        prompt = f"""Evaluate how well this candidate matches the job description. Be thorough and specific.
 
-CANDIDATE:
+CANDIDATE PROFILE:
 - Name: {name}
-- Skills: {', '.join(skills[:20]) if skills else 'Not specified'}
+- Skills: {', '.join(skills[:25]) if skills else 'Not specified'}
 - Experience: {experience} years
 - Education: {json.dumps(education[:3]) if education else 'Not specified'}
-- Summary: {summary[:300]}
+- Work History:{work_text if work_text else ' Not specified'}
+- Professional Summary: {summary[:500]}
 
 JOB DESCRIPTION:
 ---
-{job_description[:3000]}
+{job_description[:4000]}
 ---
 
-Provide match analysis as JSON:
+Provide detailed match analysis as JSON:
 {{
     "match_score": 75,
     "skill_match_score": 80,
@@ -753,12 +880,12 @@ Provide match analysis as JSON:
     "matched_skills": ["skill1", "skill2"],
     "missing_skills": ["skill1", "skill2"],
     "transferable_skills": ["skill1"],
-    "strengths": ["strength1", "strength2", "strength3"],
-    "gaps": ["gap1", "gap2"],
-    "recommendation": "Detailed recommendation about this candidate for this role",
-    "interview_questions": ["question1", "question2", "question3"],
-    "risk_factors": ["risk1"],
-    "growth_potential": "Assessment of growth potential in this role"
+    "strengths": ["Specific strength referencing actual candidate data #1", "Specific strength #2", "Specific strength #3"],
+    "gaps": ["Specific gap with context #1", "Specific gap #2"],
+    "recommendation": "A detailed 3-4 sentence recommendation explaining why this candidate is or isn't a good fit for this specific role. Reference their actual skills and experience.",
+    "interview_questions": ["Tailored question based on their background #1", "question2", "question3"],
+    "risk_factors": ["Specific risk based on profile analysis"],
+    "growth_potential": "Assessment of growth potential in this role based on their trajectory"
 }}
 
 Score 0-100 where:
@@ -801,12 +928,17 @@ Score 0-100 where:
         job_description: str,
         top_n: int = 10
     ) -> List[Dict]:
-        """Rank multiple candidates against a job description"""
+        """Rank multiple candidates against a job description with thorough analysis"""
         results = []
         
         for candidate in candidates[:50]:  # Process up to 50 candidates
             try:
-                match = await self.match_candidate_to_job(candidate, job_description)
+                # Ensure work history is passed through for richer matching
+                enriched = dict(candidate)
+                if 'workHistory' in enriched and 'work_history' not in enriched:
+                    enriched['work_history'] = enriched['workHistory']
+                
+                match = await self.match_candidate_to_job(enriched, job_description)
                 results.append({
                     'candidate': candidate,
                     'match': match,
@@ -897,11 +1029,13 @@ Return JSON:
         self,
         message: str,
         context: Optional[Dict] = None,
-        conversation_history: Optional[List[Dict]] = None
+        conversation_history: Optional[List[Dict]] = None,
+        candidates_data: Optional[List[Dict]] = None
     ) -> str:
         """
         AI chat assistant for recruitment queries.
         Uses LLM to understand natural language and provide intelligent responses.
+        Receives full candidate data for detailed, context-rich answers.
         """
         ctx = context or {}
         total = ctx.get('totalCandidates', 0)
@@ -909,19 +1043,56 @@ Return JSON:
         strong = ctx.get('strongMatches', 0)
         recent = ctx.get('recentCount', 0)
         
+        # Build rich candidate context
+        candidates_context = ""
+        if candidates_data:
+            candidates_context = "\n\nCANDIDATE DATABASE (detailed profiles for answering queries):\n"
+            for i, c in enumerate(candidates_data[:50]):
+                skills_str = ', '.join(c.get('skills', [])[:15])
+                work = c.get('workHistory', c.get('work_history', []))
+                work_str = '; '.join([f"{w.get('title', '')} at {w.get('company', '')} ({w.get('duration', '')})" for w in work[:4]]) if work else 'N/A'
+                edu = c.get('education', [])
+                edu_str = '; '.join([f"{e.get('degree', '')} in {e.get('field', '')} from {e.get('institution', '')}" for e in edu[:3]]) if edu else 'N/A'
+                summary = c.get('summary', '')[:300]
+                certs = ', '.join(c.get('certifications', [])[:5])
+                langs = ', '.join(c.get('languages', [])[:5])
+                ai_analysis = c.get('ai_analysis', {})
+                exec_summary = ''
+                if ai_analysis:
+                    exec_summary = f" | AI Assessment: {ai_analysis.get('executive_summary', ai_analysis.get('overall_assessment', ''))[:200]}"
+                # Include snippet of resume text for deeper analysis
+                resume_snippet = (c.get('resume_text', '') or '')[:300]
+                resume_info = f"\n   Resume excerpt: {resume_snippet}" if resume_snippet else ""
+                
+                candidates_context += f"""
+[{i+1}] {c.get('name', 'Unknown')} | {c.get('email', 'N/A')} | Score: {c.get('matchScore', 0)}% | Status: {c.get('status', 'New')}
+   Category: {c.get('jobCategory', c.get('job_category', 'General'))} | Experience: {c.get('experience', 0)} yrs | Location: {c.get('location', 'N/A')} | Phone: {c.get('phone', 'N/A')}
+   Skills: {skills_str}
+   Work: {work_str}
+   Education: {edu_str}
+   Certifications: {certs or 'N/A'} | Languages: {langs or 'N/A'}
+   Summary: {summary}{exec_summary}{resume_info}
+"""
+        
         system = f"""You are an expert AI recruitment assistant for a company's HR team.
-You help with candidate screening, job matching, pipeline analytics, and hiring decisions.
+You have deep knowledge of the entire candidate database and can provide detailed, specific answers.
+You help with candidate screening, job matching, pipeline analytics, comparisons, and hiring decisions.
 
 Current database stats:
 - Total candidates: {total}
 - Strong matches (70%+): {strong}
 - Average score: {avg_score:.1f}%
 - Recent applicants: {recent}
+{candidates_context}
 
-Be helpful, concise, and data-driven. Use the stats to give contextual answers.
-Format your responses with markdown for readability.
-If asked about specific candidates, explain you can search by skills, location, or score.
-If asked to do something beyond your capabilities, suggest practical alternatives."""
+IMPORTANT INSTRUCTIONS:
+- When asked about specific candidates, reference their actual data — skills, experience, work history.
+- When asked to compare candidates, provide detailed head-to-head analysis with specific data points.
+- When asked about best candidates for a role, evaluate each candidate's skills against the requirements.
+- Give detailed, paragraph-style responses with specific references to candidate profiles.
+- Use markdown formatting for readability (headers, bold, lists).
+- If the question is about a candidate you have data for, provide a thorough analysis.
+- Never make up information that isn't in the candidate data provided."""
 
         # Build conversation context
         history_text = ""
@@ -934,14 +1105,14 @@ If asked to do something beyond your capabilities, suggest practical alternative
         prompt = f"""{history_text}
 User: {message}
 
-Provide a helpful, detailed response:"""
+Provide a detailed, helpful response with specific candidate data where relevant:"""
 
         result = await self._generate(
             prompt,
             model=self.reasoning_model,
             system=system,
             temperature=0.3,
-            max_tokens=2048
+            max_tokens=3000
         )
         
         return result or f"""I'm here to help with your recruitment needs!
@@ -1154,10 +1325,13 @@ _llm_service: Optional[LLMService] = None
 
 
 async def get_llm_service() -> LLMService:
-    """Get or create LLM service singleton"""
+    """Get or create LLM service singleton, re-checking availability if not connected"""
     global _llm_service
     if _llm_service is None:
         _llm_service = LLMService()
+        await _llm_service.initialize()
+    elif not _llm_service.available:
+        # Re-check Ollama availability in case it was started after server boot
         await _llm_service.initialize()
     return _llm_service
 

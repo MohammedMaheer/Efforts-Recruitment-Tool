@@ -5,27 +5,44 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
 import { Progress } from '@/components/ui/Progress'
 import { Button } from '@/components/ui/Button'
-import { getMatchScoreColor } from '@/lib/utils'
+import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { useState, useMemo, useRef, useCallback } from 'react'
 import { useAIStatus } from '@/hooks/useAIStatus'
 import { useCandidates } from '@/hooks/useCandidates'
+import { useEmailSync } from '@/hooks/useEmailSync'
 import { useRealTimeStats } from '@/hooks/useRealTimeStats'
 import config from '@/config'
+import { authFetch } from '@/lib/authFetch'
 
 // Category colors for visual distinction
 const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
   'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
   'DevOps Engineer': { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
   'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
-  'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
-  'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+  'Cybersecurity': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+  'QA / Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+  'IT & Systems': { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
   'Product Manager': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
-  'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  'Finance': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
-  'Customer Support': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
   'Design': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
+  'Project Management': { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200' },
+  'Business Analyst': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
+  'Consulting': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
+  'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
+  'Content & Communications': { bg: 'bg-lime-50', text: 'text-lime-700', border: 'border-lime-200' },
+  'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+  'Finance': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
+  'Legal': { bg: 'bg-stone-50', text: 'text-stone-700', border: 'border-stone-200' },
+  'Operations': { bg: 'bg-zinc-50', text: 'text-zinc-700', border: 'border-zinc-200' },
+  'Healthcare': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
+  'Education': { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
+  'Engineering': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
+  'Customer Support': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
+  'Media & Creative': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
+  'Real Estate': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+  'Hospitality': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
   'General': { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' },
 }
 
@@ -38,15 +55,17 @@ export default function Dashboard() {
     autoFetch: true,
     refreshInterval: 60000 // Refresh every minute
   })
+  // Auto-refresh when email sync detects new candidates
+  useEmailSync(refetch, 30000)
   const user = useAuthStore((state) => state.user)
   const navigate = useNavigate()
   const [showTips, setShowTips] = useState(true)
   const [isSyncing, setIsSyncing] = useState(false)
   const aiStatus = useAIStatus()
 
-  // Real-time stats with 5-second polling
+  // Real-time stats with 30-second polling
   const { stats: liveStats, lastUpdate: liveLastUpdate } = useRealTimeStats({
-    interval: 5000, // Poll every 5 seconds
+    interval: 30000, // Poll every 30 seconds
     enabled: true,
     onStatsChange: (newStats) => {
       // Auto-refresh candidate list when counts change
@@ -58,16 +77,20 @@ export default function Dashboard() {
 
   // Calculate category stats first (needed by displayStats)
   const categoryStats = useMemo(() => {
-    const groups: Record<string, { count: number; avgScore: number; topScore: number }> = {}
+    const groups: Record<string, { count: number; avgScore: number; topScore: number; subcategories: Record<string, number> }> = {}
     candidates.forEach((candidate) => {
       const category = candidate.jobCategory || 'General'
+      const subcategory = candidate.jobSubcategory || ''
       if (!groups[category]) {
-        groups[category] = { count: 0, avgScore: 0, topScore: 0 }
+        groups[category] = { count: 0, avgScore: 0, topScore: 0, subcategories: {} }
       }
       groups[category].count++
       groups[category].avgScore += candidate.matchScore
       if (candidate.matchScore > groups[category].topScore) {
         groups[category].topScore = candidate.matchScore
+      }
+      if (subcategory) {
+        groups[category].subcategories[subcategory] = (groups[category].subcategories[subcategory] || 0) + 1
       }
     })
     
@@ -118,7 +141,7 @@ export default function Dashboard() {
       const formData = new FormData()
       validFiles.forEach(file => formData.append('files', file))
 
-      const response = await fetch(`${config.apiUrl}/api/resumes/upload-multiple`, {
+      const response = await authFetch(`${config.apiUrl}/api/resumes/upload-multiple`, {
         method: 'POST',
         body: formData,
       })
@@ -173,7 +196,7 @@ export default function Dashboard() {
   const handleInstantSync = async () => {
     setIsSyncing(true)
     try {
-      const response = await fetch(`${config.apiUrl}/api/email/sync-now`, {
+      const response = await authFetch(`${config.apiUrl}/api/email/sync-now`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' }
       })
@@ -222,7 +245,7 @@ export default function Dashboard() {
       title: 'Upload Resumes',
       description: 'Add new candidates',
       color: 'purple',
-      action: () => navigate('/job-descriptions')
+      action: () => setShowUploadModal(true)
     },
     {
       icon: Target,
@@ -364,7 +387,7 @@ export default function Dashboard() {
                 </div>
                 <div className="flex-1">
                   <div className="flex items-center gap-2 mb-1">
-                    <h3 className="font-semibold text-gray-900">💡 Dashboard Tips</h3>
+                    <h3 className="font-semibold text-gray-900">Dashboard Tips</h3>
                     {/* AI Status Indicator */}
                     {!aiStatus.isLoading && (
                       <Badge 
@@ -388,7 +411,7 @@ export default function Dashboard() {
                     <li>• Use <strong>Quick Actions</strong> for instant navigation to key features</li>
                     <li>• Click candidate <strong>names</strong> or <strong>match scores</strong> to view details</li>
                     {aiStatus.available && (
-                      <li className="text-primary-600">• 🎉 <strong>OpenAI is active</strong> - Enhanced AI features available!</li>
+                      <li className="text-primary-600">• <strong>OpenAI is active</strong> - Enhanced AI features available!</li>
                     )}
                   </ul>
                 </div>
@@ -513,7 +536,7 @@ export default function Dashboard() {
 
         <div
           className="hover:-translate-y-1 transition-transform cursor-pointer"
-          onClick={() => navigate('/job-descriptions')}
+          onClick={() => navigate('/candidates')}
         >
           <Card className="hover:shadow-large transition-all border-2 hover:border-warning/30 relative overflow-hidden group">
             <div className="absolute inset-0 bg-gradient-to-br from-warning/5 to-orange-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -618,6 +641,24 @@ export default function Dashboard() {
                         </div>
                         <h3 className={`font-semibold ${colors.text} mb-2 truncate`}>{category}</h3>
                         <div className="space-y-2">
+                          {/* Show top subcategories */}
+                          {Object.keys(stats.subcategories).length > 0 && (
+                            <div className="flex flex-wrap gap-1 mb-1">
+                              {Object.entries(stats.subcategories)
+                                .sort(([, a], [, b]) => b - a)
+                                .slice(0, 2)
+                                .map(([sub, count]) => (
+                                  <span key={sub} className="text-[10px] px-1.5 py-0.5 rounded bg-white/70 text-gray-600 truncate max-w-[120px]">
+                                    {sub}: {count}
+                                  </span>
+                                ))}
+                              {Object.keys(stats.subcategories).length > 2 && (
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/70 text-gray-500">
+                                  +{Object.keys(stats.subcategories).length - 2}
+                                </span>
+                              )}
+                            </div>
+                          )}
                           <div className="flex items-center justify-between text-sm">
                             <span className="text-gray-600">Avg Score</span>
                             <span className={`font-bold ${getMatchScoreColor(stats.avgScore)}`}>{stats.avgScore}%</span>
@@ -727,14 +768,7 @@ export default function Dashboard() {
                           <p className="text-xs text-gray-500 mt-1">Match Score</p>
                         </div>
                         <Badge
-                          variant={
-                            candidate.status === 'Strong'
-                              ? 'success'
-                              : candidate.status === 'Partial'
-                              ? 'warning'
-                              : 'danger'
-                          }
-                          className="px-3 py-1"
+                          className={`px-3 py-1 ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}
                         >
                           {candidate.status}
                         </Badge>

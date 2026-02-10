@@ -3,6 +3,7 @@
  * Polls the backend for live updates on candidate counts and analytics
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useAuthStore } from '@/store/authStore';
 import config from '@/config';
 
 interface LiveStats {
@@ -35,11 +36,17 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
   
   const previousStatsRef = useRef<LiveStats | null>(null);
   const pollingRef = useRef<NodeJS.Timeout | null>(null);
+  const onStatsChangeRef = useRef(onStatsChange);
+  onStatsChangeRef.current = onStatsChange;
 
   const fetchStats = useCallback(async () => {
     try {
+      const token = useAuthStore.getState().token;
       const response = await fetch(`${config.apiUrl}/api/stats/live`, {
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
       });
       
       if (!response.ok) {
@@ -54,8 +61,8 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
         previousStatsRef.current.new_24h !== data.new_24h ||
         previousStatsRef.current.strong_matches !== data.strong_matches;
       
-      if (hasChanged && onStatsChange) {
-        onStatsChange(data);
+      if (hasChanged && onStatsChangeRef.current) {
+        onStatsChangeRef.current(data);
       }
       
       previousStatsRef.current = data;
@@ -71,7 +78,7 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
       setLoading(false);
       return null;
     }
-  }, [onStatsChange]);
+  }, []);
 
   // Initial fetch and setup polling
   useEffect(() => {
@@ -95,7 +102,7 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
         pollingRef.current = null;
       }
     };
-  }, [enabled, interval, fetchStats]);
+  }, [enabled, interval]);
 
   // Manual refresh function
   const refresh = useCallback(() => {

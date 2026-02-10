@@ -1,7 +1,8 @@
-import PyPDF2
+﻿import PyPDF2
 import docx
 import re
 import logging
+import unicodedata
 from typing import Dict, List, Any, Optional
 from io import BytesIO
 
@@ -82,26 +83,98 @@ class ResumeParser:
         else:
             raise ValueError("Unsupported file format. Supported: PDF, DOCX")
     
+    def _clean_extracted_text(self, text: str) -> str:
+        """Clean and normalize extracted PDF text for better parsing accuracy"""
+        if not text:
+            return ""
+        
+        # Unicode normalization â€” convert special chars to ASCII equivalents
+        text = unicodedata.normalize('NFKD', text)
+        
+        # Fix common PDF extraction artifacts
+        # Replace multiple spaces (from column layouts) with single space per line
+        lines = text.split('\n')
+        cleaned_lines = []
+        for line in lines:
+            # Collapse multiple spaces (but preserve intentional indentation)
+            line = re.sub(r'  +', '  ', line)
+            # Remove control characters except newline/tab
+            line = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', line)
+            # Fix broken words from line wrapping (e.g., "Soft- ware" â†’ "Software")
+            line = re.sub(r'(\w)-\s+(\w)', r'\1\2', line)
+            cleaned_lines.append(line.strip())
+        
+        text = '\n'.join(cleaned_lines)
+        
+        # Remove excessive blank lines (more than 2 consecutive)
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        
+        # Fix bullet point characters
+        text = text.replace('â—', 'â€¢').replace('â– ', 'â€¢').replace('â–ª', 'â€¢').replace('â—¦', 'â€¢')
+        text = text.replace('', 'â€¢').replace('', 'â€¢')
+        
+        # Normalize dashes
+        text = text.replace('â€“', '-').replace('â€”', '-').replace('â€•', '-')
+        
+        # Normalize quotes
+        text = text.replace('\u201c', '"').replace('\u201d', '"')
+        text = text.replace('\u2018', "'").replace('\u2019', "'")
+        
+        return text.strip()
+    
     def _extract_from_pdf(self, content: bytes) -> str:
         """Extract text from PDF using multiple methods for best results"""
         pdf_file = BytesIO(content)
         text = ""
         
-        # Try pdfplumber first (better for complex layouts)
+        # Try pdfplumber first (better for complex layouts, tables, columns)
         try:
             import pdfplumber
             with pdfplumber.open(pdf_file) as pdf:
                 for page in pdf.pages:
-                    page_text = page.extract_text()
+                    # Use layout-aware text extraction for better column handling
+                    page_text = page.extract_text(
+                        layout=True,
+                        x_density=7.25,
+                        y_density=13
+                    )
                     if page_text:
-                        text += page_text + "\n"
+                        text += page_text + "\n\n"
+                    
+                    # Also extract text from tables if any
+                    tables = page.extract_tables()
+                    if tables:
+                        for table in tables:
+                            for row in table:
+                                if row:
+                                    row_text = ' | '.join([cell or '' for cell in row])
+                                    if row_text.strip('| '):
+                                        text += row_text + "\n"
+            
             if text.strip():
-                logger.info(f"📄 PDF extracted with pdfplumber: {len(text)} chars")
+                text = self._clean_extracted_text(text)
+                logger.info(f"ðŸ“„ PDF extracted with pdfplumber (layout-aware): {len(text)} chars")
                 return text
         except ImportError:
             pass
         except Exception as e:
-            logger.debug(f"pdfplumber failed, trying PyPDF2: {e}")
+            logger.debug(f"pdfplumber layout extraction failed, trying basic: {e}")
+            # Try pdfplumber without layout mode
+            try:
+                pdf_file.seek(0)
+                import pdfplumber
+                with pdfplumber.open(pdf_file) as pdf:
+                    text = ""
+                    for page in pdf.pages:
+                        page_text = page.extract_text()
+                        if page_text:
+                            text += page_text + "\n\n"
+                if text.strip():
+                    text = self._clean_extracted_text(text)
+                    logger.info(f"ðŸ“„ PDF extracted with pdfplumber (basic): {len(text)} chars")
+                    return text
+            except Exception:
+                pass
         
         # Fallback to PyPDF2
         pdf_file.seek(0)
@@ -110,9 +183,10 @@ class ResumeParser:
         for page in pdf_reader.pages:
             page_text = page.extract_text()
             if page_text:
-                text += page_text + "\n"
+                text += page_text + "\n\n"
         
-        logger.info(f"📄 PDF extracted with PyPDF2: {len(text)} chars")
+        text = self._clean_extracted_text(text)
+        logger.info(f"ðŸ“„ PDF extracted with PyPDF2: {len(text)} chars")
         return text
     
     def _extract_from_docx(self, content: bytes) -> str:
@@ -130,18 +204,18 @@ class ResumeParser:
         text = await self.extract_text(content, filename)
         
         if not text or len(text.strip()) < 30:
-            logger.warning(f"⚠️ Insufficient text extracted from {filename}")
+            logger.warning(f"âš ï¸ Insufficient text extracted from {filename}")
             return self._empty_result(text)
         
         # Strategy 1: Try LLM-powered extraction (100% accurate)
         llm_result = await self._parse_with_llm(text)
         if llm_result:
-            logger.info(f"✅ Resume parsed with LLM: {llm_result.get('name', 'Unknown')}")
-            llm_result['raw_text'] = text[:2000]
+            logger.info(f"âœ… Resume parsed with LLM: {llm_result.get('name', 'Unknown')}")
+            llm_result['raw_text'] = text[:5000]
             return llm_result
         
         # Strategy 2: Fallback to regex-based extraction
-        logger.info("⚠️ LLM unavailable, using regex-based extraction")
+        logger.info("âš ï¸ LLM unavailable, using regex-based extraction")
         name = self._extract_name(text)
         email = self._extract_email(text)
         phone = self._extract_phone(text)
@@ -164,7 +238,9 @@ class ResumeParser:
             "summary": summary,
             "location": location,
             "linkedin": linkedin,
-            "raw_text": text[:2000],
+            "certifications": [],
+            "languages": [],
+            "raw_text": text[:5000],
             "parsed_by": "regex"
         }
     
@@ -219,7 +295,9 @@ class ResumeParser:
             "summary": "",
             "location": "",
             "linkedin": "",
-            "raw_text": text[:2000] if text else "",
+            "certifications": [],
+            "languages": [],
+            "raw_text": text[:5000] if text else "",
             "parsed_by": "none"
         }
     
@@ -247,22 +325,53 @@ class ResumeParser:
         return ""
     
     def _extract_location(self, text: str) -> str:
-        """Extract location from resume"""
+        """Extract location from resume using patterns and city/country matching"""
+        # First try structured patterns: "Location: City, Country" or "Address: ..."
+        loc_patterns = [
+            r'(?:location|address|city|based in|residing in)[:\s]+([A-Za-z\s,]+(?:,\s*[A-Za-z\s]+))',
+            r'([A-Z][a-z]+(?:\s[A-Z][a-z]+)*,\s*(?:UAE|United Arab Emirates|India|Pakistan|USA|UK|Canada|Australia|Singapore|Philippines|Qatar|Saudi Arabia|Oman|Bahrain|Kuwait|Jordan|Egypt|Lebanon|Germany|France|Netherlands|Ireland))',
+        ]
+        for pattern in loc_patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                loc = match.group(1).strip().rstrip(',')
+                if len(loc) > 2 and len(loc) < 60:
+                    return loc.title()
+        
         text_lower = text.lower()
         
-        # Common UAE locations
-        locations = ['dubai', 'abu dhabi', 'sharjah', 'ajman', 'fujairah', 'ras al khaimah', 'umm al quwain', 'uae', 'united arab emirates']
-        for loc in locations:
-            if loc in text_lower:
-                return loc.title()
+        # UAE cities (specific first)
+        uae_cities = {
+            'dubai': 'Dubai, UAE', 'abu dhabi': 'Abu Dhabi, UAE', 'sharjah': 'Sharjah, UAE',
+            'ajman': 'Ajman, UAE', 'fujairah': 'Fujairah, UAE',
+            'ras al khaimah': 'Ras Al Khaimah, UAE', 'umm al quwain': 'Umm Al Quwain, UAE'
+        }
+        for city, full_loc in uae_cities.items():
+            if city in text_lower:
+                return full_loc
         
-        # Other common locations
-        other_locations = ['india', 'pakistan', 'philippines', 'uk', 'usa', 'remote', 'singapore', 'australia', 'canada']
-        for loc in other_locations:
-            if loc in text_lower:
-                return loc.title()
+        # General country/region matching
+        country_map = {
+            'united arab emirates': 'UAE', 'uae': 'UAE',
+            'india': 'India', 'pakistan': 'Pakistan', 'philippines': 'Philippines',
+            'united kingdom': 'UK', 'uk': 'UK', 'united states': 'USA', 'usa': 'USA',
+            'canada': 'Canada', 'australia': 'Australia', 'singapore': 'Singapore',
+            'qatar': 'Qatar', 'saudi arabia': 'Saudi Arabia', 'oman': 'Oman',
+            'bahrain': 'Bahrain', 'kuwait': 'Kuwait', 'jordan': 'Jordan',
+            'egypt': 'Egypt', 'lebanon': 'Lebanon', 'germany': 'Germany',
+            'france': 'France', 'netherlands': 'Netherlands', 'ireland': 'Ireland',
+            'new zealand': 'New Zealand', 'south africa': 'South Africa',
+            'remote': 'Remote', 'hong kong': 'Hong Kong', 'malaysia': 'Malaysia',
+            'indonesia': 'Indonesia', 'thailand': 'Thailand', 'vietnam': 'Vietnam',
+            'china': 'China', 'japan': 'Japan', 'south korea': 'South Korea',
+            'brazil': 'Brazil', 'nigeria': 'Nigeria', 'kenya': 'Kenya',
+            'sri lanka': 'Sri Lanka', 'bangladesh': 'Bangladesh', 'nepal': 'Nepal',
+        }
+        for keyword, country in country_map.items():
+            if keyword in text_lower:
+                return country
         
-        return 'UAE'  # Default
+        return 'Not Specified'
     
     def _is_valid_name(self, name: str) -> bool:
         """Check if extracted name is valid (not garbage)"""
@@ -273,7 +382,7 @@ class ResumeParser:
         if digit_count > 3:
             return False
         # Contains date patterns
-        if re.search(r'\d{4}\s*[-–]\s*\d{4}', name.replace(' ', '')):
+        if re.search(r'\d{4}\s*[-â€“]\s*\d{4}', name.replace(' ', '')):
             return False
         if re.search(r'[0-9]\s+[0-9]\s+[0-9]\s+[0-9]', name):
             return False
@@ -372,126 +481,233 @@ class ResumeParser:
                     val = int(match)
                     if 0 < val < 50:  # Reasonable range
                         max_exp = max(max_exp, val)
-                except:
+                except Exception:
                     pass
         
         return max_exp
     
     def _extract_education(self, text: str) -> List[Dict[str, str]]:
-        """Extract education information with improved patterns"""
+        """Extract education information with improved patterns and year extraction"""
         education = []
-        original_text = text  # Keep original case for proper extraction
-        text_lower = text.lower()
+        original_text = text
         
-        # Improved degree patterns with field extraction
+        # Helper to find graduation year near a match position
+        def find_year_near(pos: int, search_text: str) -> str:
+            # Search within 150 chars around the match for a 4-digit year
+            context = search_text[max(0, pos - 80):pos + 150]
+            year_match = re.search(r'(19[89]\d|20[0-2]\d)', context)
+            return year_match.group(1) if year_match else ''
+        
+        # Comprehensive degree patterns â€” don't break on first match, collect all
         full_edu_patterns = [
             # PhD patterns
-            (r'(?:ph\.?d\.?|doctorate?)\s+(?:in\s+)?([A-Za-z\s]{3,40})\s+(?:from\s+)?([A-Za-z\s]+(?:University|College|Institute))', 'PhD'),
-            (r'(?:ph\.?d\.?|doctorate?)\s+(?:in\s+)?([A-Za-z\s]{3,30})(?:\s|,|$)', 'PhD'),
+            (r'(?:ph\.?d\.?|doctorate?|doctor of philosophy)\s+(?:in\s+|of\s+)?([A-Za-z\s&]{3,40})\s+(?:from\s+)?([A-Za-z\s]+(?:University|College|Institute|School))', 'PhD'),
+            (r'(?:ph\.?d\.?|doctorate?)\s+(?:in\s+)?([A-Za-z\s&]{3,30})(?:\s|,|$)', 'PhD'),
             # Masters patterns
-            (r"(?:master'?s?|m\.?s\.?|mba|m\.?a\.?|m\.?tech)\s+(?:in\s+|of\s+)?([A-Za-z\s]{3,40})\s+(?:from\s+)?([A-Za-z\s]+(?:University|College|Institute))", 'Masters'),
-            (r"(?:master'?s?\s+degree|m\.?s\.?|mba)\s+(?:in\s+)?([A-Za-z\s]{3,30})", 'Masters'),
-            # Bachelors patterns  
-            (r"(?:bachelor'?s?|b\.?s\.?|b\.?a\.?|b\.?e\.?|b\.?tech|b\.?eng)\s+(?:in\s+|of\s+)?([A-Za-z\s]{3,40})\s+(?:from\s+)?([A-Za-z\s]+(?:University|College|Institute))", 'Bachelors'),
-            (r"(?:bachelor'?s?\s+degree|b\.?e\.?|b\.?tech)\s+(?:in\s+)?([A-Za-z\s]{3,30})", 'Bachelors'),
+            (r"(?:master'?s?|m\.?s\.?c?\.?|mba|m\.?a\.?|m\.?tech|m\.?eng|m\.?phil)\s+(?:in\s+|of\s+)?([A-Za-z\s&]{3,40})\s+(?:from\s+)?([A-Za-z\s]+(?:University|College|Institute|School))", 'Masters'),
+            (r"(?:master'?s?\s+(?:of\s+|in\s+)?(?:science|arts|business|engineering)|m\.?s\.?c?\.?|mba|m\.?tech)\s+(?:in\s+)?([A-Za-z\s&]{3,30})", 'Masters'),
+            # Bachelors patterns
+            (r"(?:bachelor'?s?|b\.?s\.?c?\.?|b\.?a\.?|b\.?e\.?|b\.?tech|b\.?eng|b\.?com|b\.?b\.?a)\s+(?:in\s+|of\s+)?([A-Za-z\s&]{3,40})\s+(?:from\s+)?([A-Za-z\s]+(?:University|College|Institute|School))", 'Bachelors'),
+            (r"(?:bachelor'?s?\s+(?:of\s+|in\s+)?(?:science|arts|engineering|technology|commerce)|b\.?e\.?|b\.?tech|b\.?s\.?c?\.?|b\.?com|b\.?b\.?a)\s+(?:in\s+)?([A-Za-z\s&]{3,30})", 'Bachelors'),
+            # Associate/Diploma patterns
+            (r"(?:associate'?s?|diploma|a\.?s\.?|a\.?a\.?)\s+(?:in\s+|of\s+)?([A-Za-z\s&]{3,40})", 'Diploma'),
         ]
         
+        seen_degrees = set()
         for pattern, degree_type in full_edu_patterns:
-            match = re.search(pattern, original_text, re.IGNORECASE)
-            if match:
+            for match in re.finditer(pattern, original_text, re.IGNORECASE):
                 field = match.group(1).strip() if match.group(1) else ''
                 institution = match.group(2).strip() if len(match.groups()) > 1 and match.group(2) else ''
-                # Clean up field - remove noise words
-                field = re.sub(r'\b(in|of|from|the|and|with)\b', '', field, flags=re.IGNORECASE).strip()
-                # Only add if field looks valid (not random letters or too short)
+                # Clean up field
+                field = re.sub(r'\b(in|of|from|the|and|with|at)\b', '', field, flags=re.IGNORECASE).strip()
+                field = field.strip(' ,.-')
+                
                 if len(field) >= 3 and not re.match(r'^[a-z]{1,3}$', field.lower()):
-                    education.append({
-                        "degree": degree_type,
-                        "field": field.title(),
-                        "institution": institution.title() if institution else '',
-                        "year": ""
-                    })
-                    break  # Found valid education
+                    # Deduplicate
+                    degree_key = f"{degree_type}_{field.lower()}"
+                    if degree_key not in seen_degrees:
+                        seen_degrees.add(degree_key)
+                        year = find_year_near(match.start(), original_text)
+                        education.append({
+                            "degree": degree_type,
+                            "field": field.title(),
+                            "institution": institution.title() if institution else '',
+                            "year": year
+                        })
         
         # Fallback: look for university mentions
         if not education:
-            uni_match = re.search(r'([A-Z][a-zA-Z\s]+(?:University|College|Institute|School))', original_text)
-            if uni_match:
+            for uni_match in re.finditer(r'([A-Z][a-zA-Z\s]+(?:University|College|Institute|School|Academy))', original_text):
                 # Check for degree keywords nearby
-                text_around = original_text[max(0, uni_match.start()-100):uni_match.end()+50].lower()
+                text_around = original_text[max(0, uni_match.start()-120):uni_match.end()+60].lower()
                 degree = 'Degree'
                 field = ''
-                if 'master' in text_around or 'mba' in text_around or 'm.s' in text_around:
-                    degree = 'Masters'
-                elif 'bachelor' in text_around or 'b.e' in text_around or 'b.tech' in text_around:
-                    degree = 'Bachelors'
-                elif 'phd' in text_around or 'doctor' in text_around:
+                if 'phd' in text_around or 'doctor' in text_around:
                     degree = 'PhD'
-                education.append({
-                    "degree": degree,
-                    "field": field,
-                    "institution": uni_match.group(1).strip(),
-                    "year": ""
-                })
+                elif 'master' in text_around or 'mba' in text_around or 'm.s' in text_around:
+                    degree = 'Masters'
+                elif 'bachelor' in text_around or 'b.e' in text_around or 'b.tech' in text_around or 'b.sc' in text_around:
+                    degree = 'Bachelors'
+                elif 'diploma' in text_around or 'associate' in text_around:
+                    degree = 'Diploma'
+                
+                year = find_year_near(uni_match.start(), original_text)
+                institution = uni_match.group(1).strip()
+                
+                # Deduplicate
+                if institution not in [e.get('institution', '') for e in education]:
+                    education.append({
+                        "degree": degree,
+                        "field": field,
+                        "institution": institution,
+                        "year": year
+                    })
+                    if len(education) >= 3:
+                        break
         
-        return education[:3]  # Return up to 3 education entries
+        return education[:5]
     
     def _extract_work_history(self, text: str) -> List[Dict[str, str]]:
-        """Extract work history from resume"""
+        """Extract work history from resume with company detection"""
         work_history = []
-        text_lower = text.lower()
         
-        # Look for job titles and companies
-        job_patterns = [
-            r'(senior|junior|lead|principal)?\s*(software engineer|developer|manager|analyst|designer|consultant|specialist|coordinator|director|executive)',
-            r'(\w+\s+){1,3}(at|@)\s+(\w+\s*){1,3}',
+        # Common job title keywords
+        job_titles = [
+            'engineer', 'developer', 'manager', 'analyst', 'designer', 'consultant',
+            'specialist', 'coordinator', 'director', 'executive', 'lead', 'architect',
+            'administrator', 'associate', 'assistant', 'intern', 'trainee', 'officer',
+            'supervisor', 'head of', 'vice president', 'vp', 'cto', 'ceo', 'cfo',
+            'founder', 'co-founder', 'partner', 'accountant', 'recruiter', 'advisor',
+            'strategist', 'planner', 'controller', 'auditor', 'scientist', 'researcher'
         ]
         
-        # Common job titles
-        job_titles = ['engineer', 'developer', 'manager', 'analyst', 'designer', 'consultant', 
-                     'specialist', 'coordinator', 'director', 'executive', 'lead', 'architect',
-                     'administrator', 'associate', 'assistant', 'intern', 'trainee']
+        # Company indicator words
+        company_indicators = ['at', 'for', '@', '-', '|', 'Â·', ',']
         
         lines = text.split('\n')
-        for line in lines:
-            line_lower = line.lower().strip()
-            for title in job_titles:
-                if title in line_lower and len(line) < 150:
-                    # Extract year range if present
-                    year_match = re.search(r'(20\d{2}|19\d{2})\s*[-–]\s*(20\d{2}|present|current)', line_lower)
-                    years = year_match.group(0) if year_match else ''
-                    
-                    work_history.append({
-                        "title": line.strip()[:100],
-                        "company": "",
-                        "period": years,
-                        "description": ""
-                    })
-                    break
+        i = 0
+        while i < len(lines) and len(work_history) < 8:
+            line = lines[i].strip()
+            line_lower = line.lower()
+            
+            # Check if this line contains a job title
+            has_title = any(title in line_lower for title in job_titles)
+            
+            if has_title and 5 < len(line) < 200:
+                # Extract year range from this line or the next
+                year_match = re.search(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|19\d{2})\s*[-â€“to]+\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|[Pp]resent|[Cc]urrent|[Oo]ngoing)', line, re.IGNORECASE)
+                period = year_match.group(0).strip() if year_match else ''
+                
+                # If no period found on this line, check next line
+                if not period and i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    year_match = re.search(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|19\d{2})\s*[-â€“to]+\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|[Pp]resent|[Cc]urrent|[Oo]ngoing)', next_line, re.IGNORECASE)
+                    if year_match:
+                        period = year_match.group(0).strip()
+                
+                # Try to separate title from company
+                title_text = line
+                company = ''
+                
+                # Pattern: "Title at/@ Company" or "Title - Company" or "Title | Company"
+                for sep in [' at ', ' @ ', ' - ', ' | ', ' Â· ']:
+                    if sep in line:
+                        parts = line.split(sep, 1)
+                        # The part with the job title keyword is the title
+                        if any(t in parts[0].lower() for t in job_titles):
+                            title_text = parts[0].strip()
+                            company = parts[1].strip()
+                        else:
+                            company = parts[0].strip()
+                            title_text = parts[1].strip()
+                        break
+                
+                # Also check if next/nearby line is the company (often on separate line)
+                if not company and i + 1 < len(lines):
+                    next_line = lines[i + 1].strip()
+                    # If next line is short and doesn't contain job title keywords, it might be company
+                    if (5 < len(next_line) < 80 and
+                        not any(t in next_line.lower() for t in job_titles) and
+                        not next_line.startswith(('â€¢', '-', '*', 'Â·'))):
+                        # Check if it looks like a company name (starts with capital, no bullets)
+                        if next_line[0].isupper() or next_line[0].isdigit():
+                            company = next_line
+                
+                # Remove period/dates from title
+                if period and period in title_text:
+                    title_text = title_text.replace(period, '').strip().rstrip('-|Â·,')
+                if period and company and period in company:
+                    company = company.replace(period, '').strip().rstrip('-|Â·,')
+                
+                # Collect description from bullet points following this entry
+                description_lines = []
+                j = i + 1
+                while j < min(i + 10, len(lines)):
+                    desc_line = lines[j].strip()
+                    if desc_line.startswith(('â€¢', '-', '*', 'Â·', 'â—‹')):
+                        clean_desc = desc_line.lstrip('â€¢-*Â·â—‹ ')
+                        if len(clean_desc) > 10:
+                            description_lines.append(clean_desc)
+                    elif len(desc_line) > 0 and any(t in desc_line.lower() for t in job_titles):
+                        break  # Next job entry
+                    j += 1
+                
+                description = '; '.join(description_lines[:4]) if description_lines else ''
+                
+                work_history.append({
+                    "title": title_text[:100],
+                    "company": company[:80],
+                    "period": period,
+                    "description": description[:500]
+                })
+            i += 1
         
-        return work_history[:5]  # Return up to 5 work history entries
+        return work_history[:8]
     
     def _extract_summary(self, text: str) -> str:
-        """Extract professional summary"""
-        # Look for summary section
-        summary_keywords = ['summary', 'profile', 'about', 'overview']
+        """Extract professional summary with better section detection"""
+        summary_keywords = ['professional summary', 'summary', 'profile', 'about me',
+                           'about', 'overview', 'objective', 'career summary',
+                           'executive summary', 'personal statement', 'career objective']
         lines = text.split('\n')
         
         for i, line in enumerate(lines):
-            if any(keyword in line.lower() for keyword in summary_keywords):
-                # Get next few lines
-                summary_lines = lines[i+1:i+4]
+            line_stripped = line.strip().lower().rstrip(':')
+            # Check if line IS a header (short line that matches a keyword)
+            if any(keyword == line_stripped or line_stripped.endswith(keyword) for keyword in summary_keywords):
+                # Collect subsequent lines until next section header or blank gap
+                summary_lines = []
+                for j in range(i + 1, min(i + 12, len(lines))):
+                    next_line = lines[j].strip()
+                    if not next_line:
+                        if summary_lines:  # Stop at blank line after content
+                            break
+                        continue
+                    # Stop if we hit another section header
+                    if next_line.lower().rstrip(':') in ['experience', 'education', 'skills',
+                        'work experience', 'employment', 'certifications', 'technical skills',
+                        'professional experience', 'work history', 'projects']:
+                        break
+                    summary_lines.append(next_line)
+                
                 summary = ' '.join(summary_lines).strip()
-                if len(summary) > 50:
-                    return summary[:300]
+                if len(summary) > 30:
+                    return summary[:600]
         
-        # Fallback: return first paragraph
+        # Fallback: find first substantial paragraph (after name/contact info)
         paragraphs = text.split('\n\n')
-        for para in paragraphs:
-            if len(para) > 100:
-                return para[:300]
+        for para in paragraphs[1:]:  # Skip first block (likely name/contact)
+            para = para.strip()
+            # Must be substantive but not a list of skills
+            if len(para) > 80 and not para.startswith(('â€¢', '-', '*')):
+                # Skip if it looks like a header + bullet list
+                lines_in_para = para.split('\n')
+                non_bullet = [l for l in lines_in_para if not l.strip().startswith(('â€¢', '-', '*'))]
+                text_portion = ' '.join(non_bullet).strip()
+                if len(text_portion) > 60:
+                    return text_portion[:600]
         
-        return "Professional with diverse experience."
+        return ''
     
     async def parse_job_description(self, text: str) -> Dict[str, Any]:
         """Parse job description and extract requirements"""
@@ -543,8 +759,8 @@ class ResumeParser:
                 in_responsibilities = True
                 continue
             
-            if in_responsibilities and line.startswith(('-', '•', '*')):
-                resp = line.lstrip('-•* ').strip()
+            if in_responsibilities and line.startswith(('-', 'â€¢', '*')):
+                resp = line.lstrip('-â€¢* ').strip()
                 if len(resp) > 20:
                     responsibilities.append(resp)
                     if len(responsibilities) >= 5:

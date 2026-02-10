@@ -38,12 +38,16 @@ export const useAuthStore = create<AuthState>()(
       
       login: async (email: string, password: string) => {
         set({ isLoading: true })
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 12000)
         try {
           const response = await fetch(`${config.endpoints.auth}/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password }),
+            signal: controller.signal,
           })
+          clearTimeout(timeoutId)
           
           if (!response.ok) {
             const error = await response.json()
@@ -57,8 +61,12 @@ export const useAuthStore = create<AuthState>()(
             isAuthenticated: true,
             isLoading: false
           })
-        } catch (error) {
+        } catch (error: any) {
+          clearTimeout(timeoutId)
           set({ isLoading: false })
+          if (error?.name === 'AbortError') {
+            throw new Error('Login timed out. Please check your connection and try again.')
+          }
           console.error('Login error:', error)
           throw error
         }
@@ -66,12 +74,16 @@ export const useAuthStore = create<AuthState>()(
       
       register: async (email: string, password: string, name: string, username?: string) => {
         set({ isLoading: true })
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 15000)
         try {
           const response = await fetch(`${config.endpoints.auth}/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ email, password, name, username }),
+            signal: controller.signal,
           })
+          clearTimeout(timeoutId)
           
           if (!response.ok) {
             const error = await response.json()
@@ -85,8 +97,12 @@ export const useAuthStore = create<AuthState>()(
             isAuthenticated: true,
             isLoading: false
           })
-        } catch (error) {
+        } catch (error: any) {
+          clearTimeout(timeoutId)
           set({ isLoading: false })
+          if (error?.name === 'AbortError') {
+            throw new Error('Registration timed out. Please check your connection and try again.')
+          }
           console.error('Registration error:', error)
           throw error
         }
@@ -103,13 +119,17 @@ export const useAuthStore = create<AuthState>()(
           return false
         }
         
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 8000)
         try {
           const response = await fetch(`${config.endpoints.auth}/me`, {
             headers: { 
               'Authorization': `Bearer ${token}`,
               'Content-Type': 'application/json'
             },
+            signal: controller.signal,
           })
+          clearTimeout(timeoutId)
           
           if (!response.ok) {
             set({ isAuthenticated: false, user: null, token: null })
@@ -120,6 +140,7 @@ export const useAuthStore = create<AuthState>()(
           set({ user: data.user, isAuthenticated: true })
           return true
         } catch (error) {
+          clearTimeout(timeoutId)
           console.error('Token verification failed:', error)
           set({ isAuthenticated: false, user: null, token: null })
           return false

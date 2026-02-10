@@ -24,6 +24,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { useNotificationStore } from '@/store/notificationStore'
 import config from '@/config'
+import { authFetch } from '@/lib/authFetch'
 
 interface SetupCheck {
   name: string
@@ -75,8 +76,8 @@ export default function SetupWizard() {
     setLoading(true)
     try {
       const [reportRes, instructionsRes] = await Promise.all([
-        fetch(`${config.apiUrl}/api/setup/verify`),
-        fetch(`${config.apiUrl}/api/setup/instructions`)
+        authFetch(`${config.apiUrl}/api/setup/verify`),
+        authFetch(`${config.apiUrl}/api/setup/instructions`)
       ])
 
       if (reportRes.ok) {
@@ -95,7 +96,7 @@ export default function SetupWizard() {
   const testConnection = async (service: string) => {
     setTestingService(service)
     try {
-      const response = await fetch(`${config.apiUrl}/api/setup/test-connection/${service}`, {
+      const response = await authFetch(`${config.apiUrl}/api/setup/test-connection/${service}`, {
         method: 'POST'
       })
       const data = await response.json()
@@ -314,7 +315,7 @@ export default function SetupWizard() {
               {/* Errors */}
               {setupReport.errors.length > 0 && (
                 <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-                  <h4 className="font-medium text-red-800 mb-2">⚠️ Critical Issues</h4>
+                  <h4 className="font-medium text-red-800 mb-2">Critical Issues</h4>
                   <ul className="text-sm text-red-700 space-y-1">
                     {setupReport.errors.map((error, i) => (
                       <li key={i}>• {error}</li>
@@ -326,7 +327,7 @@ export default function SetupWizard() {
               {/* Warnings */}
               {setupReport.warnings.length > 0 && (
                 <div className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg">
-                  <h4 className="font-medium text-yellow-800 mb-2">ℹ️ Optional Components</h4>
+                  <h4 className="font-medium text-yellow-800 mb-2">Optional Components</h4>
                   <ul className="text-sm text-yellow-700 space-y-1">
                     {setupReport.warnings.slice(0, 3).map((warning, i) => (
                       <li key={i}>• {warning}</li>
