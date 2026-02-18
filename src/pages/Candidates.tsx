@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useCallback } from 'react'
-import { Search, SlidersHorizontal, RefreshCw, Loader2, Users, Briefcase, ChevronDown, ChevronRight, Calendar, ArrowUpDown, Mail, MessageCircle, Linkedin, Phone } from 'lucide-react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
+import { Search, SlidersHorizontal, RefreshCw, Loader2, Users, Briefcase, ChevronDown, ChevronRight, Calendar, ArrowUpDown, Mail, MessageCircle, Linkedin, Phone, Download, Star, CheckCircle, XCircle } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCandidates } from '@/hooks/useCandidates'
 import { useEmailSync } from '@/hooks/useEmailSync'
@@ -18,6 +18,8 @@ import {
   TableRow,
 } from '@/components/ui/Table'
 import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
+import { generateQuickProfilePDF } from '@/lib/pdfGenerator'
+import { candidateApi } from '@/services/api'
 
 // Quick contact helper - opens contact without navigating away
 const openContact = (e: React.MouseEvent, type: 'email' | 'whatsapp' | 'linkedin' | 'phone', candidate: any) => {
@@ -59,14 +61,14 @@ const isValidPhone = (phone: string | undefined | null): boolean => {
 // Category colors for visual distinction
 const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
   'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'DevOps Engineer': { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
+  'DevOps Engineer': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
   'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
   'Cybersecurity': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
   'QA / Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
   'IT & Systems': { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
   'Product Manager': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
   'Design': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
-  'Project Management': { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200' },
+  'Project Management': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
   'Business Analyst': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
   'Consulting': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
   'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
@@ -105,6 +107,18 @@ export default function Candidates() {
   const [selectedCategory, setSelectedCategory] = useState<string>('all')
   const [sortBy, setSortBy] = useState<SortOption>('date-newest')  // Default to newest first within categories
   const [dateRange, setDateRange] = useState({ start: '', end: '' })
+  const [displayLimit, setDisplayLimit] = useState(50)  // Show 50 at a time for performance
+  const [shortlistingIds, setShortlistingIds] = useState<Set<string>>(new Set())
+  const [shortlistedIds, setShortlistedIds] = useState<Set<string>>(new Set())
+  const [emailSentIds, setEmailSentIds] = useState<Set<string>>(new Set())
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info'; visible: boolean }>({ message: '', type: 'success', visible: false })
+  const toastTimer = useRef<ReturnType<typeof setTimeout>>(null)
+
+  const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
+    if (toastTimer.current) clearTimeout(toastTimer.current)
+    setToast({ message, type, visible: true })
+    toastTimer.current = setTimeout(() => setToast(prev => ({ ...prev, visible: false })), 4000)
+  }, [])
   const [filters, setFilters] = useState({
     minScore: 0,
     status: 'all',
@@ -120,6 +134,7 @@ export default function Candidates() {
     if (categoryFromUrl) {
       setSelectedCategory(categoryFromUrl)
     }
+    setDisplayLimit(50) // Reset pagination on filter change
   }, [searchParams])
 
   // Sort function - memoized for performance
@@ -183,6 +198,11 @@ export default function Candidates() {
   const sortedCandidates = useMemo(() => {
     return sortCandidates(filteredCandidates, sortBy)
   }, [filteredCandidates, sortBy, sortCandidates])
+
+  // Paginated candidates for list view
+  const paginatedCandidates = useMemo(() => {
+    return sortedCandidates.slice(0, displayLimit)
+  }, [sortedCandidates, displayLimit])
 
   // Group candidates by job category
   const groupedCandidates = useMemo(() => {
@@ -255,11 +275,16 @@ export default function Candidates() {
     <div className="space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-3xl font-bold text-gray-900">Candidates</h1>
-          <p className="text-gray-600 mt-1">
-            {loading ? 'Loading...' : `${filteredCandidates.length} candidates in ${Object.keys(groupedCandidates).length} categories`}
-          </p>
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
+            <Users className="w-5 h-5 text-blue-600" />
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Candidates</h1>
+            <p className="text-sm text-gray-500">
+              {loading ? 'Loading...' : `${filteredCandidates.length} candidates in ${Object.keys(groupedCandidates).length} categories`}
+            </p>
+          </div>
         </div>
         <div className="flex gap-2">
           <Button 
@@ -510,6 +535,7 @@ export default function Candidates() {
 
                   {/* Candidates in Category - No animation for better performance */}
                   {isExpanded && (
+                    <>
                     <div className="overflow-x-auto">
                       <Table className="min-w-[900px] w-full">
                         <TableHeader>
@@ -522,10 +548,11 @@ export default function Candidates() {
                             <TableHead className="w-[90px]">Applied</TableHead>
                             <TableHead className="w-[100px]">Contact</TableHead>
                             <TableHead className="w-[80px]">Status</TableHead>
+                            <TableHead className="w-[40px]"></TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
-                        {categoryCandidates.map((candidate, index) => {
+                        {categoryCandidates.slice(0, displayLimit).map((candidate, index) => {
                           const statusColors = getStatusBadgeColor(candidate.status)
                           return (
                             <TableRow
@@ -637,7 +664,7 @@ export default function Candidates() {
                                   {isValidPhone(candidate.phone) && (
                                     <button
                                       onClick={(e) => openContact(e, 'phone', candidate)}
-                                      className="p-1 rounded-full hover:bg-purple-100 text-purple-600 transition-colors"
+                                      className="p-1 rounded-full hover:bg-blue-100 text-blue-600 transition-colors"
                                       title="Call"
                                     >
                                       <Phone className="w-3.5 h-3.5" />
@@ -650,12 +677,29 @@ export default function Candidates() {
                                   {candidate.status}
                                 </Badge>
                               </TableCell>
+                              <TableCell className="w-[40px]">
+                                <button
+                                  onClick={(e) => { e.stopPropagation(); generateQuickProfilePDF(candidate) }}
+                                  className="p-1.5 rounded-full hover:bg-primary-100 text-primary-600 transition-colors"
+                                  title="Download PDF Report"
+                                >
+                                  <Download className="w-3.5 h-3.5" />
+                                </button>
+                              </TableCell>
                             </TableRow>
                           )
                         })}
                       </TableBody>
                     </Table>
                     </div>
+                    {categoryCandidates.length > displayLimit && (
+                      <div className="p-3 text-center border-t border-gray-100">
+                        <Button variant="outline" size="sm" onClick={() => setDisplayLimit(prev => prev + 50)}>
+                          Show more ({categoryCandidates.length - displayLimit} remaining)
+                        </Button>
+                      </div>
+                    )}
+                    </>
                   )}
                 </Card>
               )
@@ -678,10 +722,11 @@ export default function Candidates() {
                 <TableHead className="w-[80px]">Experience</TableHead>
                 <TableHead className="w-[90px]">Applied</TableHead>
                 <TableHead className="w-[80px]">Status</TableHead>
+                <TableHead className="w-[40px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {sortedCandidates.map((candidate, index) => {
+              {paginatedCandidates.map((candidate, index) => {
                 const statusColors = getStatusBadgeColor(candidate.status)
                 const catColors = getCategoryColor(candidate.jobCategory)
                 return (
@@ -775,12 +820,81 @@ export default function Candidates() {
                         {candidate.status}
                       </Badge>
                     </TableCell>
+                    <TableCell className="w-[80px]">
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            if (shortlistingIds.has(candidate.id) || shortlistedIds.has(candidate.id)) return
+                            try {
+                              setShortlistingIds(prev => new Set(prev).add(candidate.id))
+                              const res = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+                              setShortlistedIds(prev => new Set(prev).add(candidate.id))
+                              // Show email status toast
+                              const emailStatus = (res as any)?.data?.email_sent?.status || (res as any)?.email_sent?.status
+                              if (emailStatus === 'queued') {
+                                setEmailSentIds(prev => new Set(prev).add(candidate.id))
+                                showToast(`✅ ${candidate.name} shortlisted — email sent to ${candidate.email || 'candidate'}`, 'success')
+                              } else {
+                                showToast(`⭐ ${candidate.name} shortlisted`, 'info')
+                              }
+                            } catch (err) {
+                              console.error('Shortlist failed:', err)
+                              showToast(`Failed to shortlist ${candidate.name}`, 'error')
+                            } finally {
+                              setShortlistingIds(prev => {
+                                const next = new Set(prev)
+                                next.delete(candidate.id)
+                                return next
+                              })
+                            }
+                          }}
+                          disabled={shortlistingIds.has(candidate.id)}
+                          className={`p-1 rounded-full transition-colors ${
+                            candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
+                              ? 'text-yellow-500 bg-yellow-50'
+                              : shortlistingIds.has(candidate.id)
+                                ? 'text-gray-300 opacity-50'
+                                : 'text-gray-400 hover:text-yellow-500 hover:bg-yellow-50'
+                          }`}
+                          title={
+                            shortlistingIds.has(candidate.id) ? 'Shortlisting & sending email...' :
+                            candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
+                              ? (emailSentIds.has(candidate.id) ? 'Shortlisted — Email sent' : 'Shortlisted')
+                              : 'Shortlist & send email'
+                          }
+                        >
+                          <Star className="w-3.5 h-3.5" fill={
+                            candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id) ? 'currentColor' : 'none'
+                          } />
+                        </button>
+                        {emailSentIds.has(candidate.id) && (
+                          <span className="text-green-500" title="Shortlist email sent">
+                            <Mail className="w-3 h-3" />
+                          </span>
+                        )}
+                        <button
+                          onClick={(e) => { e.stopPropagation(); generateQuickProfilePDF(candidate) }}
+                          className="p-1 rounded-full hover:bg-primary-100 text-primary-600 transition-colors"
+                          title="Download PDF Report"
+                        >
+                          <Download className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </TableCell>
                   </TableRow>
                 )
               })}
             </TableBody>
           </Table>
           </div>
+          {sortedCandidates.length > displayLimit && (
+            <div className="p-4 text-center border-t border-gray-100">
+              <Button variant="outline" onClick={() => setDisplayLimit(prev => prev + 50)}>
+                Load More ({sortedCandidates.length - displayLimit} remaining)
+              </Button>
+            </div>
+          )}
         </Card>
       )}
 
@@ -792,6 +906,21 @@ export default function Candidates() {
           <p className="text-gray-500 mt-1">
             Try adjusting your filters or search query
           </p>
+        </div>
+      )}
+
+      {/* Toast Notification */}
+      {toast.visible && (
+        <div className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg border transition-all duration-300 max-w-md ${
+          toast.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
+          toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' :
+          'bg-blue-50 border-blue-200 text-blue-800'
+        }`}>
+          {toast.type === 'success' ? <CheckCircle className="w-4 h-4 flex-shrink-0" /> :
+           toast.type === 'error' ? <XCircle className="w-4 h-4 flex-shrink-0" /> :
+           <Mail className="w-4 h-4 flex-shrink-0" />}
+          <span className="text-sm font-medium">{toast.message}</span>
+          <button onClick={() => setToast(prev => ({ ...prev, visible: false }))} className="ml-2 text-current opacity-60 hover:opacity-100">×</button>
         </div>
       )}
     </div>

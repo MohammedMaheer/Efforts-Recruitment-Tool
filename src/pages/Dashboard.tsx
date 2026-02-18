@@ -1,5 +1,5 @@
 import { motion } from 'framer-motion'
-import { Users, TrendingUp, Award, Clock, ArrowUpRight, ArrowDownRight, Sparkles, Target, Zap, CheckCircle2, Calendar, Mail, Info, RefreshCw, Loader2, Briefcase, Upload, X, FileText, CheckCircle, AlertCircle, Activity } from 'lucide-react'
+import { Users, TrendingUp, Clock, ArrowUpRight, ArrowDownRight, Sparkles, Target, Zap, CheckCircle2, Calendar, Mail, RefreshCw, Loader2, Briefcase, Upload, X, FileText, CheckCircle, AlertCircle, Activity } from 'lucide-react'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
 import { Badge } from '@/components/ui/Badge'
@@ -9,7 +9,6 @@ import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { useState, useMemo, useRef, useCallback } from 'react'
-import { useAIStatus } from '@/hooks/useAIStatus'
 import { useCandidates } from '@/hooks/useCandidates'
 import { useEmailSync } from '@/hooks/useEmailSync'
 import { useRealTimeStats } from '@/hooks/useRealTimeStats'
@@ -19,14 +18,14 @@ import { authFetch } from '@/lib/authFetch'
 // Category colors for visual distinction
 const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
   'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'DevOps Engineer': { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
+  'DevOps Engineer': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
   'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
   'Cybersecurity': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
   'QA / Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
   'IT & Systems': { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
   'Product Manager': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
   'Design': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
-  'Project Management': { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200' },
+  'Project Management': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
   'Business Analyst': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
   'Consulting': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
   'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
@@ -59,9 +58,7 @@ export default function Dashboard() {
   useEmailSync(refetch, 30000)
   const user = useAuthStore((state) => state.user)
   const navigate = useNavigate()
-  const [showTips, setShowTips] = useState(true)
   const [isSyncing, setIsSyncing] = useState(false)
-  const aiStatus = useAIStatus()
 
   // Real-time stats with 30-second polling
   const { stats: liveStats, lastUpdate: liveLastUpdate } = useRealTimeStats({
@@ -244,7 +241,7 @@ export default function Dashboard() {
       icon: Zap,
       title: 'Upload Resumes',
       description: 'Add new candidates',
-      color: 'purple',
+      color: 'blue',
       action: () => setShowUploadModal(true)
     },
     {
@@ -272,7 +269,7 @@ export default function Dashboard() {
       icon: CheckCircle2,
       title: 'Settings',
       description: 'Account & profile',
-      color: 'purple',
+      color: 'blue',
       action: () => navigate('/settings')
     },
   ]
@@ -293,7 +290,7 @@ export default function Dashboard() {
         transition={{ duration: 0.3 }}
         className="relative overflow-hidden"
       >
-        <div className="absolute inset-0 bg-gradient-to-r from-primary-50 via-purple-50 to-pink-50 rounded-2xl opacity-50" />
+        <div className="absolute inset-0 bg-gradient-to-r from-primary-50 via-blue-50 to-primary-50 rounded-2xl opacity-50" />
         <div className="relative p-8 rounded-2xl border border-gray-200 bg-white/50 backdrop-blur-sm">
           <div className="flex items-center justify-between">
             <div>
@@ -301,14 +298,14 @@ export default function Dashboard() {
                 <Sparkles className="w-5 h-5 text-primary-600" />
                 <p className="text-sm font-medium text-primary-600">Dashboard Overview</p>
               </div>
-              <h1 className="text-4xl font-bold text-gray-900 mb-2">
-                {getCurrentGreeting()}, {user?.firstName || 'Recruiter'}!
+              <h1 className="text-2xl font-bold text-gray-900 mb-1">
+                {getCurrentGreeting()}, {user?.firstName || user?.name?.split(' ')[0] || 'Recruiter'}!
               </h1>
-              <p className="text-gray-600 mb-4">Here's what's happening with your recruitment today.</p>
+              <p className="text-sm text-gray-500 mb-3">Here's what's happening with your recruitment today.</p>
               <div className="flex items-center gap-3">
                 <motion.button
                   onClick={() => navigate('/ai-assistant')}
-                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-primary-600 to-purple-600 text-white rounded-lg hover:shadow-lg transition-all text-sm font-medium"
+                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-primary-600 to-primary-800 text-white rounded-lg hover:shadow-lg transition-all text-sm font-medium"
                   whileHover={{ scale: 1.05 }}
                   whileTap={{ scale: 0.95 }}
                 >
@@ -363,97 +360,39 @@ export default function Dashboard() {
               onClick={() => navigate('/candidates')}
               whileHover={{ scale: 1.1 }}
             >
-              <div className="w-24 h-24 bg-gradient-to-br from-primary-500 to-purple-600 rounded-3xl flex items-center justify-center shadow-lg">
-                <Users className="w-12 h-12 text-white" />
+              <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-800 rounded-2xl flex items-center justify-center shadow-lg">
+                <Users className="w-8 h-8 text-white" />
               </div>
             </motion.div>
           </div>
         </div>
       </motion.div>
 
-      {/* Interactive Tips Banner */}
-      {showTips && (
-        <motion.div
-          initial={{ opacity: 0, y: -10 }}
-          animate={{ opacity: 1, y: 0 }}
-          exit={{ opacity: 0, height: 0 }}
-          className="relative"
-        >
-          <Card className="border-2 border-primary-200 bg-gradient-to-r from-primary-50 to-purple-50">
-            <CardContent className="p-4">
-              <div className="flex items-start gap-3">
-                <div className="w-10 h-10 bg-primary-600 rounded-lg flex items-center justify-center flex-shrink-0">
-                  <Info className="w-5 h-5 text-white" />
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <h3 className="font-semibold text-gray-900">Dashboard Tips</h3>
-                    {/* AI Status Indicator */}
-                    {!aiStatus.isLoading && (
-                      <Badge 
-                        variant={aiStatus.available ? "success" : "outline"}
-                        className="text-xs"
-                      >
-                        {aiStatus.available ? (
-                          <>
-                            <Sparkles className="w-3 h-3 mr-1" />
-                            AI: {aiStatus.model}
-                          </>
-                        ) : (
-                          'AI: Local Mode'
-                        )}
-                      </Badge>
-                    )}
-                  </div>
-                  <ul className="text-sm text-gray-700 space-y-1">
-                    <li>• Click any <strong>stat card</strong> to navigate to that section</li>
-                    <li>• Click <strong>skill badges</strong> to search candidates with that skill</li>
-                    <li>• Use <strong>Quick Actions</strong> for instant navigation to key features</li>
-                    <li>• Click candidate <strong>names</strong> or <strong>match scores</strong> to view details</li>
-                    {aiStatus.available && (
-                      <li className="text-primary-600">• <strong>OpenAI is active</strong> - Enhanced AI features available!</li>
-                    )}
-                  </ul>
-                </div>
-                <button
-                  onClick={() => setShowTips(false)}
-                  className="text-gray-400 hover:text-gray-600 transition-colors"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                  </svg>
-                </button>
-              </div>
-            </CardContent>
-          </Card>
-        </motion.div>
-      )}
-
       {/* Stats Grid - Enhanced with Real-time Updates */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
         <div
           className="hover:-translate-y-1 transition-transform cursor-pointer"
           onClick={() => navigate('/candidates')}
         >
           <Card className="hover:shadow-large transition-all border-2 hover:border-primary-200 relative overflow-hidden group">
-            <div className="absolute inset-0 bg-gradient-to-br from-primary-500/5 to-purple-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+            <div className="absolute inset-0 bg-gradient-to-br from-primary-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
             <CardContent className="p-6 relative">
-              <div className="flex items-center justify-between mb-4">
-                <div className="w-14 h-14 bg-gradient-to-br from-primary-500 to-primary-600 rounded-2xl flex items-center justify-center shadow-md">
-                  <Users className="w-7 h-7 text-white" />
+              <div className="flex items-center justify-between mb-3">
+                <div className="w-11 h-11 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center shadow-sm">
+                  <Users className="w-5 h-5 text-white" />
                 </div>
                 <div className="flex items-center gap-1">
                   {liveStats && <Activity className="w-3 h-3 text-green-500 animate-pulse" />}
-                  <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-primary-600 transition-colors" />
+                  <ArrowUpRight className="w-4 h-4 text-gray-400 group-hover:text-blue-600 transition-colors" />
                 </div>
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-600 mb-1">Total Candidates</p>
+                <p className="text-xs font-medium text-gray-500 mb-0.5">Total Candidates</p>
                 <motion.p 
                   key={displayStats.totalCandidates}
                   initial={{ scale: 1.1, color: '#3b82f6' }}
                   animate={{ scale: 1, color: '#111827' }}
-                  className="text-4xl font-bold"
+                  className="text-3xl font-bold"
                 >
                   {displayStats.totalCandidates}
                 </motion.p>
@@ -467,61 +406,24 @@ export default function Dashboard() {
 
         <div
           className="hover:-translate-y-1 transition-transform cursor-pointer"
-          onClick={() => navigate('/shortlist')}
-        >
-          <Card className="hover:shadow-large transition-all border-2 hover:border-success/30 relative overflow-hidden group">
-            <div className="absolute inset-0 bg-gradient-to-br from-success/5 to-emerald-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <CardContent className="p-6 relative">
-              <div className="flex items-center justify-between mb-4">
-                <div className="w-14 h-14 bg-gradient-to-br from-success to-emerald-600 rounded-2xl flex items-center justify-center shadow-md">
-                  <Award className="w-7 h-7 text-white" />
-                </div>
-                <CheckCircle2 className="w-5 h-5 text-success" />
-              </div>
-              <div>
-                <p className="text-sm font-medium text-gray-600 mb-1">Strong Matches</p>
-                <motion.p 
-                  key={displayStats.strongMatches}
-                  initial={{ scale: 1.1, color: '#10b981' }}
-                  animate={{ scale: 1, color: '#111827' }}
-                  className="text-4xl font-bold"
-                >
-                  {displayStats.strongMatches}
-                </motion.p>
-                <div className="mt-2 flex items-center gap-2">
-                  <Progress 
-                    value={displayStats.totalCandidates > 0 ? (displayStats.strongMatches / displayStats.totalCandidates) * 100 : 0} 
-                    className="h-1.5 flex-1"
-                  />
-                  <span className="text-xs font-semibold text-success">
-                    {displayStats.totalCandidates > 0 ? Math.round((displayStats.strongMatches / displayStats.totalCandidates) * 100) : 0}%
-                  </span>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div
-          className="hover:-translate-y-1 transition-transform cursor-pointer"
           onClick={() => navigate('/ai-assistant')}
         >
-          <Card className="hover:shadow-large transition-all border-2 hover:border-purple-200 relative overflow-hidden group">
-            <div className="absolute inset-0 bg-gradient-to-br from-purple-500/5 to-pink-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+          <Card className="hover:shadow-large transition-all border-2 hover:border-primary-200 relative overflow-hidden group">
+            <div className="absolute inset-0 bg-gradient-to-br from-primary-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
             <CardContent className="p-6 relative">
-              <div className="flex items-center justify-between mb-4">
-                <div className="w-14 h-14 bg-gradient-to-br from-purple-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-md">
-                  <TrendingUp className="w-7 h-7 text-white" />
+              <div className="flex items-center justify-between mb-3">
+                <div className="w-11 h-11 bg-gradient-to-br from-blue-500 to-blue-700 rounded-xl flex items-center justify-center shadow-sm">
+                  <TrendingUp className="w-5 h-5 text-white" />
                 </div>
-                <Target className="w-5 h-5 text-purple-600" />
+                <Target className="w-4 h-4 text-blue-600" />
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-600 mb-1">Avg Match Score</p>
+                <p className="text-xs font-medium text-gray-500 mb-0.5">Avg Match Score</p>
                 <motion.p 
                   key={displayStats.averageScore}
-                  initial={{ scale: 1.1, color: '#8b5cf6' }}
+                  initial={{ scale: 1.1, color: '#2563eb' }}
                   animate={{ scale: 1, color: '#111827' }}
-                  className="text-4xl font-bold"
+                  className="text-3xl font-bold"
                 >
                   {displayStats.averageScore}%
                 </motion.p>
@@ -541,9 +443,9 @@ export default function Dashboard() {
           <Card className="hover:shadow-large transition-all border-2 hover:border-warning/30 relative overflow-hidden group">
             <div className="absolute inset-0 bg-gradient-to-br from-warning/5 to-orange-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
             <CardContent className="p-6 relative">
-              <div className="flex items-center justify-between mb-4">
-                <div className="w-14 h-14 bg-gradient-to-br from-warning to-orange-600 rounded-2xl flex items-center justify-center shadow-md">
-                  <Clock className="w-7 h-7 text-white" />
+              <div className="flex items-center justify-between mb-3">
+                <div className="w-11 h-11 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl flex items-center justify-center shadow-sm">
+                  <Clock className="w-5 h-5 text-white" />
                 </div>
                 {uploadTrend !== 0 && (
                   uploadTrend > 0 ? (
@@ -560,12 +462,12 @@ export default function Dashboard() {
                 )}
               </div>
               <div>
-                <p className="text-sm font-medium text-gray-600 mb-1">New (24h)</p>
+                <p className="text-xs font-medium text-gray-500 mb-0.5">New (24h)</p>
                 <motion.p 
                   key={displayStats.recentCount}
                   initial={{ scale: 1.1, color: '#f59e0b' }}
                   animate={{ scale: 1, color: '#111827' }}
-                  className="text-4xl font-bold"
+                  className="text-3xl font-bold"
                 >
                   {displayStats.recentCount}
                 </motion.p>
@@ -586,6 +488,13 @@ export default function Dashboard() {
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {quickActions.map((action, index) => {
             const Icon = action.icon
+            const actionColorMap: Record<string, { bg: string; text: string }> = {
+              primary: { bg: 'bg-primary-100', text: 'text-primary-600' },
+              blue:    { bg: 'bg-blue-100',    text: 'text-blue-600' },
+              success: { bg: 'bg-emerald-100',  text: 'text-emerald-600' },
+              warning: { bg: 'bg-amber-100',    text: 'text-amber-600' },
+            }
+            const colors = actionColorMap[action.color] || actionColorMap.primary
             return (
               <div key={index}>
                 <Card 
@@ -594,8 +503,8 @@ export default function Dashboard() {
                 >
                   <CardContent className="p-6">
                     <div className="flex items-center gap-4">
-                      <div className={`w-12 h-12 bg-${action.color}-100 rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform`}>
-                        <Icon className={`w-6 h-6 text-${action.color}-600`} />
+                      <div className={`w-12 h-12 ${colors.bg} rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform`}>
+                        <Icon className={`w-6 h-6 ${colors.text}`} />
                       </div>
                       <div className="flex-1">
                         <h3 className="font-semibold text-gray-900 mb-0.5">{action.title}</h3>
@@ -728,21 +637,21 @@ export default function Dashboard() {
                 {recentCandidates.map((candidate) => (
                   <div
                     key={candidate.id}
-                    className="p-6 hover:bg-gradient-to-r hover:from-gray-50 hover:to-white cursor-pointer transition-all group hover:translate-x-1"
+                    className="p-4 hover:bg-gray-50/80 cursor-pointer transition-all group"
                     onClick={() => navigate(`/candidates/${candidate.id}`)}
                   >
                     <div className="flex items-center justify-between">
                       <div className="flex items-center gap-4 flex-1">
                         <div>
-                          <Avatar className="w-14 h-14 border-2 border-white shadow-md">
+                          <Avatar className="w-10 h-10 border-2 border-white shadow-sm">
                             <AvatarImage
                               src={`https://api.dicebear.com/7.x/initials/svg?seed=${candidate.name}`}
                             />
-                            <AvatarFallback className="text-lg font-semibold">{candidate.name.charAt(0)}</AvatarFallback>
+                            <AvatarFallback className="text-sm font-semibold">{candidate.name.charAt(0)}</AvatarFallback>
                           </Avatar>
                         </div>
                         <div className="flex-1">
-                          <h4 className="font-semibold text-gray-900 text-lg group-hover:text-primary-600 transition-colors">
+                          <h4 className="font-semibold text-gray-900 text-sm group-hover:text-blue-600 transition-colors">
                             {candidate.name}
                           </h4>
                           <div className="flex items-center gap-2 mt-1">
@@ -762,7 +671,7 @@ export default function Dashboard() {
                       </div>
                       <div className="flex items-center gap-6">
                         <div className="text-right">
-                          <p className={`text-3xl font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
+                          <p className={`text-xl font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
                             {(candidate.matchScore ?? 50).toFixed(1)}%
                           </p>
                           <p className="text-xs text-gray-500 mt-1">Match Score</p>
@@ -775,12 +684,12 @@ export default function Dashboard() {
                         <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-primary-600 group-hover:translate-x-1 group-hover:-translate-y-1 transition-all" />
                       </div>
                     </div>
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {candidate.skills.slice(0, 5).map((skill) => (
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {candidate.skills.slice(0, 4).map((skill) => (
                         <Badge 
                           key={skill} 
                           variant="outline" 
-                          className="text-xs hover:bg-primary-50 hover:border-primary-300 transition-colors cursor-pointer"
+                          className="text-[11px] px-1.5 py-0 hover:bg-blue-50 hover:border-blue-300 transition-colors cursor-pointer"
                           onClick={(e) => {
                             e.stopPropagation()
                             navigate(`/candidates?search=${skill}`)
@@ -789,16 +698,16 @@ export default function Dashboard() {
                           {skill}
                         </Badge>
                       ))}
-                      {candidate.skills.length > 5 && (
+                      {candidate.skills.length > 4 && (
                         <Badge 
                           variant="outline" 
-                          className="text-xs bg-gray-50 cursor-pointer hover:bg-gray-100"
+                          className="text-[11px] bg-gray-50 cursor-pointer hover:bg-gray-100"
                           onClick={(e) => {
                             e.stopPropagation()
                             navigate(`/candidates/${candidate.id}`)
                           }}
                         >
-                          +{candidate.skills.length - 5} more
+                          +{candidate.skills.length - 4} more
                         </Badge>
                       )}
                     </div>
@@ -812,7 +721,7 @@ export default function Dashboard() {
 
       {/* Upload Modal */}
       {showUploadModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => { setShowUploadModal(false); setUploadResults([]) }}>
           <div 
             className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] overflow-hidden"
             onClick={(e) => e.stopPropagation()}

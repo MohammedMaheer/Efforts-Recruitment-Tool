@@ -5,33 +5,49 @@ Handles user registration, login, and JWT token management
 
 import sqlite3
 import os
+from core.db_wrapper import create_connection, IS_POSTGRES, init_pg_schema
 import secrets
-import hashlib
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
+import bcrypt as _bcrypt
 
 # JWT Configuration - use a stable fallback key so tokens survive restarts
 # In production, ALWAYS set JWT_SECRET_KEY environment variable
+import logging as _log
 _DEFAULT_SECRET = "ai-recruiter-platform-default-secret-change-in-production"
 SECRET_KEY = os.getenv("JWT_SECRET_KEY", _DEFAULT_SECRET)
 if SECRET_KEY == _DEFAULT_SECRET:
-    import logging as _log
     _log.getLogger(__name__).warning("⚠️  JWT_SECRET_KEY not set - using default. Set it in .env for production!")
+    if os.getenv("ENVIRONMENT", "development") == "production" or os.getenv("K_SERVICE"):
+        raise RuntimeError("JWT_SECRET_KEY must be set in production! Generate with: python -c 'import secrets; print(secrets.token_urlsafe(64))'")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_HOURS = 24 * 7  # 7 days
+ACCESS_TOKEN_EXPIRE_HOURS = 24  # 24 hours (use refresh tokens for longer sessions)
+
+def _safe_truncate(password: str) -> str:
+    """Truncate password to 72 bytes (bcrypt limit) without breaking UTF-8."""
+    encoded = password.encode('utf-8')[:72]
+    return encoded.decode('utf-8', errors='ignore')
 
 def _hash_password(password: str) -> str:
-    """Hash password using SHA-256 with salt"""
-    salt = secrets.token_hex(16)
-    hashed = hashlib.sha256((salt + password).encode()).hexdigest()
-    return f"{salt}${hashed}"
+    """Hash password using bcrypt (secure, with built-in salt).
+    Automatically truncates to 72 bytes (bcrypt hard limit)."""
+    pw = _safe_truncate(password).encode('utf-8')
+    return _bcrypt.hashpw(pw, _bcrypt.gensalt()).decode('utf-8')
 
 def _verify_password(plain_password: str, stored_hash: str) -> bool:
-    """Verify password against stored hash"""
+    """Verify password against stored hash (supports both bcrypt and legacy SHA-256)"""
     try:
-        salt, hashed = stored_hash.split('$')
-        return hashlib.sha256((salt + plain_password).encode()).hexdigest() == hashed
+        # Try bcrypt first (new format)
+        if stored_hash.startswith('$2'):
+            pw = _safe_truncate(plain_password).encode('utf-8')
+            return _bcrypt.checkpw(pw, stored_hash.encode('utf-8'))
+        # Legacy SHA-256 format: salt$hash
+        if '$' in stored_hash:
+            import hashlib
+            salt, hashed = stored_hash.split('$', 1)
+            return hashlib.sha256((salt + plain_password).encode()).hexdigest() == hashed
+        return False
     except Exception:
         return False
 
@@ -42,11 +58,9 @@ class AuthService:
         self.db_path = db_path
         self._init_users_table()
     
-    def _get_connection(self) -> sqlite3.Connection:
-        """Get database connection"""
-        conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def _get_connection(self):
+        """Get database connection (SQLite or PostgreSQL)"""
+        return create_connection(self.db_path)
     
     def _init_users_table(self):
         """Initialize users table"""
@@ -91,8 +105,8 @@ class AuthService:
     def _create_access_token(self, data: Dict[str, Any], expires_delta: Optional[timedelta] = None) -> str:
         """Create JWT access token"""
         to_encode = data.copy()
-        expire = datetime.utcnow() + (expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS))
-        to_encode.update({"exp": expire, "iat": datetime.utcnow()})
+        expire = datetime.now(timezone.utc) + (expires_delta or timedelta(hours=ACCESS_TOKEN_EXPIRE_HOURS))
+        to_encode.update({"exp": expire, "iat": datetime.now(timezone.utc)})
         return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     
     def _generate_user_id(self) -> str:
@@ -123,8 +137,12 @@ class AuthService:
         if not name or len(name.strip()) < 2:
             raise ValueError("Name is required")
         
-        if len(password) < 6:
-            raise ValueError("Password must be at least 6 characters")
+        if len(password) < 8:
+            raise ValueError("Password must be at least 8 characters")
+        if not any(c.isupper() for c in password):
+            raise ValueError("Password must contain at least one uppercase letter")
+        if not any(c.isdigit() for c in password):
+            raise ValueError("Password must contain at least one digit")
         
         # Process name
         name = name.strip()
@@ -150,10 +168,10 @@ class AuthService:
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     user_id, email, username, password_hash, name, first_name, last_name,
-                    datetime.utcnow().isoformat(), datetime.utcnow().isoformat()
+                    datetime.now(timezone.utc).isoformat(), datetime.now(timezone.utc).isoformat()
                 ))
                 conn.commit()
-        except sqlite3.IntegrityError as e:
+        except Exception as e:
             if 'email' in str(e).lower():
                 raise ValueError("An account with this email already exists")
             elif 'username' in str(e).lower():
@@ -213,7 +231,7 @@ class AuthService:
             cursor = conn.cursor()
             cursor.execute("""
                 UPDATE users SET last_login = ? WHERE id = ?
-            """, (datetime.utcnow().isoformat(), row['id']))
+            """, (datetime.now(timezone.utc).isoformat(), row['id']))
             conn.commit()
         
         # Create access token
@@ -300,7 +318,7 @@ class AuthService:
         if not update_fields:
             raise ValueError("No valid fields to update")
         
-        update_values.append(datetime.utcnow().isoformat())
+        update_values.append(datetime.now(timezone.utc).isoformat())
         update_values.append(user_id)
         
         with self._get_connection() as conn:
@@ -347,8 +365,12 @@ class AuthService:
         Raises:
             ValueError: If current password is incorrect or validation fails
         """
-        if len(new_password) < 6:
-            raise ValueError("New password must be at least 6 characters")
+        if len(new_password) < 8:
+            raise ValueError("New password must be at least 8 characters")
+        if not any(c.isupper() for c in new_password):
+            raise ValueError("New password must contain at least one uppercase letter")
+        if not any(c.isdigit() for c in new_password):
+            raise ValueError("New password must contain at least one digit")
         
         with self._get_connection() as conn:
             cursor = conn.cursor()
@@ -368,7 +390,7 @@ class AuthService:
             cursor.execute("""
                 UPDATE users SET password_hash = ?, updated_at = ?
                 WHERE id = ?
-            """, (new_hash, datetime.utcnow().isoformat(), user_id))
+            """, (new_hash, datetime.now(timezone.utc).isoformat(), user_id))
             conn.commit()
         
         return True
@@ -404,7 +426,7 @@ class AuthService:
             cursor.execute("""
                 UPDATE users SET is_active = 0, updated_at = ?
                 WHERE id = ?
-            """, (datetime.utcnow().isoformat(), user_id))
+            """, (datetime.now(timezone.utc).isoformat(), user_id))
             conn.commit()
         return True
 

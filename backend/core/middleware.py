@@ -97,11 +97,35 @@ class MetricsCollector:
         self._recent_requests: List[RequestMetrics] = []
         self._lock = asyncio.Lock()
         self._start_time = datetime.now()
+        self._max_endpoints = 500  # Cap to prevent unbounded growth
+    
+    @staticmethod
+    def _normalize_path(path: str) -> str:
+        """Normalize dynamic path segments (UUIDs, IDs, hashes) to {id} placeholders"""
+        import re as _re
+        parts = path.split('/')
+        normalized = []
+        for part in parts:
+            # Replace numeric IDs, UUIDs, hex hashes, and timestamp-based IDs
+            if _re.fullmatch(r'\d+', part) or _re.fullmatch(r'[0-9a-f-]{8,}', part, _re.IGNORECASE):
+                normalized.append('{id}')
+            elif _re.fullmatch(r'(upload_|email_|scrape_)?.+@.+\.\w+.*', part):
+                normalized.append('{id}')
+            else:
+                normalized.append(part)
+        return '/'.join(normalized)
     
     async def record_request(self, metrics: RequestMetrics) -> None:
         """Record metrics for a request"""
         async with self._lock:
-            endpoint_key = f"{metrics.method}:{metrics.path}"
+            # Normalize dynamic path segments to prevent unbounded dict growth
+            normalized_path = self._normalize_path(metrics.path)
+            endpoint_key = f"{metrics.method}:{normalized_path}"
+            
+            # Cap total tracked endpoints
+            if endpoint_key not in self._endpoint_stats and len(self._endpoint_stats) >= self._max_endpoints:
+                return  # Silently drop — too many unique endpoints
+            
             stats = self._endpoint_stats[endpoint_key]
             
             stats.total_requests += 1
@@ -274,12 +298,14 @@ class CompressionMiddleware:
         response_started = False
         response_headers: List[Tuple[bytes, bytes]] = []
         response_body: List[bytes] = []
+        initial_status = 200
         
         async def send_wrapper(message: Dict) -> None:
-            nonlocal response_started, response_headers, response_body
+            nonlocal response_started, response_headers, response_body, initial_status
             
             if message["type"] == "http.response.start":
                 response_headers = list(message.get("headers", []))
+                initial_status = message.get("status", 200)
                 # Don't send yet - wait for body
                 return
             
@@ -334,7 +360,7 @@ class CompressionMiddleware:
                 # Send response
                 await send({
                     "type": "http.response.start",
-                    "status": message.get("status", 200),
+                    "status": initial_status,
                     "headers": response_headers
                 })
                 
@@ -369,10 +395,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         client_ip = request.client.host if request.client else "unknown"
         
         # Skip rate limiting for certain paths
-        skip_paths = ["/api/health", "/api/metrics", "/docs", "/openapi.json"]
+        skip_paths = ["/health", "/api/health", "/api/metrics", "/docs", "/openapi.json"]
         if any(request.url.path.startswith(p) for p in skip_paths):
             return await call_next(request)
         
+        # Only hold the lock for the rate-limit check, not the entire request
         async with self._lock:
             now = time.time()
             window_start = now - self.window_size
@@ -382,6 +409,18 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 ts for ts in self._request_counts[client_ip]
                 if ts > window_start
             ]
+            
+            # Periodically clean up stale IPs (every 100th request)
+            if hasattr(self, '_cleanup_counter'):
+                self._cleanup_counter += 1
+            else:
+                self._cleanup_counter = 0
+            if self._cleanup_counter >= 100:
+                self._cleanup_counter = 0
+                stale_ips = [ip for ip, timestamps in self._request_counts.items() 
+                            if not timestamps or max(timestamps) < window_start]
+                for ip in stale_ips:
+                    del self._request_counts[ip]
             
             # Check rate limit
             request_count = len(self._request_counts[client_ip])
@@ -408,12 +447,13 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             
             # Record this request
             self._request_counts[client_ip].append(now)
+            current_count = len(self._request_counts[client_ip])
         
-        # Process request
+        # Process request OUTSIDE the lock
         response = await call_next(request)
         
         # Add rate limit headers
-        remaining = self.requests_per_minute - len(self._request_counts.get(client_ip, []))
+        remaining = self.requests_per_minute - current_count
         response.headers["X-RateLimit-Limit"] = str(self.requests_per_minute)
         response.headers["X-RateLimit-Remaining"] = str(max(0, remaining))
         
@@ -430,7 +470,7 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         
         # Add security headers
         response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-Frame-Options"] = "SAMEORIGIN"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
         
@@ -452,7 +492,7 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
     CACHEABLE_ENDPOINTS = {
         "/api/stats": 30,  # 30 seconds
         "/api/categories": 300,  # 5 minutes
-        "/api/health": 10,  # 10 seconds
+        "/health": 10,  # 10 seconds
     }
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
@@ -482,10 +522,12 @@ def setup_middleware(app: FastAPI) -> None:
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(CacheControlMiddleware)
     
-    # Rate limiting - be generous for development
+    # Rate limiting - use config value
+    from core.config import get_settings
+    _rate_settings = get_settings()
     app.add_middleware(
         RateLimitMiddleware,
-        requests_per_minute=200,
+        requests_per_minute=_rate_settings.rate_limit_requests,
         burst_size=50
     )
     

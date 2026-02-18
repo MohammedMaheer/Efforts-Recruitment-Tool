@@ -63,7 +63,8 @@ const AnalyticsDashboard: React.FC = () => {
         setPipelineAnalytics(pipelineRes.data as PipelineAnalytics);
       }
     } catch (error) {
-      console.error('Failed to fetch analytics:', error);
+      // Silently handle — analytics are non-critical
+      console.warn('Analytics fetch failed (server may be starting):', error);
     } finally {
       setLoading(false);
     }
@@ -93,7 +94,7 @@ const AnalyticsDashboard: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-            <Brain className="h-7 w-7 text-purple-600" />
+            <Brain className="h-7 w-7 text-blue-600" />
             AI Analytics Dashboard
           </h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">
@@ -134,7 +135,7 @@ const AnalyticsDashboard: React.FC = () => {
           title="Avg Response Rate"
           value={`${((pipelineAnalytics?.avg_response_rate || 0) * 100).toFixed(0)}%`}
           icon={<TrendingUp className="h-5 w-5" />}
-          color="purple"
+          color="blue"
         />
       </div>
 
@@ -210,7 +211,7 @@ const AnalyticsDashboard: React.FC = () => {
       </div>
 
       {/* Quick Actions */}
-      <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-xl p-6 text-white">
+      <div className="bg-gradient-to-r from-primary-700 to-primary-600 rounded-xl p-6 text-white">
         <h2 className="text-lg font-semibold mb-4">Quick Actions</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <QuickActionButton
@@ -244,7 +245,7 @@ interface StatCardProps {
   title: string;
   value: string | number;
   icon: React.ReactNode;
-  color: 'blue' | 'green' | 'yellow' | 'purple' | 'red';
+  color: 'blue' | 'green' | 'yellow' | 'blue' | 'red';
 }
 
 const StatCard: React.FC<StatCardProps> = ({ title, value, icon, color }) => {
@@ -252,7 +253,7 @@ const StatCard: React.FC<StatCardProps> = ({ title, value, icon, color }) => {
     blue: 'bg-blue-100 text-blue-600 dark:bg-blue-900/30',
     green: 'bg-green-100 text-green-600 dark:bg-green-900/30',
     yellow: 'bg-yellow-100 text-yellow-600 dark:bg-yellow-900/30',
-    purple: 'bg-purple-100 text-purple-600 dark:bg-purple-900/30',
+    purple: 'bg-blue-100 text-blue-600 dark:bg-blue-900/30',
     red: 'bg-red-100 text-red-600 dark:bg-red-900/30',
   };
 

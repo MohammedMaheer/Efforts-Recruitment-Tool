@@ -1,10 +1,10 @@
 ﻿"""
 Enhanced Local AI Service - Production-Grade Candidate Analysis
-Uses state-of-the-art AI models with Intel GPU acceleration
+Uses state-of-the-art AI models with GPU acceleration when available.
 Features:
 - Semantic similarity with all-mpnet-base-v2 (higher accuracy than MiniLM)
 - Named Entity Recognition (NER) for accurate name/company extraction
-- Intel Iris Xe GPU acceleration via Intel Extension for PyTorch
+- NVIDIA CUDA, Intel XPU, or Intel IPEX acceleration when available
 - Real scoring based on content analysis (NO hardcoded values)
 - Intelligent education, skills, and experience extraction
 """
@@ -24,26 +24,86 @@ logger = logging.getLogger(__name__)
 # GPU DETECTION AND OPTIMIZATION
 # ============================================================================
 
-def detect_intel_gpu() -> Tuple[bool, str]:
-    """Detect Intel GPU and return optimization settings"""
+def detect_gpu() -> Tuple[bool, str]:
+    """Detect available accelerator and return (use_gpu, device_type).
+    
+    Enhanced to provide detailed GPU information for optimal model loading
+    and batch size selection.
+    """
     try:
         import torch
+
+        # Allow manual override for troubleshooting and testing.
+        forced = os.getenv("AI_DEVICE", "").strip().lower()
+        if forced:
+            if forced in {"cuda", "cuda:0"}:
+                if torch.cuda.is_available():
+                    name = torch.cuda.get_device_name(0)
+                    props = torch.cuda.get_device_properties(0)
+                    mem = getattr(props, 'total_memory', getattr(props, 'total_mem', 0)) // (1024 * 1024)
+                    logger.info(f"🚀 CUDA GPU forced: {name} ({mem} MB)")
+                    return True, "cuda"
+                logger.warning("AI_DEVICE=cuda set but CUDA is not available")
+                return False, "cpu"
+            if forced in {"xpu"}:
+                if hasattr(torch, "xpu") and torch.xpu.is_available():
+                    return True, "xpu"
+                logger.warning("AI_DEVICE=xpu set but XPU is not available")
+                return False, "cpu"
+            if forced in {"ipex"}:
+                try:
+                    import intel_extension_for_pytorch as ipex
+                    return True, "ipex"
+                except ImportError:
+                    logger.warning("AI_DEVICE=ipex set but intel-extension-for-pytorch is not installed")
+                    return False, "cpu"
+            if forced in {"cpu"}:
+                return False, "cpu"
         
+        # Prefer NVIDIA CUDA if available
+        if torch.cuda.is_available():
+            try:
+                device_name = torch.cuda.get_device_name(0)
+                props = torch.cuda.get_device_properties(0)
+                mem_mb = getattr(props, 'total_memory', getattr(props, 'total_mem', 0)) // (1024 * 1024)
+                compute = torch.cuda.get_device_capability(0)
+                logger.info(f"🚀 CUDA detected: {device_name} | "
+                            f"{mem_mb} MB | Compute {compute[0]}.{compute[1]}")
+            except Exception:
+                logger.info("CUDA detected")
+            return True, "cuda"
+
         # Check for Intel Extension for PyTorch
         try:
             import intel_extension_for_pytorch as ipex
-            logger.info("âœ… Intel Extension for PyTorch (IPEX) available - GPU acceleration enabled!")
+            logger.info("Intel Extension for PyTorch (IPEX) available")
             return True, "ipex"
         except ImportError:
             pass
         
         # Check for XPU (Intel GPU via oneAPI)
         if hasattr(torch, 'xpu') and torch.xpu.is_available():
-            logger.info(f"âœ… Intel XPU detected: {torch.xpu.get_device_name(0)}")
+            logger.info(f"Intel XPU detected: {torch.xpu.get_device_name(0)}")
             return True, "xpu"
         
+        # Check for AMD ROCm
+        if hasattr(torch.version, 'hip') and torch.version.hip is not None:
+            logger.info(f"AMD ROCm detected: {torch.version.hip}")
+            return True, "cuda"  # ROCm uses CUDA API compatibility
+        
+        # Check for Apple MPS (Metal Performance Shaders)
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            logger.info("Apple MPS (Metal) detected")
+            return True, "mps"
+        
         # Fallback to CPU with optimizations
-        logger.info("âš¡ Running on CPU with Intel MKL optimizations")
+        cpu_count = os.cpu_count() or 4
+        logger.info(f"Running on CPU ({cpu_count} cores available)")
+        
+        # Enable torch CPU optimizations
+        if hasattr(torch, 'set_num_threads'):
+            torch.set_num_threads(max(cpu_count - 1, 1))
+        
         return False, "cpu"
         
     except Exception as e:
@@ -65,7 +125,7 @@ class LocalAIService:
     
     def __init__(self):
         """Initialize AI models with GPU acceleration"""
-        self.use_gpu, self.device_type = detect_intel_gpu()
+        self.use_gpu, self.device_type = detect_gpu()
         self.device = self._get_optimal_device()
         
         # Model instances
@@ -100,12 +160,14 @@ class LocalAIService:
         try:
             import torch
             
-            if self.device_type == "xpu":
+            if self.device_type == "cuda":
+                return "cuda"
+            elif self.device_type == "xpu":
                 return "xpu"
+            elif self.device_type == "mps":
+                return "mps"
             elif self.device_type == "ipex":
                 return "cpu"  # IPEX optimizes CPU operations
-            elif torch.cuda.is_available():
-                return "cuda"
             else:
                 return "cpu"
         except Exception:
@@ -150,13 +212,50 @@ class LocalAIService:
             import spacy
             try:
                 self.nlp = spacy.load("en_core_web_sm")
-                logger.info("âœ… SpaCy NER model loaded - accurate entity extraction enabled!")
+                logger.info("✅ SpaCy NER model loaded - accurate entity extraction enabled!")
             except OSError:
                 logger.warning("SpaCy model not found. Run: python -m spacy download en_core_web_sm")
                 self.nlp = None
-        except ImportError:
-            logger.warning("SpaCy not installed. Run: pip install spacy")
+        except (ImportError, Exception) as e:
+            logger.warning(f"SpaCy not available ({type(e).__name__}): {str(e)[:100]}. NER will use fallback extraction.")
             self.nlp = None
+    
+    # ------------------------------------------------------------------
+    # GPU-OPTIMISED BATCH ENCODING
+    # ------------------------------------------------------------------
+    
+    def encode_batch(self, texts: list, batch_size: int = 32) -> list:
+        """
+        Encode a list of texts into embeddings using the sentence model with
+        GPU-optimised batching.  Falls back to individual encoding if the
+        model is unavailable.
+        """
+        if not self.sentence_model or not texts:
+            return []
+        try:
+            # sentence-transformers handles batching and GPU transfer internally
+            # but we can tune the batch_size based on available GPU memory.
+            if self.use_gpu and self.device_type == "cuda":
+                try:
+                    import torch
+                    props = torch.cuda.get_device_properties(0)
+                    mem_mb = getattr(props, 'total_memory', getattr(props, 'total_mem', 0)) // (1024 * 1024)
+                    # Dynamically scale batch size: ~8 per GB of VRAM
+                    batch_size = max(8, min(256, (mem_mb // 1024) * 8))
+                except Exception:
+                    pass
+            
+            embeddings = self.sentence_model.encode(
+                texts,
+                batch_size=batch_size,
+                show_progress_bar=False,
+                convert_to_numpy=True,
+                normalize_embeddings=True,
+            )
+            return embeddings.tolist() if hasattr(embeddings, 'tolist') else list(embeddings)
+        except Exception as e:
+            logger.warning(f"Batch encoding failed: {e}")
+            return []
     
     def _init_skills_database(self):
         """Initialize comprehensive skills database with categories"""
@@ -398,9 +497,16 @@ class LocalAIService:
         }
     
     async def _ensure_llm(self):
-        """Lazy-initialize LLM service with retry support"""
+        """Lazy-initialize LLM service with retry support.
+        SKIPPED in production (Cloud Run) - Ollama is not available."""
         if self._llm_initialized and self._llm_service and self._llm_service.available:
             return  # Already connected successfully
+        
+        # Skip Ollama entirely in production (Cloud Run has no Ollama server)
+        import os
+        if os.getenv("K_SERVICE") or os.getenv("ENVIRONMENT", "").lower() == "production":
+            self._llm_initialized = True  # Mark done so we never retry
+            return
         
         try:
             from services.llm_service import get_llm_service
@@ -813,19 +919,30 @@ class LocalAIService:
                 # Combine text with skills for better context
                 candidate_text = text + ' ' + ' '.join(skills)
                 
-                # Encode candidate profile
-                candidate_embedding = self.sentence_model.encode(candidate_text, show_progress_bar=False)
+                # Batch-encode all profiles + candidate in one call for GPU efficiency
+                categories = list(job_profiles.keys())
+                profile_texts = list(job_profiles.values())
+                all_texts = [candidate_text] + profile_texts
+                
+                all_embeddings = self.sentence_model.encode(
+                    all_texts,
+                    batch_size=len(all_texts),
+                    show_progress_bar=False,
+                    normalize_embeddings=True,
+                )
+                
+                candidate_embedding = all_embeddings[0]
                 
                 best_category = 'General'
                 best_score = 0
                 
-                for category, profile in job_profiles.items():
-                    profile_embedding = self.sentence_model.encode(profile, show_progress_bar=False)
-                    
-                    # Cosine similarity
-                    from numpy import dot
-                    from numpy.linalg import norm
-                    similarity = dot(candidate_embedding, profile_embedding) / (norm(candidate_embedding) * norm(profile_embedding))
+                from numpy import dot
+                from numpy.linalg import norm
+                
+                for idx, category in enumerate(categories):
+                    profile_embedding = all_embeddings[idx + 1]
+                    similarity = float(dot(candidate_embedding, profile_embedding) / 
+                                       (norm(candidate_embedding) * norm(profile_embedding) + 1e-8))
                     
                     if similarity > best_score:
                         best_score = similarity

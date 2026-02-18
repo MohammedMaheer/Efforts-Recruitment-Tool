@@ -1,5 +1,5 @@
 # =====================================================
-# AI RECRUITER PLATFORM - PRODUCTION REQUIREMENTS
+# EFFORTS SOLUTIONS - AI RECRUITER - PRODUCTION REQUIREMENTS
 # =====================================================
 # Install with: pip install -r requirements.txt
 # For production: pip install -r requirements.txt --no-cache-dir
@@ -23,23 +23,24 @@ email-validator==2.1.0
 python-dateutil==2.8.2
 
 # ================== ML & AI (LOCAL - FREE) ==================
-scikit-learn==1.4.0
-numpy==1.26.3
-pandas==2.1.4
-sentence-transformers==2.2.2
-torch==2.1.2
-transformers==4.36.2
-spacy==3.7.2
+scikit-learn>=1.4.0
+numpy>=1.26.0,<2.0
+pandas>=2.1.4
+sentence-transformers>=2.7.0
+# PyTorch CPU-only for Cloud Run (saves ~2GB image size + faster build)
+--extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.1.2
+transformers>=4.40.0
+spacy>=3.7.2
 
 # ================== DATABASE ==================
 aiosqlite==0.19.0
-asyncpg==0.29.0  # PostgreSQL async driver
-sqlalchemy==2.0.25  # ORM for production
 
 # ================== HTTP & API ==================
 requests==2.31.0
 httpx==0.26.0
 aiohttp==3.9.1
+aiohttp-retry==2.8.3  # Retry support for async HTTP
 
 # ================== EMAIL ==================
 imapclient==2.3.1
@@ -48,7 +49,6 @@ msal==1.26.0
 
 # ================== CACHING ==================
 cachetools==5.3.2
-redis==5.0.1
 
 # ================== ASYNC & CONCURRENCY ==================
 aiofiles==23.2.1
@@ -64,18 +64,18 @@ cryptography==41.0.7
 # ================== LOGGING & MONITORING ==================
 python-json-logger==2.0.7
 psutil==5.9.7
-prometheus-client==0.19.0  # Metrics for production
 
 # ================== COMPRESSION ==================
 brotli==1.1.0
 
 # ================== ENVIRONMENT ==================
 python-dotenv==1.0.0
-watchfiles==0.21.0
-
-# ================== TESTING (dev only) ==================
-pytest==7.4.4
-pytest-asyncio==0.23.3
 
 # ================== OPENAI (OPTIONAL FALLBACK) ==================
 openai==1.7.2
+
+# ================== GOOGLE GEMINI (PRIMARY FOR DEPLOYMENT) ==================
+google-generativeai>=0.8.0
+
+# ================== GCS (DATABASE PERSISTENCE) ==================
+google-cloud-storage>=2.14.0

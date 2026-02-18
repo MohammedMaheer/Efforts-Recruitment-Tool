@@ -1,4 +1,4 @@
-// AI Recruiter LinkedIn Scraper - Background Service Worker
+// Efforts Solutions AI Recruiter LinkedIn Scraper - Background Service Worker
 
 const API_BASE_URL = 'http://localhost:8000';
 

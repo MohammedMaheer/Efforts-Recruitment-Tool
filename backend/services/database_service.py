@@ -12,6 +12,9 @@ import logging
 from contextlib import contextmanager
 from threading import Lock
 
+# Database wrapper for SQLite/PostgreSQL compatibility
+from core.db_wrapper import create_connection, IS_POSTGRES, init_pg_schema
+
 logger = logging.getLogger(__name__)
 
 class DatabaseService:
@@ -32,13 +35,13 @@ class DatabaseService:
                 if self._connection_pool:
                     conn = self._connection_pool.pop()
                 else:
-                    conn = sqlite3.connect(self.db_path, check_same_thread=False)
-                    conn.row_factory = sqlite3.Row
-                    # Performance optimizations
-                    conn.execute("PRAGMA journal_mode=WAL")  # Write-Ahead Logging
-                    conn.execute("PRAGMA synchronous=NORMAL")  # Faster commits
-                    conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
-                    conn.execute("PRAGMA temp_store=MEMORY")  # Store temp tables in memory
+                    conn = create_connection(self.db_path)
+                    if not IS_POSTGRES:
+                        # SQLite-specific optimizations
+                        conn.execute("PRAGMA journal_mode=WAL")
+                        conn.execute("PRAGMA synchronous=NORMAL")
+                        conn.execute("PRAGMA cache_size=-64000")
+                        conn.execute("PRAGMA temp_store=MEMORY")
             
             yield conn
             
@@ -52,6 +55,11 @@ class DatabaseService:
     
     def init_database(self):
         """Initialize database with optimized schema and indexes"""
+        if IS_POSTGRES:
+            conn = create_connection(self.db_path)
+            init_pg_schema(conn)
+            conn.close()
+            return
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
@@ -86,42 +94,56 @@ class DatabaseService:
             try:
                 cursor.execute("ALTER TABLE candidates ADD COLUMN linkedin TEXT")
                 logger.info("Added linkedin column to candidates table")
-            except sqlite3.OperationalError:
+            except Exception:
                 pass  # Column already exists
             
             # Add job_subcategory column if it doesn't exist (migration)
             try:
                 cursor.execute("ALTER TABLE candidates ADD COLUMN job_subcategory TEXT")
                 logger.info("Added job_subcategory column to candidates table")
-            except sqlite3.OperationalError:
+            except Exception:
                 pass  # Column already exists
             
             # Add ai_analysis column for storing detailed AI analysis JSON
             try:
                 cursor.execute("ALTER TABLE candidates ADD COLUMN ai_analysis TEXT")
                 logger.info("Added ai_analysis column to candidates table")
-            except sqlite3.OperationalError:
+            except Exception:
                 pass  # Column already exists
             
             # Add certifications column for storing certifications JSON
             try:
                 cursor.execute("ALTER TABLE candidates ADD COLUMN certifications TEXT")
                 logger.info("Added certifications column to candidates table")
-            except sqlite3.OperationalError:
+            except Exception:
                 pass  # Column already exists
             
             # Add languages column for storing languages JSON
             try:
                 cursor.execute("ALTER TABLE candidates ADD COLUMN languages TEXT")
                 logger.info("Added languages column to candidates table")
-            except sqlite3.OperationalError:
+            except Exception:
                 pass  # Column already exists
             
             # Add resume_text column for storing raw resume text for AI re-analysis
             try:
                 cursor.execute("ALTER TABLE candidates ADD COLUMN resume_text TEXT")
                 logger.info("Added resume_text column to candidates table")
-            except sqlite3.OperationalError:
+            except Exception:
+                pass  # Column already exists
+            
+            # Add strengths column for persisting AI-generated strengths
+            try:
+                cursor.execute("ALTER TABLE candidates ADD COLUMN strengths TEXT")
+                logger.info("Added strengths column to candidates table")
+            except Exception:
+                pass  # Column already exists
+            
+            # Add gaps column for persisting AI-generated gaps
+            try:
+                cursor.execute("ALTER TABLE candidates ADD COLUMN gaps TEXT")
+                logger.info("Added gaps column to candidates table")
+            except Exception:
                 pass  # Column already exists
             
             # Resume storage table
@@ -180,6 +202,15 @@ class DatabaseService:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_processed_at ON email_processing_log(processed_at)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_candidate_log ON email_processing_log(candidate_id)")
             
+            # Sync metadata — persist sync timestamps across restarts
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS sync_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at TEXT
+                )
+            """)
+            
             # Auto-generated job descriptions
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS job_descriptions (
@@ -205,53 +236,58 @@ class DatabaseService:
     
     def get_connection_raw(self):
         """Get a raw database connection (caller must close). Use get_connection() context manager when possible."""
-        conn = sqlite3.connect(self.db_path, timeout=30.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
+        conn = create_connection(self.db_path)
+        if not IS_POSTGRES:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA busy_timeout=30000")
         return conn
     
     def email_to_hash(self, email: str) -> str:
         """Convert email to hash for fast lookups"""
-        return hashlib.md5(email.lower().strip().encode()).hexdigest()
+        return hashlib.sha256(email.lower().strip().encode()).hexdigest()
     
     def get_candidate_by_email(self, email: str) -> Optional[Dict]:
         """Fast lookup by email hash"""
         email_hash = self.email_to_hash(email)
         
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT * FROM candidates 
-            WHERE email_hash = ? AND is_active = 1
-        """, (email_hash,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return self._row_to_candidate(row)
-        return None
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT * FROM candidates 
+                WHERE email_hash = ? AND is_active = 1
+            """, (email_hash,))
+            
+            row = cursor.fetchone()
+            
+            if row:
+                return self._row_to_candidate(row)
+            return None
+        finally:
+            conn.close()
     
     def get_candidate_by_linkedin(self, linkedin_url: str) -> Optional[Dict]:
         """Lookup candidate by LinkedIn profile URL"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        # Normalize the URL (remove trailing slashes, query params)
-        normalized_url = linkedin_url.split('?')[0].rstrip('/')
-        
-        cursor.execute("""
-            SELECT * FROM candidates 
-            WHERE linkedin LIKE ? AND is_active = 1
-        """, (f"%{normalized_url}%",))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return self._row_to_candidate(row)
-        return None
+        try:
+            cursor = conn.cursor()
+            
+            # Normalize the URL (remove trailing slashes, query params)
+            normalized_url = linkedin_url.split('?')[0].rstrip('/')
+            
+            cursor.execute("""
+                SELECT * FROM candidates 
+                WHERE linkedin LIKE ? AND is_active = 1
+            """, (f"%{normalized_url}%",))
+            
+            row = cursor.fetchone()
+            
+            if row:
+                return self._row_to_candidate(row)
+            return None
+        finally:
+            conn.close()
     
     def get_candidate_by_id(self, candidate_id: str) -> Optional[Dict]:
         """Get a single candidate by their ID"""
@@ -288,208 +324,497 @@ class DatabaseService:
     def clear_all_candidates(self) -> int:
         """Delete all candidates from database. Returns count of deleted records."""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        # Get count before deletion
-        cursor.execute("SELECT COUNT(*) FROM candidates")
-        count = cursor.fetchone()[0]
-        
-        # Delete all candidates
-        cursor.execute("DELETE FROM candidates")
-        
-        # Also clear resumes
         try:
-            cursor.execute("DELETE FROM resumes")
-        except sqlite3.OperationalError:
-            pass
-        
-        # Also clear the AI score cache
-        cursor.execute("DELETE FROM ai_score_cache")
-        
-        # Also clear email processing log
-        cursor.execute("DELETE FROM email_processing_log")
-        
-        conn.commit()
-        conn.close()
-        
-        logger.info(f"🗑️ Cleared {count} candidates from database")
-        return count
+            cursor = conn.cursor()
+            
+            # Get count before deletion
+            cursor.execute("SELECT COUNT(*) FROM candidates")
+            count = cursor.fetchone()[0]
+            
+            # Delete all candidates
+            cursor.execute("DELETE FROM candidates")
+            
+            # Also clear resumes
+            try:
+                cursor.execute("DELETE FROM resumes")
+            except Exception:
+                pass
+            
+            # Also clear the AI score cache
+            cursor.execute("DELETE FROM ai_score_cache")
+            
+            # Also clear email processing log
+            cursor.execute("DELETE FROM email_processing_log")
+            
+            conn.commit()
+            
+            logger.info(f"🗑️ Cleared {count} candidates from database")
+            return count
+        finally:
+            conn.close()
     
     def insert_candidate(self, candidate: Dict):
         """Insert new candidate (or update if exists)"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        email_hash = self.email_to_hash(candidate['email'])
-        
-        # Handle education - ensure it's JSON string
-        education_data = candidate.get('education', '[]')
-        if isinstance(education_data, list):
-            education_data = json.dumps(education_data)
-        elif not education_data:
-            education_data = '[]'
-        
-        cursor.execute("""
-            INSERT OR REPLACE INTO candidates (
-                id, email, email_hash, name, phone, location, 
-                skills, experience, education, summary, work_history,
-                linkedin, status, match_score, job_category, job_subcategory,
-                applied_date, last_updated, raw_email_subject,
-                certifications, languages, resume_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            candidate['id'],
-            candidate['email'],
-            email_hash,
-            candidate['name'],
-            candidate.get('phone', ''),
-            candidate.get('location', ''),
-            json.dumps(candidate.get('skills', [])),
-            candidate.get('experience', 0),
-            education_data,
-            candidate.get('summary', ''),
-            json.dumps(candidate.get('workHistory', [])),
-            candidate.get('linkedin', ''),
-            candidate.get('status', 'New'),
-            candidate.get('matchScore', 45),  # Default to 45 if not scored
-            candidate.get('job_category', 'General'),
-            candidate.get('job_subcategory', ''),
-            candidate.get('appliedDate'),
-            candidate.get('last_updated'),
-            candidate.get('raw_email_subject', ''),
-            json.dumps(candidate.get('certifications', [])),
-            json.dumps(candidate.get('languages', [])),
-            candidate.get('resume_text', ''),
-        ))
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            
+            email_hash = self.email_to_hash(candidate['email'])
+            
+            # Handle education - ensure it's JSON string
+            education_data = candidate.get('education', '[]')
+            if isinstance(education_data, list):
+                education_data = json.dumps(education_data)
+            elif not education_data:
+                education_data = '[]'
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO candidates (
+                    id, email, email_hash, name, phone, location, 
+                    skills, experience, education, summary, work_history,
+                    linkedin, status, match_score, job_category, job_subcategory,
+                    applied_date, last_updated, raw_email_subject,
+                    certifications, languages, resume_text
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                candidate['id'],
+                candidate['email'],
+                email_hash,
+                candidate['name'],
+                candidate.get('phone', ''),
+                candidate.get('location', ''),
+                json.dumps(candidate.get('skills', [])),
+                candidate.get('experience', 0),
+                education_data,
+                candidate.get('summary', ''),
+                json.dumps(candidate.get('workHistory', [])),
+                candidate.get('linkedin', ''),
+                candidate.get('status', 'New'),
+                candidate.get('matchScore', 45),  # Default to 45 if not scored
+                candidate.get('job_category', 'General'),
+                candidate.get('job_subcategory', ''),
+                candidate.get('appliedDate'),
+                candidate.get('last_updated'),
+                candidate.get('raw_email_subject', ''),
+                json.dumps(candidate.get('certifications', [])),
+                json.dumps(candidate.get('languages', [])),
+                candidate.get('resume_text', ''),
+            ))
+            
+            conn.commit()
+        finally:
+            conn.close()
     
     def save_ai_analysis(self, candidate_id: str, analysis: Dict):
-        """Save detailed AI analysis for a candidate"""
+        """Save detailed AI analysis for a candidate and update strengths/gaps"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        cursor.execute(
-            "UPDATE candidates SET ai_analysis = ? WHERE id = ?",
-            (json.dumps(analysis, default=str), candidate_id)
-        )
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE candidates SET ai_analysis = ? WHERE id = ?",
+                (json.dumps(analysis, default=str), candidate_id)
+            )
+            # Also persist AI pros/cons into strengths/gaps columns for fast access
+            strengths = analysis.get('pros') or analysis.get('strengths') or []
+            gaps = analysis.get('cons') or analysis.get('weaknesses') or []
+            if strengths or gaps:
+                cursor.execute(
+                    "UPDATE candidates SET strengths = ?, gaps = ? WHERE id = ?",
+                    (json.dumps(strengths[:5], default=str), json.dumps(gaps[:5], default=str), candidate_id)
+                )
+            conn.commit()
+        finally:
+            conn.close()
     
     def get_ai_analysis(self, candidate_id: str) -> Optional[Dict]:
         """Get stored AI analysis for a candidate"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        cursor.execute("SELECT ai_analysis FROM candidates WHERE id = ?", (candidate_id,))
-        row = cursor.fetchone()
-        conn.close()
-        if row and row[0]:
-            try:
-                return json.loads(row[0])
-            except (json.JSONDecodeError, TypeError):
-                return None
-        return None
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT ai_analysis FROM candidates WHERE id = ?", (candidate_id,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                try:
+                    return json.loads(row[0])
+                except (json.JSONDecodeError, TypeError):
+                    return None
+            return None
+        finally:
+            conn.close()
     
     def update_candidate(self, candidate: Dict):
         """Update existing candidate (merge new data)"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        # Handle education - ensure it's JSON string
-        education_data = candidate.get('education', '[]')
-        if isinstance(education_data, list):
-            education_data = json.dumps(education_data)
-        elif not education_data:
-            education_data = '[]'
-        
-        cursor.execute("""
-            UPDATE candidates SET
-                name = ?,
-                phone = ?,
-                location = ?,
-                skills = ?,
-                experience = ?,
-                education = ?,
-                summary = ?,
-                work_history = ?,
-                linkedin = ?,
-                status = ?,
-                match_score = ?,
-                job_category = ?,
-                job_subcategory = ?,
-                last_updated = ?,
-                raw_email_subject = ?,
-                certifications = ?,
-                languages = ?,
-                resume_text = COALESCE(?, resume_text)
-            WHERE id = ?
-        """, (
-            candidate['name'],
-            candidate.get('phone', ''),
-            candidate.get('location', ''),
-            json.dumps(candidate.get('skills', [])),
-            candidate.get('experience', 0),
-            education_data,
-            candidate.get('summary', ''),
-            json.dumps(candidate.get('workHistory', [])),
-            candidate.get('linkedin', ''),
-            candidate.get('status', 'New'),
-            candidate.get('matchScore', 50),
-            candidate.get('job_category', 'General'),
-            candidate.get('job_subcategory', ''),
-            candidate.get('last_updated'),
-            candidate.get('raw_email_subject', ''),
-            json.dumps(candidate.get('certifications', [])),
-            json.dumps(candidate.get('languages', [])),
-            candidate.get('resume_text', None),
-            candidate['id']
-        ))
-        
-        conn.commit()
-        conn.close()
-    
+        try:
+            cursor = conn.cursor()
+            
+            # Handle education - ensure it's JSON string
+            education_data = candidate.get('education', '[]')
+            if isinstance(education_data, list):
+                education_data = json.dumps(education_data)
+            elif not education_data:
+                education_data = '[]'
+            
+            cursor.execute("""
+                UPDATE candidates SET
+                    name = ?,
+                    phone = ?,
+                    location = ?,
+                    skills = ?,
+                    experience = ?,
+                    education = ?,
+                    summary = ?,
+                    work_history = ?,
+                    linkedin = ?,
+                    status = ?,
+                    match_score = ?,
+                    job_category = ?,
+                    job_subcategory = ?,
+                    last_updated = ?,
+                    raw_email_subject = ?,
+                    certifications = ?,
+                    languages = ?,
+                    resume_text = COALESCE(?, resume_text)
+                WHERE id = ?
+            """, (
+                candidate['name'],
+                candidate.get('phone', ''),
+                candidate.get('location', ''),
+                json.dumps(candidate.get('skills', [])),
+                candidate.get('experience', 0),
+                education_data,
+                candidate.get('summary', ''),
+                json.dumps(candidate.get('workHistory', [])),
+                candidate.get('linkedin', ''),
+                candidate.get('status', 'New'),
+                candidate.get('matchScore', 50),
+                candidate.get('job_category', 'General'),
+                candidate.get('job_subcategory', ''),
+                candidate.get('last_updated'),
+                candidate.get('raw_email_subject', ''),
+                json.dumps(candidate.get('certifications', [])),
+                json.dumps(candidate.get('languages', [])),
+                candidate.get('resume_text', None),
+                candidate['id']
+            ))
+            
+            conn.commit()
+        finally:
+            conn.close()
+
+    # ---- helpers for smart value comparison ----
+    @staticmethod
+    def _is_meaningful(value) -> bool:
+        """Return True when *value* carries real information."""
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return bool(value.strip()) and value.strip().lower() not in ('', 'unknown', 'n/a', 'none', 'general')
+        if isinstance(value, (list, dict)):
+            return bool(value)
+        if isinstance(value, (int, float)):
+            return value > 0
+        return bool(value)
+
+    @staticmethod
+    def _parse_json_safe(raw) -> list | dict:
+        """Best-effort parse of a JSON column that might already be a list/dict."""
+        if isinstance(raw, (list, dict)):
+            return raw
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                return []
+        return []
+
+    def smart_merge_candidate(self, existing: Dict, new_data: Dict) -> Dict:
+        """Intelligently merge *new_data* into *existing* candidate.
+
+        Rules
+        -----
+        - For scalar fields (name, phone, location, linkedin): keep whichever is
+          non-empty; if both are non-empty keep the *longer / richer* value.
+        - For list fields (skills, education, certifications, languages,
+          work_history): UNION – deduplicate by lowercase equality.
+        - experience: keep the higher value (candidates gain experience).
+        - matchScore: keep the higher score; never downgrade a manually-set score.
+        - status: keep existing status unless it's 'New' and new data has a
+          better one (e.g. AI-scored 'Strong').
+        - summary / resume_text: keep the longer text.
+        - job_category / job_subcategory: keep existing unless it's 'General'
+          and new data has a real category.
+        """
+        merged = dict(existing)  # start from what we have
+
+        # ---- scalars: prefer non-empty, then longer ----
+        for key in ('name', 'phone', 'location', 'linkedin'):
+            old_val = existing.get(key, '') or ''
+            new_val = new_data.get(key, '') or ''
+            if not self._is_meaningful(old_val) and self._is_meaningful(new_val):
+                merged[key] = new_val
+            elif self._is_meaningful(new_val) and len(new_val) > len(old_val):
+                merged[key] = new_val
+
+        # ---- list fields: union / deduplicate ----
+        for key in ('skills', 'certifications', 'languages'):
+            old_list = self._parse_json_safe(existing.get(key))
+            new_list = new_data.get(key, [])
+            if isinstance(new_list, str):
+                new_list = self._parse_json_safe(new_list)
+            if new_list:
+                seen = {str(v).lower() for v in old_list}
+                for v in new_list:
+                    if str(v).lower() not in seen:
+                        old_list.append(v)
+                        seen.add(str(v).lower())
+            merged[key] = old_list
+
+        # education & work_history – union by stringified comparison
+        for key, src_key in [('education', 'education'), ('workHistory', 'workHistory')]:
+            old_list = self._parse_json_safe(existing.get(key))
+            new_list = new_data.get(src_key, [])
+            if isinstance(new_list, str):
+                new_list = self._parse_json_safe(new_list)
+            if new_list:
+                old_strs = {json.dumps(e, sort_keys=True).lower() for e in old_list if isinstance(e, dict)}
+                for entry in new_list:
+                    if isinstance(entry, dict):
+                        if json.dumps(entry, sort_keys=True).lower() not in old_strs:
+                            old_list.append(entry)
+                    elif isinstance(entry, str) and entry not in [str(x) for x in old_list]:
+                        old_list.append(entry)
+            merged[key] = old_list
+
+        # ---- experience: keep higher ----
+        old_exp = existing.get('experience', 0) or 0
+        new_exp = new_data.get('experience', 0) or 0
+        merged['experience'] = max(int(old_exp), int(new_exp))
+
+        # ---- matchScore: keep higher (never downgrade) ----
+        old_score = existing.get('matchScore', 0) or existing.get('match_score', 0) or 0
+        new_score = new_data.get('matchScore', 0) or 0
+        merged['matchScore'] = max(float(old_score), float(new_score))
+
+        # ---- status: keep existing unless it was default 'New' ----
+        old_status = existing.get('status', 'New')
+        new_status = new_data.get('status', 'New')
+        if old_status in ('New',) and new_status not in ('New',):
+            merged['status'] = new_status
+        else:
+            merged['status'] = old_status  # preserve recruiter's manual status changes
+
+        # ---- summary / resume_text: keep longer ----
+        for key in ('summary', 'resume_text'):
+            old_txt = existing.get(key, '') or ''
+            new_txt = new_data.get(key, '') or ''
+            merged[key] = new_txt if len(new_txt) > len(old_txt) else old_txt
+
+        # ---- job_category / job_subcategory: keep real over 'General' ----
+        for key in ('job_category', 'job_subcategory'):
+            old_cat = existing.get(key, 'General') or 'General'
+            new_cat = new_data.get(key, '') or ''
+            if old_cat in ('General', '', 'Unknown') and self._is_meaningful(new_cat):
+                merged[key] = new_cat
+            else:
+                merged[key] = old_cat
+
+        # ---- raw_email_subject: keep latest ----
+        if self._is_meaningful(new_data.get('raw_email_subject')):
+            merged['raw_email_subject'] = new_data['raw_email_subject']
+
+        merged['last_updated'] = datetime.now().isoformat()
+        merged['id'] = existing.get('id', new_data.get('id'))
+        merged['email'] = existing.get('email', new_data.get('email'))
+
+        return merged
+
+    def get_all_candidates_for_matching(self, filters: Dict = None) -> List[Dict]:
+        """
+        Get ALL active candidates from the DB for comprehensive AI matching.
+        Returns full candidate objects (not paginated) for JD matching, chat, and search.
+        """
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            query = "SELECT * FROM candidates WHERE is_active = 1"
+            params = []
+            if filters:
+                if filters.get('min_experience'):
+                    query += " AND experience >= ?"
+                    params.append(filters['min_experience'])
+                if filters.get('job_category'):
+                    query += " AND job_category = ?"
+                    params.append(filters['job_category'])
+            query += " ORDER BY match_score DESC"
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            return [self._row_to_candidate(row, check_resume=False) for row in rows]
+        finally:
+            conn.close()
+
+    def get_candidates_for_ai(self, filters: Dict = None, limit: int = 10000) -> List[Dict]:
+        """
+        Enriched candidate query for AI chat — includes work_history, certifications, languages.
+        The AI needs this data to give accurate, detailed answers about candidates.
+        """
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT id, name, email, skills, experience, education,
+                       match_score, job_category, job_subcategory, status, location, summary,
+                       work_history, certifications, languages, phone, linkedin,
+                       created_at, applied_date
+                FROM candidates WHERE is_active = 1
+            """
+            params: list = []
+            if filters:
+                if filters.get('min_experience'):
+                    query += " AND experience >= ?"
+                    params.append(filters['min_experience'])
+                if filters.get('job_category'):
+                    query += " AND job_category = ?"
+                    params.append(filters['job_category'])
+            query += " ORDER BY match_score DESC"
+            if limit:
+                query += " LIMIT ?"
+                params.append(limit)
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                skills_raw = row[3]
+                edu_raw = row[5]
+                wh_raw = row[12]
+                cert_raw = row[13]
+                lang_raw = row[14]
+                results.append({
+                    'id': row[0],
+                    'name': row[1],
+                    'email': row[2],
+                    'skills': json.loads(skills_raw) if skills_raw and isinstance(skills_raw, str) else (skills_raw or []),
+                    'experience': row[4] or 0,
+                    'education': json.loads(edu_raw) if edu_raw and isinstance(edu_raw, str) and edu_raw.startswith('[') else [],
+                    'matchScore': row[6] or 50,
+                    'match_score': row[6] or 50,
+                    'job_category': row[7] or 'General',
+                    'job_subcategory': row[8] or '',
+                    'status': row[9] or 'New',
+                    'location': row[10] or '',
+                    'summary': row[11] or '',
+                    'work_history': json.loads(wh_raw) if wh_raw and isinstance(wh_raw, str) and wh_raw.startswith('[') else [],
+                    'certifications': json.loads(cert_raw) if cert_raw and isinstance(cert_raw, str) and cert_raw.startswith('[') else [],
+                    'languages': json.loads(lang_raw) if lang_raw and isinstance(lang_raw, str) and lang_raw.startswith('[') else [],
+                    'phone': row[15] or '',
+                    'linkedin': row[16] or '',
+                    'created_at': row[17] or '',
+                    'applied_date': row[18] or '',
+                })
+            return results
+        finally:
+            conn.close()
+
+    def get_candidates_lightweight(self, filters: Dict = None, limit: int = 500) -> List[Dict]:
+        """
+        Lightweight candidate query for AI matching — fetches only essential columns.
+        Avoids loading resume_text, work_history, ai_analysis for much lower memory/IO.
+        """
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            query = """
+                SELECT id, name, email, skills, experience, education,
+                       match_score, job_category, job_subcategory, status, location, summary
+                FROM candidates WHERE is_active = 1
+            """
+            params: list = []
+            if filters:
+                if filters.get('min_experience'):
+                    query += " AND experience >= ?"
+                    params.append(filters['min_experience'])
+                if filters.get('job_category'):
+                    query += " AND job_category = ?"
+                    params.append(filters['job_category'])
+            query += " ORDER BY match_score DESC"
+            if limit:
+                query += " LIMIT ?"
+                params.append(limit)
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                skills_raw = row[3]
+                edu_raw = row[5]
+                results.append({
+                    'id': row[0],
+                    'name': row[1],
+                    'email': row[2],
+                    'skills': json.loads(skills_raw) if skills_raw and isinstance(skills_raw, str) else (skills_raw or []),
+                    'experience': row[4] or 0,
+                    'education': json.loads(edu_raw) if edu_raw and isinstance(edu_raw, str) and edu_raw.startswith('[') else [],
+                    'matchScore': row[6] or 50,
+                    'match_score': row[6] or 50,
+                    'job_category': row[7] or 'General',
+                    'job_subcategory': row[8] or '',
+                    'status': row[9] or 'New',
+                    'location': row[10] or '',
+                    'summary': row[11] or '',
+                })
+            return results
+        finally:
+            conn.close()
+
     def get_candidates_paginated(self, page: int = 1, limit: int = 50, filters: Dict = None):
         """Get candidates with pagination, ranked by AI score within job categories"""
         offset = (page - 1) * limit
         
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        query = "SELECT * FROM candidates WHERE is_active = 1"
-        params = []
-        
-        if filters:
-            if filters.get('job_category'):
-                query += " AND job_category = ?"
-                params.append(filters['job_category'])
+        try:
+            cursor = conn.cursor()
             
-            if filters.get('job_subcategory'):
-                query += " AND job_subcategory = ?"
-                params.append(filters['job_subcategory'])
+            # Build WHERE clause for both count and data queries
+            where_clause = "WHERE is_active = 1"
+            params = []
             
-            if filters.get('min_score'):
-                query += " AND match_score >= ?"
-                params.append(filters['min_score'])
+            if filters:
+                if filters.get('job_category'):
+                    where_clause += " AND job_category = ?"
+                    params.append(filters['job_category'])
+                
+                if filters.get('job_subcategory'):
+                    where_clause += " AND job_subcategory = ?"
+                    params.append(filters['job_subcategory'])
+                
+                if filters.get('min_score'):
+                    where_clause += " AND match_score >= ?"
+                    params.append(filters['min_score'])
+                
+                if filters.get('min_experience'):
+                    where_clause += " AND experience >= ?"
+                    params.append(filters['min_experience'])
+                
+                if filters.get('search'):
+                    where_clause += " AND (name LIKE ? OR email LIKE ? OR skills LIKE ? OR job_subcategory LIKE ?)"
+                    search_term = f"%{filters['search']}%"
+                    params.extend([search_term, search_term, search_term, search_term])
             
-            if filters.get('min_experience'):
-                query += " AND experience >= ?"
-                params.append(filters['min_experience'])
+            # Get total count (same filters, no LIMIT/OFFSET)
+            cursor.execute(f"SELECT COUNT(*) FROM candidates {where_clause}", params)
+            total_count = cursor.fetchone()[0]
             
-            if filters.get('search'):
-                query += " AND (name LIKE ? OR email LIKE ? OR skills LIKE ? OR job_subcategory LIKE ?)"
-                search_term = f"%{filters['search']}%"
-                params.extend([search_term, search_term, search_term, search_term])
-        
-        # Order by job category first, then match_score DESC (best candidates first)
-        query += " ORDER BY job_category ASC, match_score DESC, last_updated DESC LIMIT ? OFFSET ?"
-        params.extend([limit, offset])
-        
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
-        
-        conn.close()
-        
-        return [self._row_to_candidate(row) for row in rows]
+            # Get paginated data
+            query = f"SELECT * FROM candidates {where_clause}"
+            query += " ORDER BY job_category ASC, match_score DESC, last_updated DESC LIMIT ? OFFSET ?"
+            data_params = params + [limit, offset]
+            
+            cursor.execute(query, data_params)
+            rows = cursor.fetchall()
+            
+            candidates = [self._row_to_candidate(row) for row in rows]
+            return candidates, total_count
+        finally:
+            conn.close()
     
     def insert_candidates_batch(self, candidates: List[Dict], batch_size: int = 100):
         """
@@ -602,28 +927,29 @@ class DatabaseService:
         Yields batches of candidates for processing 10,000+ records
         """
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1")
-        total = cursor.fetchone()[0]
-        
-        offset = 0
-        while offset < total:
-            cursor.execute("""
-                SELECT * FROM candidates 
-                WHERE is_active = 1 
-                ORDER BY match_score DESC 
-                LIMIT ? OFFSET ?
-            """, (batch_size, offset))
+        try:
+            cursor = conn.cursor()
             
-            rows = cursor.fetchall()
-            if not rows:
-                break
+            cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1")
+            total = cursor.fetchone()[0]
             
-            yield [self._row_to_candidate(row) for row in rows]
-            offset += batch_size
-        
-        conn.close()
+            offset = 0
+            while offset < total:
+                cursor.execute("""
+                    SELECT * FROM candidates 
+                    WHERE is_active = 1 
+                    ORDER BY match_score DESC 
+                    LIMIT ? OFFSET ?
+                """, (batch_size, offset))
+                
+                rows = cursor.fetchall()
+                if not rows:
+                    break
+                
+                yield [self._row_to_candidate(row) for row in rows]
+                offset += batch_size
+        finally:
+            conn.close()
     
     def get_statistics(self) -> Dict:
         """Get database statistics for monitoring"""
@@ -699,30 +1025,73 @@ class DatabaseService:
     def mark_email_processed(self, message_id: str, candidate_id: str, action: str):
         """Track processed emails to prevent reprocessing"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            INSERT OR REPLACE INTO email_processing_log 
-            (message_id, processed_at, candidate_id, action)
-            VALUES (?, ?, ?, ?)
-        """, (message_id, datetime.now().isoformat(), candidate_id, action))
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO email_processing_log 
+                (message_id, processed_at, candidate_id, action)
+                VALUES (?, ?, ?, ?)
+            """, (message_id, datetime.now().isoformat(), candidate_id, action))
+            
+            conn.commit()
+        finally:
+            conn.close()
     
     def is_email_processed(self, message_id: str) -> bool:
         """Check if email already processed"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT 1 FROM email_processing_log WHERE message_id = ?
-        """, (message_id,))
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        return result is not None
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 1 FROM email_processing_log WHERE message_id = ?
+            """, (message_id,))
+            
+            result = cursor.fetchone()
+            return result is not None
+        except Exception:
+            return False
+        finally:
+            conn.close()
+    
+    def get_processed_email_count(self) -> int:
+        """Get total number of processed emails in the log"""
+        try:
+            conn = self.get_connection_raw()
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM email_processing_log")
+            result = cursor.fetchone()
+            conn.close()
+            return result[0] if result else 0
+        except Exception:
+            return 0
+    
+    def get_sync_metadata(self, key: str) -> Optional[str]:
+        """Get a persisted sync metadata value (e.g. last_email_sync_time)"""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT value FROM sync_metadata WHERE key = ?", (key,))
+            row = cursor.fetchone()
+            return row[0] if row else None
+        except Exception:
+            return None
+        finally:
+            conn.close()
+    
+    def set_sync_metadata(self, key: str, value: str):
+        """Persist a sync metadata value"""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO sync_metadata (key, value, updated_at)
+                VALUES (?, ?, ?)
+            """, (key, value, datetime.now().isoformat()))
+            conn.commit()
+        finally:
+            conn.close()
     
     def _row_to_candidate(self, row, check_resume: bool = True) -> Dict:
         """Convert database row to candidate dict"""
@@ -816,6 +1185,110 @@ class DatabaseService:
         except Exception:
             candidate['resume_text'] = ''
         
+        # strengths and gaps columns (added via ALTER TABLE, after resume_text)
+        stored_col_strengths = []
+        stored_col_gaps = []
+        try:
+            strengths_idx = ai_analysis_idx + 4
+            gaps_idx = ai_analysis_idx + 5
+            if num_cols > strengths_idx and row[strengths_idx]:
+                parsed = json.loads(row[strengths_idx]) if isinstance(row[strengths_idx], str) else []
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    stored_col_strengths = parsed
+            if num_cols > gaps_idx and row[gaps_idx]:
+                parsed = json.loads(row[gaps_idx]) if isinstance(row[gaps_idx], str) else []
+                if isinstance(parsed, list) and len(parsed) > 0:
+                    stored_col_gaps = parsed
+        except Exception:
+            pass
+        
+        # Generate strengths and gaps — priority order:
+        # 1) Dedicated columns (persisted from AI analysis)
+        # 2) ai_analysis JSON (pros/cons/strengths)
+        # 3) Auto-generated from candidate data
+        ai = candidate.get('ai_analysis') or {}
+        ai_strengths = (ai.get('pros') or ai.get('strengths') or []) if isinstance(ai, dict) else []
+        ai_gaps = (ai.get('cons') or ai.get('gaps') or ai.get('weaknesses') or []) if isinstance(ai, dict) else []
+        
+        best_strengths = stored_col_strengths or ai_strengths
+        best_gaps = stored_col_gaps or ai_gaps
+        
+        if best_strengths:
+            candidate['strengths'] = best_strengths[:5]
+        else:
+            strengths = []
+            skills = candidate.get('skills', [])
+            exp = candidate.get('experience', 0) or 0
+            edu = candidate.get('education', [])
+            certs = candidate.get('certifications', [])
+            langs = candidate.get('languages', [])
+            score = candidate.get('matchScore', 0) or 0
+            
+            if len(skills) >= 8:
+                strengths.append(f"Strong technical profile with {len(skills)} identified skills")
+            elif len(skills) >= 4:
+                strengths.append(f"Solid skill set covering {len(skills)} technologies")
+            if exp >= 10:
+                strengths.append(f"Highly experienced professional with {exp}+ years in the industry")
+            elif exp >= 5:
+                strengths.append(f"{exp} years of professional experience demonstrates solid career progression")
+            elif exp >= 2:
+                strengths.append(f"{exp} years of relevant professional experience")
+            if edu and len(edu) > 0:
+                top_edu = edu[0] if isinstance(edu[0], dict) else {}
+                degree = top_edu.get('degree', '')
+                field = top_edu.get('field', '')
+                if degree and field:
+                    strengths.append(f"Educational background: {degree} in {field}")
+                elif degree:
+                    strengths.append(f"Holds a {degree} degree")
+            if certs and len(certs) > 0:
+                strengths.append(f"Certified: {', '.join(certs[:3])}")
+            if langs and len(langs) > 1:
+                strengths.append(f"Multilingual: {', '.join(langs[:3])}")
+            if candidate.get('linkedin'):
+                strengths.append("Active professional network (LinkedIn profile available)")
+            if score >= 80:
+                strengths.append("Overall profile quality rated as excellent by AI analysis")
+            elif score >= 65:
+                strengths.append("Above-average profile quality based on AI evaluation")
+            candidate['strengths'] = strengths[:5]  # Cap at 5
+        
+        if best_gaps:
+            candidate['gaps'] = best_gaps[:5]
+        else:
+            gaps = []
+            skills = candidate.get('skills', [])
+            exp = candidate.get('experience', 0) or 0
+            edu = candidate.get('education', [])
+            score = candidate.get('matchScore', 0) or 0
+            
+            if len(skills) < 3:
+                gaps.append("Limited skills information available — may need deeper screening")
+            if exp == 0:
+                gaps.append("Experience level not specified — clarification needed")
+            if not edu or len(edu) == 0:
+                gaps.append("No formal education details provided")
+            if not candidate.get('phone'):
+                gaps.append("No phone number on file — email-only contact")
+            if not candidate.get('location'):
+                gaps.append("Location not specified — remote/relocation status unknown")
+            if not candidate.get('linkedin'):
+                gaps.append("No LinkedIn profile — limited professional network visibility")
+            if not candidate.get('certifications') or len(candidate.get('certifications', [])) == 0:
+                gaps.append("No professional certifications listed")
+            if score < 50:
+                gaps.append("Below-average profile match score — may not meet role requirements")
+            candidate['gaps'] = gaps[:5]  # Cap at 5
+        
+        # Recommendation: prefer AI hiring recommendation, fallback to job category
+        ai_recommendation = ''
+        if isinstance(ai, dict):
+            ai_recommendation = ai.get('hiring_recommendation', '') or ''
+            if ai_recommendation:
+                ai_recommendation = ai_recommendation.replace('_', ' ')
+        candidate['recommendation'] = ai_recommendation or candidate.get('job_category', 'General')
+        
         # Check if resume exists (optional to avoid N+1 queries)
         if check_resume:
             try:
@@ -832,49 +1305,55 @@ class DatabaseService:
     def get_cached_ai_score(self, candidate_id: str, job_id: str) -> Optional[Dict]:
         """Get cached AI analysis to avoid reprocessing"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT ai_score, strengths, gaps, recommendation, cached_at
-            FROM ai_score_cache
-            WHERE candidate_id = ? AND job_id = ?
-        """, (candidate_id, job_id))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return {
-                'score': row[0],
-                'strengths': json.loads(row[1]) if row[1] else [],
-                'gaps': json.loads(row[2]) if row[2] else [],
-                'recommendation': row[3],
-                'cached_at': row[4],
-                'from_cache': True
-            }
-        return None
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT ai_score, strengths, gaps, recommendation, cached_at
+                FROM ai_score_cache
+                WHERE candidate_id = ? AND job_id = ?
+            """, (candidate_id, job_id))
+            
+            row = cursor.fetchone()
+            
+            if row:
+                return {
+                    'score': row[0],
+                    'strengths': json.loads(row[1]) if row[1] else [],
+                    'gaps': json.loads(row[2]) if row[2] else [],
+                    'recommendation': row[3],
+                    'cached_at': row[4],
+                    'from_cache': True
+                }
+            return None
+        except Exception:
+            return None
+        finally:
+            conn.close()
     
     def cache_ai_score(self, candidate_id: str, job_id: str, analysis: Dict):
         """Cache AI analysis result to save tokens"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            INSERT OR REPLACE INTO ai_score_cache 
-            (candidate_id, job_id, ai_score, strengths, gaps, recommendation, cached_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (
-            candidate_id,
-            job_id,
-            analysis.get('score', 0),
-            json.dumps(analysis.get('strengths', [])),
-            json.dumps(analysis.get('gaps', [])),
-            analysis.get('recommendation', ''),
-            datetime.now().isoformat()
-        ))
-        
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO ai_score_cache 
+                (candidate_id, job_id, ai_score, strengths, gaps, recommendation, cached_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                candidate_id,
+                job_id,
+                analysis.get('score', 0),
+                json.dumps(analysis.get('strengths', [])),
+                json.dumps(analysis.get('gaps', [])),
+                analysis.get('recommendation', ''),
+                datetime.now().isoformat()
+            ))
+            
+            conn.commit()
+        finally:
+            conn.close()
     
     def get_candidates_needing_ai_analysis(self, job_id: str) -> List[Dict]:
         """

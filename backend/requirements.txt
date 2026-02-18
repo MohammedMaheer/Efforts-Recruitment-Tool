@@ -1,6 +1,7 @@
 # Core FastAPI Framework
 fastapi>=0.104.0
 uvicorn[standard]>=0.24.0
+gunicorn>=21.2.0
 python-multipart>=0.0.6
 
 # Document Processing (Resume Parsing)
@@ -32,9 +33,12 @@ msal>=1.24.0
 
 # Database
 aiosqlite>=0.19.0  # Async SQLite for better concurrency
+psycopg2-binary>=2.9.0  # PostgreSQL driver for Docker/production deployments
 
 # AI Models - LOCAL (FREE, ZERO API COSTS)
 sentence-transformers>=2.2.0  # Semantic similarity AI
+# PyTorch with NVIDIA CUDA support — installed via --extra-index-url (see below)
+# CPU-only fallback: pip install torch>=2.0.0
 torch>=2.0.0  # Required by sentence-transformers
 transformers>=4.35.0  # Additional NLP capabilities
 
@@ -42,12 +46,13 @@ transformers>=4.35.0  # Additional NLP capabilities
 # Install Ollama: https://ollama.com/download
 # Then run: ollama pull qwen2.5:7b
 # Ollama communicates via HTTP API - no Python package needed!
-# httpx is used for async HTTP calls to Ollama
-httpx>=0.25.0  # Async HTTP client for Ollama API
+# httpx is already listed above in HTTP & API Clients
 
-# Intel GPU Acceleration (Intel Iris Xe)
-# intel-extension-for-pytorch>=2.1.0  # Intel GPU optimization - install separately with: pip install intel-extension-for-pytorch
-# openvino>=2023.2.0  # Intel OpenVINO for fast inference - optional
+# GPU Acceleration (pick ONE that matches your hardware)
+# NVIDIA CUDA  — pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+# Intel IPEX   — pip install intel-extension-for-pytorch
+# Intel OpenVINO — pip install openvino
+# The default 'torch' line above will pull the CUDA build when the extra-index-url is used.
 
 # Named Entity Recognition (NER) for accurate extraction
 spacy>=3.7.0  # NLP pipeline for NER
@@ -59,10 +64,10 @@ openai>=1.0.0  # Only used on timeout/error
 # Performance & Optimization
 cachetools>=5.3.0  # Advanced caching
 redis>=5.0.0  # Optional: Redis cache for production
-python-lru-cache>=0.1.0  # LRU caching
+# python-lru-cache — removed; functools.lru_cache (stdlib) is used instead
 
 # Async & Concurrency
-asyncio>=3.4.3
+# asyncio is part of Python stdlib since 3.4 - no pip install needed
 aiofiles>=23.2.0  # Async file operations
 aiohttp>=3.9.0  # Async HTTP client for calendar/SMS APIs
 
@@ -78,6 +83,9 @@ python-jose[cryptography]>=3.3.0  # JWT tokens
 passlib[bcrypt]>=1.7.4  # Password hashing
 cryptography>=41.0.0
 
+# Google Gemini AI (primary for deployment)
+google-generativeai>=0.8.0
+
 # Compression
 brotli>=1.1.0  # Brotli compression (optional, gzip built-in)
 
@@ -85,5 +93,5 @@ brotli>=1.1.0  # Brotli compression (optional, gzip built-in)
 watchfiles>=0.21.0  # Auto-reload (included in uvicorn[standard])
 pytest>=7.4.0
 pytest-asyncio>=0.21.0
-httpx>=0.25.0  # For testing async endpoints
+# httpx already listed above in HTTP & API Clients
 

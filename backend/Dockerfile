@@ -1,4 +1,4 @@
-FROM python:3.13-slim
+FROM python:3.11-slim
 
 WORKDIR /app
 
@@ -13,7 +13,7 @@ RUN apt-get update && apt-get install -y \
 COPY requirements.txt requirements.production.txt ./
 
 # Install Python dependencies (use production requirements if available)
-ARG REQUIREMENTS_FILE=requirements.txt
+ARG REQUIREMENTS_FILE=requirements.production.txt
 RUN pip install --no-cache-dir -r ${REQUIREMENTS_FILE}
 
 # Download AI models during build (optional, can be done at runtime too)
@@ -41,4 +41,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # Run application
 # Development: uvicorn main:app --host 0.0.0.0 --port 8000
 # Production: gunicorn main:app -w 4 -k uvicorn.workers.UvicornWorker --bind 0.0.0.0:8000
-CMD ["gunicorn", "main:app", "-w", "2", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "300", "--graceful-timeout", "60", "--keep-alive", "5"]
+CMD ["gunicorn", "main:app", "-w", "1", "-k", "uvicorn.workers.UvicornWorker", "--bind", "0.0.0.0:8000", "--timeout", "600", "--graceful-timeout", "30", "--keep-alive", "5"]

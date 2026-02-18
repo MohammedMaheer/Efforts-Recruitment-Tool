@@ -16,10 +16,10 @@ class MicrosoftGraphService:
     """
     
     def __init__(self, client_id: str, client_secret: str, tenant_id: str, user_email: str = None):
-        self.client_id = client_id
-        self.client_secret = client_secret
-        self.tenant_id = tenant_id
-        self.user_email = user_email  # Required for application permissions
+        self.client_id = (client_id or '').strip()
+        self.client_secret = (client_secret or '').strip()
+        self.tenant_id = (tenant_id or '').strip()
+        self.user_email = (user_email or '').strip() if user_email else None
         self.graph_url = "https://graph.microsoft.com/v1.0"
         self.access_token = None
         self.token_expiry = None
@@ -130,14 +130,12 @@ class MicrosoftGraphService:
         
         all_messages = []
         
-        # Build URL based on auth type
-        # For delegated permissions: use /me/mailFolders
-        # For application permissions: use /users/{email}/mailFolders
+        # Route based on auth type:
+        # - Delegated tokens (user login) → /me/  (has user context)
+        # - Application tokens (client_credentials) → /users/{email}  (requires Azure AD mailbox)
         if self.auth_type == 'application' and self.user_email:
-            # Application permissions: must specify user email explicitly
             url = f"{self.graph_url}/users/{self.user_email}/mailFolders/{folder}/messages"
         else:
-            # Delegated permissions: use /me
             url = f"{self.graph_url}/me/mailFolders/{folder}/messages"
         
         # Always fetch max page size (999) for efficiency
@@ -205,7 +203,7 @@ class MicrosoftGraphService:
         }
         
         try:
-            # Use correct endpoint based on auth type
+            # Route based on auth type
             if self.auth_type == 'application' and self.user_email:
                 base_url = f"{self.graph_url}/users/{self.user_email}/messages/{message_id}"
             else:
@@ -227,7 +225,6 @@ class MicrosoftGraphService:
             for att in attachments_data.get('value', []):
                 if att.get('@odata.type') == '#microsoft.graph.fileAttachment':
                     # Decode base64 content
-                    import base64
                     file_content = base64.b64decode(att.get('contentBytes', ''))
                     processed_attachments.append({
                         'filename': att.get('name', 'unknown'),
@@ -400,6 +397,7 @@ class MicrosoftGraphService:
         }
 
         try:
+            # Route based on auth type
             if self.auth_type == 'application' and self.user_email:
                 url = f"{self.graph_url}/users/{self.user_email}/sendMail"
             else:

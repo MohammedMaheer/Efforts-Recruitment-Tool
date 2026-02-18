@@ -1,6 +1,7 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Header, Body, Form
+"""AI Recruitment Platform v16-stable — deployed 2026-02-17"""
+from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Request, Header, Body, Form, Depends
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, RedirectResponse
 from pydantic import BaseModel
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
@@ -9,6 +10,7 @@ import asyncio
 import os
 import json
 import re
+import shutil
 from dotenv import load_dotenv
 import logging
 from contextlib import asynccontextmanager
@@ -22,12 +24,14 @@ from services.microsoft_graph import MicrosoftGraphService
 from services.token_storage import get_token_storage
 from services.openai_service import get_openai_service
 from services.local_ai_service import get_local_ai_service
+from services.gemini_service import get_gemini_service
 from services.email_scraper import get_scraper_service
 from services.database_service import get_db_service
 from services.oauth_automation_service import get_oauth_automation, OAuthAutomationService
 from services.auth_service import get_auth_service
 from models.candidate import Candidate, JobDescription, MatchResult
 from core.config import get_settings
+from core.dependencies import require_auth, optional_auth
 
 # Advanced AI services
 from api.advanced_routes import router as advanced_router
@@ -63,30 +67,31 @@ load_dotenv()
 _settings = get_settings()
 
 # Configuration - use centralized config with env var overrides
-DEBUG = _settings.debug
-AI_TIMEOUT = float(os.getenv('AI_TIMEOUT_SECONDS', str(_settings.ai_timeout)))
-AI_ANALYSIS_TIMEOUT = float(os.getenv('AI_ANALYSIS_TIMEOUT', '180'))  # LLM inference needs time on CPU
+DEBUG = _settings.debug if not _settings.is_production else False
+AI_TIMEOUT = float(os.getenv('AI_TIMEOUT', os.getenv('AI_TIMEOUT_SECONDS', str(_settings.ai_timeout))))
+AI_ANALYSIS_TIMEOUT = float(os.getenv('AI_ANALYSIS_TIMEOUT', str(_settings.ai_analysis_timeout)))  # Use centralized config
 MAX_CONCURRENT_REQUESTS = _settings.max_concurrent_requests
 USE_OPENAI_FALLBACK = os.getenv('USE_OPENAI_FALLBACK', 'false').lower() == 'true'  # Disabled by default
 
 # Configure logging with structured format
 logging.basicConfig(
-    level=logging.INFO if DEBUG else logging.WARNING,
+    level=logging.INFO if not _settings.is_production else logging.WARNING,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 # Performance: Response cache (5 minutes TTL)
 response_cache = TTLCache(maxsize=1000, ttl=300)
+cache_lock = asyncio.Lock()
 
-# Performance: Semaphore for connection pooling
-db_semaphore = asyncio.Semaphore(50)  # Max 50 concurrent DB operations
+# Semaphore for database access to prevent SQLite lock contention
+db_semaphore = asyncio.Semaphore(10)
 
 # Background email sync task
 background_sync_task = None
 oauth_automation_service: OAuthAutomationService = None
 
-# Track last sync timestamp for incremental fetching
+# Track last sync timestamp for incremental fetching (loaded from DB on startup)
 _last_email_sync_time: str = None
 
 async def auto_sync_emails():
@@ -97,6 +102,11 @@ async def auto_sync_emails():
     Uses incremental sync: first run fetches all emails, subsequent runs only fetch
     emails received AFTER the last successful sync (using receivedDateTime filter).
     
+    IDEMPOTENT: Tracks processed email message IDs in `email_processing_log` table.
+    On restart, already-processed emails are automatically skipped.
+    Last sync timestamp is persisted in `sync_metadata` table so incremental
+    sync survives server restarts.
+    
     Authentication Priority:
     1. Client Credentials (Application Permissions) - FULLY AUTOMATIC
     2. Refresh Token (if available from previous delegated auth)
@@ -105,6 +115,15 @@ async def auto_sync_emails():
     global _last_email_sync_time
     # Wait 5 seconds before first sync to allow server to fully start
     await asyncio.sleep(5)
+    
+    # Load last sync time from DB (survives server restarts)
+    try:
+        persisted_time = await asyncio.to_thread(db_service.get_sync_metadata, 'last_email_sync_time')
+        if persisted_time:
+            _last_email_sync_time = persisted_time
+            logger.info(f"📧 Restored last sync time from DB: {_last_email_sync_time}")
+    except Exception as e:
+        logger.warning(f"Could not load sync metadata: {e}")
     
     while True:
         try:
@@ -124,8 +143,9 @@ async def auto_sync_emails():
                     token_data = token_storage.get_token(primary_email)
                     graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=primary_email)
                     
-                    # PRIORITY 1: Try Client Credentials Flow (FULLY AUTOMATIC - no user interaction)
-                    # This uses Application Permissions configured in Azure AD
+                    # Authentication priority:
+                    # 1. Refresh token (delegated auth — user logged in via Settings → Connect Microsoft)
+                    # 2. Client Credentials (application — requires Azure AD mailbox + admin consent)
                     needs_new_token = (
                         not token_data or 
                         token_data.get('is_expired', True) or
@@ -133,14 +153,14 @@ async def auto_sync_emails():
                     )
                     
                     if needs_new_token:
-                        logger.info(f"🔐 Auto-authenticating with Client Credentials for {primary_email}...")
+                        logger.info(f"🔐 Authenticating for {primary_email}...")
                         
-                        # Try refresh token first if available
+                        # PRIORITY 1: Try refresh token (delegated auth — works with /me/ endpoint)
                         refresh_token = token_data.get('refresh_token') if token_data else None
                         auth_success = False
                         
                         if refresh_token:
-                            logger.info("🔄 Attempting token refresh...")
+                            logger.info("🔄 Attempting delegated token refresh (refresh_token)...")
                             refresh_result = await graph_service.refresh_access_token(refresh_token)
                             if refresh_result['status'] == 'success':
                                 token_storage.save_token(
@@ -152,68 +172,61 @@ async def auto_sync_emails():
                                 )
                                 token_data = token_storage.get_token(primary_email)
                                 auth_success = True
-                                logger.info(f"✅ Token refreshed successfully for {primary_email}")
-                        
-                        # If refresh failed or no refresh token, use Client Credentials (AUTOMATIC)
-                        if not auth_success:
-                            logger.info("🤖 Using Client Credentials Flow (automatic authentication)...")
-                            cred_result = await graph_service.authenticate_with_credentials()
-                            
-                            if cred_result['status'] == 'success':
-                                token_storage.save_token(
-                                    email=primary_email,
-                                    access_token=cred_result['access_token'],
-                                    refresh_token=None,  # Client credentials don't use refresh tokens
-                                    expires_in=cred_result['expires_in'],
-                                    auth_type='application'
-                                )
-                                token_data = token_storage.get_token(primary_email)
-                                logger.info(f"✅ Client Credentials authentication successful for {primary_email}")
+                                logger.info(f"✅ Delegated token refreshed for {primary_email} — using /me/ endpoint")
                             else:
-                                error_msg = cred_result.get('error', 'Unknown error')
-                                logger.warning(f"⚠️ Client Credentials failed: {error_msg}")
-                                
-                                # Provide helpful setup instructions
-                                if 'unauthorized' in str(error_msg).lower() or 'consent' in str(error_msg).lower():
-                                    logger.info("📋 To enable FULLY AUTOMATIC authentication:")
-                                    logger.info("   1. Go to Azure Portal → App Registrations → Your App")
-                                    logger.info("   2. API Permissions → Add Permission → Microsoft Graph")
-                                    logger.info("   3. Application Permissions → Mail.Read, Mail.ReadBasic")
-                                    logger.info("   4. Click 'Grant admin consent' (requires admin)")
-                                    logger.info("   Once configured, authentication will be fully automatic!")
+                                logger.warning(f"⚠️ Refresh token failed: {refresh_result.get('error', 'unknown')}")
+                        
+                        # PRIORITY 2: No refresh token available — user must authenticate via frontend
+                        # NOTE: Client Credentials Flow only works with Azure AD mailboxes.
+                        # Our email (hr@effortz.com) uses delegated auth with refresh tokens.
+                        # User must authenticate ONCE via frontend, then auto-refresh works forever.
+                        if not auth_success and not refresh_token:
+                            logger.info("=" * 60)
+                            logger.info("📋 EMAIL SYNC REQUIRES ONE-TIME MICROSOFT OAUTH LOGIN")
+                            logger.info("=" * 60)
+                            logger.info(f"   1. Open: {os.getenv('CORS_ORIGINS', 'https://efforts-recruitment.web.app')}")
+                            logger.info("   2. Go to: Settings → Email Integration")
+                            logger.info("   3. Click: Connect Microsoft Account")
+                            logger.info("   4. Sign in with your Microsoft/Outlook account")
+                            logger.info("   → After this ONE-TIME login, auto-refresh works FOREVER")
+                            logger.info("=" * 60)
+                        elif not auth_success and refresh_token:
+                            # Refresh failed but we have a refresh_token — DON'T try client_credentials
+                            # because it would overwrite the delegated token + refresh_token
+                            logger.warning(f"⚠️ Refresh token failed for {primary_email}. User needs to re-authenticate via Settings.")
+                            logger.info("📋 Re-authenticate: Settings → Email Integration → Connect Microsoft Account")
                     
                     # Use the token if we have a valid one
                     if token_data and token_data.get('access_token') and not token_data.get('is_expired', True):
                         logger.info(f"🔐 Using OAuth2 ({token_data.get('auth_type', 'unknown')}) for {primary_email}...")
                         
                         graph_service.access_token = token_data['access_token']
-                        graph_service.auth_type = token_data.get('auth_type', 'application')
+                        graph_service.auth_type = token_data.get('auth_type', 'delegated')
                         graph_service.token_expiry = token_data.get('expires_at_dt', datetime.now() + timedelta(hours=1))
                         
-                        # Check if database is empty - if empty, fetch ALL emails
-                        candidate_count = await asyncio.to_thread(
-                            lambda: db_service.get_total_candidates()
-                        )
-                        is_first_sync = (candidate_count == 0 and _last_email_sync_time is None)
+                        # ===== FETCH ALL EMAILS — rely on is_email_processed for dedup =====
+                        # We always fetch ALL inbox emails. The email_processing_log table
+                        # tracks which message IDs have been processed, so already-handled
+                        # emails are skipped instantly (just a DB lookup). This ensures:
+                        #   - Old unprocessed emails are always retried
+                        #   - No emails are missed due to date filters
+                        #   - Restarts don't lose track of what was processed
                         
-                        # Build incremental filter for Graph API
-                        filter_query = None
-                        if not is_first_sync and _last_email_sync_time:
-                            filter_query = f"receivedDateTime gt {_last_email_sync_time}"
-                            logger.info(f"📧 Incremental sync - fetching emails after {_last_email_sync_time}...")
-                        else:
-                            logger.info(f"📧 {'Initial setup - fetching ALL emails...' if is_first_sync else 'Full sync...'}")
+                        processed_count_before = await asyncio.to_thread(
+                            lambda: db_service.get_processed_email_count()
+                        )
+                        
+                        logger.info(f"📧 Fetching ALL inbox emails (already processed: {processed_count_before})...")
                         
                         # Record sync start time (ISO 8601 format for Graph API)
                         sync_start_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
                         
-                        # Fetch emails - incremental when possible
-                        fetch_top = 100000 if is_first_sync else 500
+                        # Fetch ALL emails — no date filter
                         result = await graph_service.get_messages(
                             folder='inbox', 
-                            top=fetch_top,
-                            fetch_all=is_first_sync,
-                            filter_query=filter_query
+                            top=100000,
+                            fetch_all=True,
+                            filter_query=None
                         )
                     
                         if result['status'] == 'success':
@@ -226,6 +239,11 @@ async def auto_sync_emails():
                             async def process_graph_message(msg):
                                 nonlocal new_count
                                 try:
+                                    # ------ DEDUP: skip emails already processed ------
+                                    msg_id = msg.get('id', '') or msg.get('internetMessageId', '')
+                                    if msg_id and await asyncio.to_thread(db_service.is_email_processed, msg_id):
+                                        return  # already handled — skip entirely
+
                                     # Convert Graph API message to candidate format
                                     sender = msg.get('from', {}).get('emailAddress', {})
                                     sender_email = sender.get('address', '')
@@ -268,21 +286,25 @@ async def auto_sync_emails():
                                     if not candidate or not candidate.get('email'):
                                         return
                                     
-                                    # Check if exists
+                                    # Check if candidate already exists in DB
                                     existing = await asyncio.to_thread(db_service.get_candidate_by_email, candidate['email'])
                                     
                                     needs_ai = False
                                     if not existing:
                                         needs_ai = True
                                         new_count += 1
-                                    elif not existing.get('ai_analysis') and existing.get('matchScore', 0) <= 0:
-                                        needs_ai = True
+                                    else:
+                                        # Returning candidate — smart-merge new info
+                                        candidate = db_service.smart_merge_candidate(existing, candidate)
+                                        # Only re-run AI if we never scored them properly
+                                        if (not existing.get('ai_analysis')
+                                                and (existing.get('matchScore') or existing.get('match_score') or 0) <= 0):
+                                            needs_ai = True
                                     
                                     # AI processing - use resume text OR email summary
                                     analysis_text = candidate.get('resume_text') or candidate.get('summary', '')
-                                    # Store resume text for future AI chat access
                                     if analysis_text:
-                                        candidate['resume_text'] = analysis_text[:10000]
+                                        candidate['resume_text'] = analysis_text[:5000]
                                     
                                     if needs_ai and analysis_text and len(analysis_text) > 20:
                                         try:
@@ -290,8 +312,9 @@ async def auto_sync_emails():
                                                 ai_service.analyze_candidate(analysis_text),
                                                 timeout=AI_ANALYSIS_TIMEOUT
                                             )
-                                            if ai_analysis and ai_analysis.get('quality_score'):
+                                            if ai_analysis and ai_analysis.get('quality_score') is not None and ai_analysis.get('quality_score') > 0:
                                                 # Map quality_score to matchScore for database
+                                                # Email-parsed values take priority over LLM for contact info
                                                 candidate.update({
                                                     'job_category': ai_analysis.get('job_category', 'General'),
                                                     'matchScore': ai_analysis.get('quality_score', 50),
@@ -299,9 +322,9 @@ async def auto_sync_emails():
                                                     'skills': ai_analysis.get('skills', candidate.get('skills', [])),
                                                     'experience': ai_analysis.get('experience', candidate.get('experience', 0)),
                                                     'education': ai_analysis.get('education', []),
-                                                    'phone': ai_analysis.get('phone') or candidate.get('phone', ''),
-                                                    'location': ai_analysis.get('location') or candidate.get('location', ''),
-                                                    'linkedin': ai_analysis.get('linkedin') or candidate.get('linkedin', ''),
+                                                    'phone': candidate.get('phone') or ai_analysis.get('phone', ''),
+                                                    'location': candidate.get('location') or ai_analysis.get('location', ''),
+                                                    'linkedin': candidate.get('linkedin') or ai_analysis.get('linkedin', ''),
                                                     'certifications': ai_analysis.get('certifications', []),
                                                     'languages': ai_analysis.get('languages', []),
                                                     'work_history': ai_analysis.get('work_history', []),
@@ -311,8 +334,19 @@ async def auto_sync_emails():
                                                 candidate['status'] = 'Strong' if score >= 70 else ('Partial' if score >= 40 else 'Reject')
                                                 logger.info(f"✅ AI scored {candidate.get('name')}: {score}%")
                                         except Exception as ai_err:
-                                            logger.warning(f"AI analysis failed: {str(ai_err)[:100]}")
-                                            candidate['matchScore'] = 45
+                                            logger.warning(f"AI analysis failed ({type(ai_err).__name__}): {str(ai_err)[:100]}")
+                                            # Calculate score from already-extracted candidate data instead of hardcoding
+                                            skills = candidate.get('skills', [])
+                                            exp = candidate.get('experience', 0)
+                                            if skills or exp:
+                                                fallback_score = 35.0
+                                                fallback_score += min(30, len(skills) * 2.5 + (10 if skills else 0))
+                                                if exp:
+                                                    fallback_score += min(20, 6 + exp * 2)
+                                                candidate['matchScore'] = min(90, round(fallback_score, 1))
+                                                logger.info(f"📊 Fallback score for {candidate.get('name')}: {candidate['matchScore']}% (from {len(skills)} skills, {exp}yr exp)")
+                                            else:
+                                                candidate['matchScore'] = 45
                                     
                                     # Save to database
                                     if existing:
@@ -320,18 +354,68 @@ async def auto_sync_emails():
                                     else:
                                         await asyncio.to_thread(db_service.insert_candidate, candidate)
                                     
+                                    # ------ Mark email as processed so we skip it next sync ------
+                                    if msg_id:
+                                        action = 'updated' if existing else 'inserted'
+                                        try:
+                                            await asyncio.to_thread(
+                                                db_service.mark_email_processed,
+                                                msg_id,
+                                                candidate.get('id', ''),
+                                                action
+                                            )
+                                        except Exception:
+                                            pass  # non-critical
+
                                     # Save AI analysis if we got one
                                     if needs_ai and analysis_text and len(analysis_text) > 20:
                                         try:
+                                            # Generate strengths/gaps from candidate data
+                                            _skills = candidate.get('skills', [])
+                                            _exp = candidate.get('experience', 0) or 0
+                                            _edu = candidate.get('education', [])
+                                            _certs = candidate.get('certifications', [])
+                                            _score = candidate.get('matchScore', 50)
+                                            
+                                            _strengths = []
+                                            if len(_skills) >= 8:
+                                                _strengths.append(f"Strong technical profile with {len(_skills)} identified skills")
+                                            elif len(_skills) >= 4:
+                                                _strengths.append(f"Solid skill set covering {len(_skills)} technologies")
+                                            if _exp >= 5:
+                                                _strengths.append(f"{_exp} years of professional experience")
+                                            elif _exp >= 2:
+                                                _strengths.append(f"{_exp} years of relevant experience")
+                                            if _edu and len(_edu) > 0:
+                                                _strengths.append("Formal educational background documented")
+                                            if _certs and len(_certs) > 0:
+                                                _strengths.append(f"Certified: {', '.join(_certs[:3])}")
+                                            if _score >= 70:
+                                                _strengths.append("High overall profile quality")
+                                            
+                                            _gaps = []
+                                            if len(_skills) < 3:
+                                                _gaps.append("Limited skills information available")
+                                            if _exp == 0:
+                                                _gaps.append("Experience level not specified")
+                                            if not _edu or len(_edu) == 0:
+                                                _gaps.append("No education details provided")
+                                            if not candidate.get('phone'):
+                                                _gaps.append("No phone number on file")
+                                            if not candidate.get('linkedin'):
+                                                _gaps.append("No LinkedIn profile available")
+                                            
                                             await asyncio.to_thread(
                                                 db_service.save_ai_analysis,
                                                 candidate.get('id', ''),
                                                 {
-                                                    'score': candidate.get('matchScore', 50),
+                                                    'score': _score,
                                                     'job_category': candidate.get('job_category', 'General'),
                                                     'summary': candidate.get('summary', ''),
-                                                    'skills': candidate.get('skills', []),
-                                                    'experience': candidate.get('experience', 0),
+                                                    'skills': _skills,
+                                                    'experience': _exp,
+                                                    'strengths': _strengths[:5],
+                                                    'gaps': _gaps[:5],
                                                     'analyzed_at': datetime.now().isoformat(),
                                                 }
                                             )
@@ -341,8 +425,10 @@ async def auto_sync_emails():
                                 except Exception as e:
                                     logger.warning(f"Error processing message: {str(e)[:100]}")
                             
-                            # Process in batches (smaller batch for SQLite safety)
-                            BATCH_SIZE = 3
+                            # Process sequentially to avoid overwhelming Ollama LLM
+                            # (concurrent LLM requests cause TimeoutError on single-GPU setups)
+                            BATCH_SIZE = 1
+                            skipped_count = 0
                             for i in range(0, len(messages), BATCH_SIZE):
                                 batch = messages[i:i+BATCH_SIZE]
                                 await asyncio.gather(*[process_graph_message(msg) for msg in batch], return_exceptions=True)
@@ -350,10 +436,16 @@ async def auto_sync_emails():
                                 if len(messages) > 50 and (i + BATCH_SIZE) % 50 == 0:
                                     logger.info(f"📊 Progress: {min(i+BATCH_SIZE, len(messages))}/{len(messages)} emails processed...")
                             
-                            logger.info(f"✅ OAuth2 sync: {primary_email} - {len(messages)} emails, {new_count} new candidates")
+                            total_processed_after = await asyncio.to_thread(lambda: db_service.get_processed_email_count())
+                            newly_processed = total_processed_after - processed_count_before
+                            logger.info(f"✅ OAuth2 sync: {primary_email} - {len(messages)} total emails, {new_count} new candidates, {newly_processed} newly processed, {len(messages) - newly_processed} already processed")
                             oauth2_success = True
-                            # Update last sync time on success
+                            # Update last sync time on success — persist to DB
                             _last_email_sync_time = sync_start_time
+                            try:
+                                await asyncio.to_thread(db_service.set_sync_metadata, 'last_email_sync_time', sync_start_time)
+                            except Exception:
+                                pass  # non-critical
                             
                         else:
                             error_msg = result.get('message', 'Unknown error')
@@ -373,18 +465,36 @@ async def auto_sync_emails():
                                 logger.info("   5. Click: 'Grant admin consent for [Organization]'")
                                 logger.info("")
                                 logger.info("OPTION 2: Authenticate ONCE via frontend (if no Azure admin access)")
-                                logger.info("   1. Open: http://localhost:3000")
+                                logger.info(f"   1. Open: {os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')[0]}")
                                 logger.info("   2. Go to: Settings → Email Integration")
                                 logger.info("   3. Click: Connect Microsoft Account")
                                 logger.info("   4. Sign in and grant permissions")
                                 logger.info("   → After this ONE-TIME login, auto-refresh works FOREVER")
                                 logger.info("")
                                 logger.info("=" * 70)
-                                # Clear the application token since it won't work
-                                token_storage.delete_token(primary_email)
+                                # Only clear application tokens — NEVER delete delegated tokens with refresh_token
+                                if token_data.get('auth_type') == 'application' and not token_data.get('refresh_token'):
+                                    token_storage.delete_token(primary_email)
+                            elif '400' in str(error_msg) or '404' in str(error_msg):
+                                logger.info("="  * 70)
+                                logger.info("📋 EMAIL SYNC REQUIRES MICROSOFT OAUTH LOGIN")
+                                logger.info("="  * 70)
+                                logger.info("")
+                                logger.info("The email address may not be an Azure AD mailbox.")
+                                logger.info("To sync emails, complete the ONE-TIME Microsoft OAuth login:")
+                                logger.info(f"   1. Open: {os.getenv('CORS_ORIGINS', 'http://localhost:3000').split(',')[0]}")
+                                logger.info("   2. Go to: Settings → Email Integration")
+                                logger.info("   3. Click: Connect Microsoft Account")
+                                logger.info("   4. Sign in with your Microsoft/Outlook account")
+                                logger.info("   → After this ONE-TIME login, auto-refresh works FOREVER")
+                                logger.info("="  * 70)
+                                # Only clear application tokens — NEVER delete delegated tokens with refresh_token
+                                if token_data.get('auth_type') == 'application' and not token_data.get('refresh_token'):
+                                    token_storage.delete_token(primary_email)
                             elif 'token' in error_msg.lower() or 'unauthorized' in error_msg.lower():
-                                logger.info("🔄 Clearing invalid token...")
-                                token_storage.delete_token(primary_email)
+                                logger.info("🔄 Token issue detected - only clearing application tokens")
+                                if token_data.get('auth_type') == 'application' and not token_data.get('refresh_token'):
+                                    token_storage.delete_token(primary_email)
                     
                 except Exception as oauth_error:
                     logger.error(f"OAuth2 sync error: {str(oauth_error)}")
@@ -408,18 +518,12 @@ async def auto_sync_emails():
                             logger.warning(f"⚠️ Skipping {account.name} - connection failed, continuing to next account...")
                             continue
                         
-                        # Check if database is empty - if so, process ALL emails initially
-                        candidate_count = await asyncio.to_thread(
-                            lambda: db_service.get_total_candidates()
-                        )
-                        process_all = (candidate_count == 0)
+                        # Always process ALL emails — rely on is_email_processed for dedup
+                        logger.info(f"📥 Fetching ALL emails for {account.name} (dedup via processing log)...")
                         
-                        if process_all:
-                            logger.info(f"📥 First sync for {account.name} - processing entire inbox...")
-                        
-                        # Fetch emails (ALL if first time, UNSEEN afterwards)
+                        # Fetch ALL emails
                         emails = await asyncio.wait_for(
-                            scraper_service.fetch_emails(mail, process_all=process_all),
+                            scraper_service.fetch_emails(mail, process_all=True),
                             timeout=600  # 10 minute max for fetching large inboxes
                         )
                         new_count = 0
@@ -428,6 +532,11 @@ async def auto_sync_emails():
                         async def process_single_candidate(email_data):
                             nonlocal new_count
                             try:
+                                # ------ IDEMPOTENT: skip already-processed emails ------
+                                msg_id = email_data.get('message_id', '')
+                                if msg_id and await asyncio.to_thread(db_service.is_email_processed, msg_id):
+                                    return  # already handled — skip
+                                
                                 candidate = await scraper_service.extract_candidate_from_email(email_data)
                                 if not candidate or not candidate.get('email'):
                                     return
@@ -458,9 +567,10 @@ async def auto_sync_emails():
                                                 ai_service.analyze_candidate(analysis_text),
                                                 timeout=AI_ANALYSIS_TIMEOUT
                                             )
-                                            if ai_analysis and ai_analysis.get('quality_score'):
+                                            if ai_analysis and ai_analysis.get('quality_score') is not None and ai_analysis.get('quality_score') > 0:
                                                 # Map quality_score to matchScore for database
                                                 score = ai_analysis.get('quality_score', 50)
+                                                # Email-parsed values take priority over LLM for contact info
                                                 candidate.update({
                                                     'job_category': ai_analysis.get('job_category', 'General'),
                                                     'matchScore': score,
@@ -468,31 +578,57 @@ async def auto_sync_emails():
                                                     'skills': ai_analysis.get('skills', candidate.get('skills', [])),
                                                     'experience': ai_analysis.get('experience', candidate.get('experience', 0)),
                                                     'education': ai_analysis.get('education', []),
-                                                    'phone': ai_analysis.get('phone') or candidate.get('phone', ''),
-                                                    'location': ai_analysis.get('location') or candidate.get('location', ''),
-                                                    'linkedin': ai_analysis.get('linkedin') or candidate.get('linkedin', ''),
+                                                    'phone': candidate.get('phone') or ai_analysis.get('phone', ''),
+                                                    'location': candidate.get('location') or ai_analysis.get('location', ''),
+                                                    'linkedin': candidate.get('linkedin') or ai_analysis.get('linkedin', ''),
                                                     'certifications': ai_analysis.get('certifications', []),
                                                     'languages': ai_analysis.get('languages', []),
                                                     'status': 'Strong' if score >= 70 else ('Partial' if score >= 40 else 'Reject'),
                                                 })
                                                 logger.info(f"✅ AI scored {candidate.get('name')}: {score}%")
                                     except asyncio.TimeoutError:
-                                        logger.warning(f"AI timeout for {candidate.get('name')} - using default score")
-                                        candidate['matchScore'] = 45
+                                        logger.warning(f"AI timeout for {candidate.get('name')} - using fallback score")
+                                        skills = candidate.get('skills', [])
+                                        exp = candidate.get('experience', 0)
+                                        if skills or exp:
+                                            fallback_score = 35.0 + min(30, len(skills) * 2.5 + (10 if skills else 0)) + (min(20, 6 + exp * 2) if exp else 0)
+                                            candidate['matchScore'] = min(90, round(fallback_score, 1))
+                                        else:
+                                            candidate['matchScore'] = 45
                                     except Exception as ai_err:
-                                        logger.warning(f"AI error: {str(ai_err)}")
-                                        candidate['matchScore'] = 45
+                                        logger.warning(f"AI error ({type(ai_err).__name__}): {str(ai_err)[:100]}")
+                                        skills = candidate.get('skills', [])
+                                        exp = candidate.get('experience', 0)
+                                        if skills or exp:
+                                            fallback_score = 35.0 + min(30, len(skills) * 2.5 + (10 if skills else 0)) + (min(20, 6 + exp * 2) if exp else 0)
+                                            candidate['matchScore'] = min(90, round(fallback_score, 1))
+                                        else:
+                                            candidate['matchScore'] = 45
                                 
                                 # Save to database
                                 if existing:
                                     await asyncio.to_thread(db_service.update_candidate, candidate)
                                 else:
                                     await asyncio.to_thread(db_service.insert_candidate, candidate)
+                                
+                                # ------ Mark email as processed for idempotent sync ------
+                                if msg_id:
+                                    try:
+                                        action = 'updated' if existing else 'inserted'
+                                        await asyncio.to_thread(
+                                            db_service.mark_email_processed,
+                                            msg_id,
+                                            candidate.get('id', ''),
+                                            action
+                                        )
+                                    except Exception:
+                                        pass  # non-critical
+                                        
                             except Exception as e:
                                 logger.warning(f"Error processing candidate: {str(e)[:100]}")
                         
-                        # Process in batches of 10 for optimal performance
-                        BATCH_SIZE = 10
+                        # Process sequentially to avoid overwhelming Ollama LLM
+                        BATCH_SIZE = 1
                         for i in range(0, len(emails), BATCH_SIZE):
                             batch = emails[i:i+BATCH_SIZE]
                             await asyncio.gather(*[process_single_candidate(email_data) for email_data in batch], return_exceptions=True)
@@ -507,8 +643,8 @@ async def auto_sync_emails():
                     except Exception as e:
                         logger.error(f"Auto-sync error for {account.name}: {str(e)}")
             
-            # Wait for next sync - default 2 minutes for near-real-time new email detection
-            sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', '2')) * 60
+            # Wait for next sync - uses config value (default 15 min), env var overrides
+            sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', str(_settings.sync_interval_minutes))) * 60
             logger.info(f"⏰ Auto-sync: Next sync in {sync_interval//60} minutes")
             await asyncio.sleep(sync_interval)
             
@@ -516,32 +652,482 @@ async def auto_sync_emails():
             logger.error(f"Auto-sync background task error: {str(e)}")
             await asyncio.sleep(60)
 
+# =====================================================
+# GCS Database Persistence (prevents data loss on redeploy)
+# =====================================================
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "efforts-recruitment-data")
+GCS_DB_BLOB_PATH = "db/recruitment.db"
+LOCAL_DB_PATH = "./recruitment.db"
+_db_backup_task = None
+
+def _get_gcs_bucket():
+    """Get GCS bucket client (lazy import to avoid startup failure if not installed)"""
+    try:
+        from google.cloud import storage
+        client = storage.Client()
+        return client.bucket(GCS_BUCKET_NAME)
+    except Exception as e:
+        logger.warning(f"⚠️ GCS: Could not connect to bucket '{GCS_BUCKET_NAME}': {e}")
+        return None
+
+def restore_db_from_gcs():
+    """Download recruitment.db from GCS on startup (blocking, runs before DB init)"""
+    if not _settings.is_production:
+        print("💾 GCS restore: Skipped (not production)", flush=True)
+        return False
+    try:
+        bucket = _get_gcs_bucket()
+        if not bucket:
+            print("💾 GCS restore: No bucket connection", flush=True)
+            return False
+        blob = bucket.blob(GCS_DB_BLOB_PATH)
+        if not blob.exists():
+            print("💾 GCS restore: No database backup found — starting fresh", flush=True)
+            return False
+        
+        # 🔒 CRITICAL: Close ALL existing SQLite connections and remove WAL/SHM files
+        # before downloading. Module-level init may have created stale WAL files
+        # that interfere with the downloaded backup.
+        import sqlite3 as _sqlite3
+        try:
+            _db_svc = get_db_service()
+            with _db_svc.connection_lock:
+                while _db_svc._connection_pool:
+                    _old = _db_svc._connection_pool.pop()
+                    try:
+                        _old.close()
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        
+        # Remove stale WAL/SHM files
+        for suffix in ['-wal', '-shm']:
+            wal_path = LOCAL_DB_PATH + suffix
+            if os.path.exists(wal_path):
+                try:
+                    os.remove(wal_path)
+                except Exception:
+                    pass
+        
+        # Remove existing DB file before download
+        if os.path.exists(LOCAL_DB_PATH):
+            try:
+                os.remove(LOCAL_DB_PATH)
+            except Exception:
+                pass
+        
+        blob.download_to_filename(LOCAL_DB_PATH)
+        size_mb = os.path.getsize(LOCAL_DB_PATH) / (1024 * 1024)
+        # Validate: check if DB actually has candidates (not just an empty schema)
+        import sqlite3
+        try:
+            conn = sqlite3.connect(LOCAL_DB_PATH)
+            count = conn.execute("SELECT COUNT(*) FROM candidates").fetchone()[0]
+            conn.close()
+            if count == 0:
+                print(f"⚠️ GCS restore: DB downloaded ({size_mb:.1f} MB) but has 0 candidates — will try JSON seed", flush=True)
+                os.remove(LOCAL_DB_PATH)
+                return False
+            print(f"✅ GCS restore: Downloaded recruitment.db ({size_mb:.1f} MB, {count} candidates)", flush=True)
+            return True
+        except Exception as db_err:
+            print(f"⚠️ GCS restore: DB downloaded but validation failed: {db_err} — will try JSON seed", flush=True)
+            if os.path.exists(LOCAL_DB_PATH):
+                os.remove(LOCAL_DB_PATH)
+            return False
+    except Exception as e:
+        print(f"❌ GCS restore failed: {e}", flush=True)
+        return False
+
+def backup_db_to_gcs():
+    """Upload recruitment.db to GCS (blocking)"""
+    try:
+        if not os.path.exists(LOCAL_DB_PATH):
+            logger.warning("💾 GCS backup: No local database file found")
+            return False
+        bucket = _get_gcs_bucket()
+        if not bucket:
+            return False
+        # Upload main backup
+        blob = bucket.blob(GCS_DB_BLOB_PATH)
+        blob.upload_from_filename(LOCAL_DB_PATH, timeout=120)
+        size_mb = os.path.getsize(LOCAL_DB_PATH) / (1024 * 1024)
+        # Also keep a timestamped snapshot (last 3 rotated)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        snapshot_blob = bucket.blob(f"db/snapshots/recruitment_{ts}.db")
+        snapshot_blob.upload_from_filename(LOCAL_DB_PATH, timeout=120)
+        logger.info(f"✅ GCS backup: Uploaded recruitment.db ({size_mb:.1f} MB) + snapshot")
+        # Clean old snapshots — keep last 3
+        try:
+            blobs = list(bucket.list_blobs(prefix="db/snapshots/"))
+            if len(blobs) > 3:
+                blobs.sort(key=lambda b: b.name)
+                for old_blob in blobs[:-3]:
+                    old_blob.delete()
+                    logger.info(f"🗑️ GCS: Deleted old snapshot {old_blob.name}")
+        except Exception:
+            pass
+        return True
+    except Exception as e:
+        logger.error(f"❌ GCS backup failed: {e}")
+        return False
+
+async def periodic_db_backup(interval_minutes: int = 30):
+    """Periodically backup the database to GCS"""
+    while True:
+        try:
+            await asyncio.sleep(interval_minutes * 60)
+            loop = asyncio.get_event_loop()
+            await loop.run_in_executor(None, backup_db_to_gcs)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"Periodic DB backup error: {e}")
+            await asyncio.sleep(60)
+
+async def _background_seed_from_json():
+    """Seed database from JSON backup in GCS — runs as background task after server starts"""
+    await asyncio.sleep(2)  # Let server finish startup first
+    try:
+        print("💾 [BG] Starting JSON seed from GCS...", flush=True)
+        import sqlite3, hashlib as _hashlib
+        
+        bucket = _get_gcs_bucket()
+        if not bucket:
+            print("⚠️ [BG] No GCS bucket available", flush=True)
+            return
+        
+        json_blob = bucket.blob("backups/candidates_backup.json")
+        if not json_blob.exists():
+            print("⚠️ [BG] No JSON backup found in GCS", flush=True)
+            return
+        
+        import tempfile
+        tmp_path = tempfile.mktemp(suffix='.json')
+        
+        # Download in executor to not block event loop
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, json_blob.download_to_filename, tmp_path)
+        file_size = os.path.getsize(tmp_path) / (1024*1024)
+        print(f"💾 [BG] Downloaded JSON backup ({file_size:.1f} MB)", flush=True)
+        
+        def _do_seed():
+            with open(tmp_path, 'r', encoding='utf-8-sig') as jf:
+                backup_data = json.load(jf)
+            
+            candidates = backup_data.get('candidates', [])
+            print(f"💾 [BG] Found {len(candidates)} candidates", flush=True)
+            
+            if not candidates:
+                return 0
+            
+            db_path = LOCAL_DB_PATH
+            conn = sqlite3.connect(db_path)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            conn.execute("""
+                CREATE TABLE IF NOT EXISTS candidates (
+                    id TEXT PRIMARY KEY, email TEXT UNIQUE NOT NULL, email_hash TEXT UNIQUE NOT NULL,
+                    name TEXT NOT NULL, phone TEXT, location TEXT, skills TEXT, experience INTEGER,
+                    education TEXT, summary TEXT, work_history TEXT, linkedin TEXT,
+                    status TEXT DEFAULT 'New', match_score REAL DEFAULT 0.0,
+                    job_category TEXT, job_subcategory TEXT, applied_date TEXT, last_updated TEXT,
+                    raw_email_subject TEXT, is_active INTEGER DEFAULT 1,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    ai_analysis TEXT, certifications TEXT, languages TEXT, resume_text TEXT,
+                    strengths TEXT, gaps TEXT
+                )
+            """)
+            conn.commit()
+            
+            count = 0
+            errors = 0
+            for c in candidates:
+                try:
+                    email = c.get('email', '')
+                    if not email:
+                        continue
+                    email_hash = _hashlib.sha256(email.lower().strip().encode()).hexdigest()
+                    education_data = c.get('education', '[]')
+                    if isinstance(education_data, list):
+                        education_data = json.dumps(education_data)
+                    conn.execute("""
+                        INSERT OR REPLACE INTO candidates (
+                            id, email, email_hash, name, phone, location, 
+                            skills, experience, education, summary, work_history,
+                            linkedin, status, match_score, job_category, job_subcategory,
+                            applied_date, last_updated, raw_email_subject,
+                            certifications, languages, resume_text
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        c.get('id', email_hash[:12]),
+                        email, email_hash,
+                        c.get('name', 'Unknown'),
+                        c.get('phone', ''),
+                        c.get('location', ''),
+                        json.dumps(c.get('skills', [])),
+                        c.get('experience', 0),
+                        education_data,
+                        c.get('summary', ''),
+                        json.dumps(c.get('workHistory', c.get('work_history', []))),
+                        c.get('linkedin', ''),
+                        c.get('status', 'New'),
+                        c.get('matchScore', c.get('match_score', 45)),
+                        c.get('job_category', c.get('jobCategory', 'General')),
+                        c.get('job_subcategory', c.get('jobSubcategory', '')),
+                        c.get('appliedDate', c.get('applied_date', '')),
+                        c.get('last_updated', ''),
+                        c.get('raw_email_subject', ''),
+                        json.dumps(c.get('certifications', [])),
+                        json.dumps(c.get('languages', [])),
+                        c.get('resume_text', ''),
+                    ))
+                    count += 1
+                    if count % 1000 == 0:
+                        conn.commit()
+                        print(f"💾 [BG] Progress: {count}/{len(candidates)}...", flush=True)
+                except Exception as ins_err:
+                    errors += 1
+                    if errors <= 3:
+                        print(f"⚠️ [BG] Insert error #{errors}: {ins_err}", flush=True)
+            
+            conn.commit()
+            conn.close()
+            print(f"✅ [BG] Seeded {count}/{len(candidates)} candidates ({errors} errors)", flush=True)
+            return count
+        
+        count = await loop.run_in_executor(None, _do_seed)
+        os.unlink(tmp_path)
+        
+        if count and count > 0:
+            await loop.run_in_executor(None, backup_db_to_gcs)
+            print(f"✅ [BG] Database backed up to GCS", flush=True)
+    except Exception as e:
+        print(f"❌ [BG] JSON seed failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+
+
+async def _background_process_candidates(interval_minutes: int = 30):
+    """
+    Background task that periodically processes unprocessed candidates.
+    - Checks for candidates with missing ai_analysis or low match_score
+    - Processes them in batches using Gemini (cost-effective)
+    - Runs every 30 minutes to catch new email imports
+    """
+    await asyncio.sleep(180)  # Wait 3 min for startup + model loading to complete
+    
+    while True:
+        try:
+            loop = asyncio.get_event_loop()
+            
+            # Find candidates needing processing
+            def _get_unprocessed():
+                import sqlite3
+                db_path = os.path.join(os.getcwd(), 'recruitment.db')
+                if not os.path.exists(db_path):
+                    return []
+                conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, name, skills, experience, education, location, 
+                           match_score, job_category, summary, resume_text
+                    FROM candidates 
+                    WHERE is_active = 1 
+                    AND (ai_analysis IS NULL OR ai_analysis = '' OR match_score = 0 OR match_score IS NULL)
+                    ORDER BY created_at DESC
+                    LIMIT 50
+                """)
+                rows = [dict(r) for r in cursor.fetchall()]
+                conn.close()
+                return rows
+            
+            unprocessed = await loop.run_in_executor(None, _get_unprocessed)
+            
+            if unprocessed:
+                logger.info(f"🔄 [BG-Process] Found {len(unprocessed)} unprocessed candidates, starting batch AI analysis...")
+                
+                ai_service = None
+                try:
+                    gemini_svc = get_gemini_service()
+                    if gemini_svc and gemini_svc.available:
+                        ai_service = gemini_svc
+                except:
+                    pass
+                
+                if ai_service:
+                    processed = 0
+                    for candidate in unprocessed:
+                        try:
+                            # Build analysis text from available data
+                            resume_text = candidate.get('resume_text', '') or ''
+                            skills = candidate.get('skills', '') or ''
+                            summary = candidate.get('summary', '') or ''
+                            
+                            analysis_text = resume_text[:3000] if resume_text else f"Name: {candidate.get('name', '')}\nSkills: {skills}\nExperience: {candidate.get('experience', '')}\nLocation: {candidate.get('location', '')}\nSummary: {summary}"
+                            
+                            if len(analysis_text.strip()) < 20:
+                                continue
+                            
+                            # Run AI analysis with timeout
+                            result = await asyncio.wait_for(
+                                ai_service.analyze_candidate(analysis_text),
+                                timeout=60
+                            )
+                            
+                            if result:
+                                # Update candidate in DB
+                                def _update_candidate(cid, ai_result):
+                                    import sqlite3, json as _json
+                                    db_path = os.path.join(os.getcwd(), 'recruitment.db')
+                                    conn = sqlite3.connect(db_path)
+                                    
+                                    # Safely extract score — handle None, missing keys, quality_score alias
+                                    raw_score = ai_result.get('match_score') or ai_result.get('quality_score') or ai_result.get('overall_score')
+                                    try:
+                                        match_score = int(float(raw_score)) if raw_score is not None else 50
+                                    except (ValueError, TypeError):
+                                        match_score = 50
+                                    job_category = ai_result.get('job_category', ai_result.get('category', '')) or ''
+                                    
+                                    conn.execute("""
+                                        UPDATE candidates 
+                                        SET ai_analysis = ?, match_score = CASE WHEN ? > 0 THEN ? ELSE match_score END,
+                                            job_category = CASE WHEN ? != '' THEN ? ELSE job_category END
+                                        WHERE id = ?
+                                    """, [_json.dumps(ai_result), match_score, match_score, 
+                                          job_category, job_category, cid])
+                                    conn.commit()
+                                    conn.close()
+                                
+                                await loop.run_in_executor(None, _update_candidate, candidate['id'], result)
+                                processed += 1
+                            
+                            # Small delay to avoid API rate limits (cost optimization)
+                            await asyncio.sleep(2)
+                            
+                        except asyncio.TimeoutError:
+                            logger.warning(f"⏳ [BG-Process] Timeout processing {candidate.get('name', 'unknown')}")
+                        except Exception as proc_err:
+                            logger.warning(f"⚠️ [BG-Process] Error processing {candidate.get('name', 'unknown')}: {proc_err}")
+                    
+                    if processed > 0:
+                        logger.info(f"✅ [BG-Process] Processed {processed}/{len(unprocessed)} candidates")
+                        # Backup to GCS after processing
+                        try:
+                            await loop.run_in_executor(None, backup_db_to_gcs)
+                        except:
+                            pass
+                else:
+                    logger.info("⚠️ [BG-Process] No AI service available for processing")
+            
+            # Wait before next check
+            await asyncio.sleep(interval_minutes * 60)
+            
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            logger.error(f"❌ [BG-Process] Error: {e}")
+            await asyncio.sleep(300)  # Wait 5 min on error
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Lifespan event handler for startup/shutdown"""
-    global background_sync_task, oauth_automation_service
+    global background_sync_task, oauth_automation_service, _db_backup_task
     
     # Startup
-    logger.info("🚀 AI Recruitment Platform Starting...")
-    logger.info(f"Environment: {'Development' if DEBUG else 'Production'}")
+    print("🚀 AI Recruitment Platform Starting...", flush=True)
     
-    if ai_service == local_ai_service:
-        logger.info("🤖 AI: Local AI (FREE - Zero API costs)")
-    else:
-        logger.info(f"🤖 AI: OpenAI ({openai_service.model if openai_service else 'N/A'})")
+    # 🔒 CRITICAL: Restore database from GCS BEFORE anything else
+    db_restored = restore_db_from_gcs()
     
-    # Initialize Local LLM (Ollama)
+    # 🔒 CRITICAL: After GCS restore, the SQLite file was replaced on disk.
+    # Existing connections (from module-level init) still point to the OLD file descriptor.
+    # We must close them so new connections open the restored file.
+    if db_restored:
+        try:
+            _db_svc = get_db_service()
+            with _db_svc.connection_lock:
+                while _db_svc._connection_pool:
+                    _old_conn = _db_svc._connection_pool.pop()
+                    try:
+                        _old_conn.close()
+                    except Exception:
+                        pass
+            print("✅ Cleared stale DB connections after GCS restore", flush=True)
+        except Exception as _pool_err:
+            print(f"⚠️ Pool clear: {_pool_err}", flush=True)
+    
+    # 🔒 CRITICAL: Re-initialize all tables after GCS restore
+    # GCS backup may not have email_processing_log, sync_metadata, etc.
     try:
-        from services.llm_service import get_llm_service
-        llm_svc = await get_llm_service()
-        if llm_svc.available:
-            logger.info(f"🧠 LLM: Ollama connected! Primary: {llm_svc.primary_model}")
-            logger.info(f"   Models: {', '.join(llm_svc.available_models)}")
-        else:
-            logger.warning("⚠️ LLM: Ollama not available - using sentence-transformers + regex")
-            logger.warning("   Install: https://ollama.com/download → ollama pull qwen2.5:7b")
-    except Exception as e:
-        logger.warning(f"⚠️ LLM initialization skipped: {e}")
+        _db_svc = get_db_service()
+        _db_svc.init_database()
+        print("✅ Database tables initialized (email_processing_log, sync_metadata, etc.)", flush=True)
+    except Exception as _init_err:
+        print(f"⚠️ DB table init: {_init_err}", flush=True)
+    
+    # 🔒 CRITICAL: Ensure users table exists AFTER GCS restore
+    # GCS backup only has candidates, so users table may be missing
+    try:
+        _auth_svc = get_auth_service()
+        _auth_svc._init_users_table()
+        # Seed default admin user if no users exist
+        try:
+            with _auth_svc._get_connection() as _conn:
+                _cur = _conn.cursor()
+                _cur.execute("SELECT COUNT(*) FROM users")
+                _user_count = _cur.fetchone()[0]
+                if _user_count == 0:
+                    _auth_svc.register(
+                        email="admin@developer.com",
+                        password="Maahir@12",
+                        name="Admin User",
+                        username="admin"
+                    )
+                    print("✅ Default admin user created", flush=True)
+                else:
+                    print(f"✅ Users table OK ({_user_count} users)", flush=True)
+        except Exception as _user_err:
+            print(f"⚠️ Admin user seed: {_user_err}", flush=True)
+    except Exception as _tbl_err:
+        print(f"⚠️ Users table init failed: {_tbl_err}", flush=True)
+    
+    # If no DB was restored, schedule background seeding (don't block startup)
+    _seed_needed = not db_restored and _settings.is_production
+    
+    print(f"Environment: {'Production' if _settings.is_production else 'Development'}", flush=True)
+    logger.info(f"🤖 AI Tier Mode: {_settings.ai_tier_mode} → {' → '.join(_settings.ai_tier_order)}")
+    
+    # Initialize Gemini (if configured)
+    if gemini_service and gemini_service.available:
+        logger.info(f"🌟 Gemini: {gemini_service.model_name} (ready)")
+    elif _settings.gemini_api_key:
+        logger.warning("⚠️ Gemini: API key set but service failed to initialize")
+    else:
+        logger.info("💡 Gemini: not configured (set GEMINI_API_KEY for cloud deployment)")
+    
+    # Initialize Local LLM (Ollama) — SKIP in production (Cloud Run has no Ollama)
+    if _settings.is_production:
+        logger.info("🧠 LLM: Ollama SKIPPED (production — using Gemini + sentence-transformers)")
+    else:
+        try:
+            from services.llm_service import get_llm_service
+            llm_svc = await get_llm_service()
+            if llm_svc.available:
+                logger.info(f"🧠 LLM: Ollama connected! Primary: {llm_svc.primary_model}")
+                logger.info(f"   Models: {', '.join(llm_svc.available_models)}")
+            else:
+                logger.warning("⚠️ LLM: Ollama not available - using sentence-transformers + regex")
+                logger.warning("   Install: https://ollama.com/download → ollama pull qwen2.5:7b")
+        except Exception as e:
+            logger.warning(f"⚠️ LLM initialization skipped: {e}")
+    
+    # OpenAI status
+    if fallback_service:
+        logger.info(f"💳 OpenAI: {openai_service.model} (fallback ready)")
     
     logger.info(f"📧 Email Accounts: {len(scraper_service.email_accounts)} configured")
     logger.info(f"⚡ Max Concurrent Requests: {MAX_CONCURRENT_REQUESTS}")
@@ -590,13 +1176,10 @@ async def lifespan(app: FastAPI):
     if auto_sync_enabled and (has_email_accounts or oauth_automation_service.is_configured):
         logger.info(f"🔄 Auto-sync: ENABLED (every {os.getenv('SYNC_INTERVAL_MINUTES', '15')} minutes)")
         
-        # Start OAuth automation service in background (handles token refresh and scheduling)
-        asyncio.create_task(oauth_automation_service.start())
-        logger.info("🔐 OAuth Automation Service: Starting in background")
-        
-        # Also start legacy auto-sync for IMAP fallback
+        # Start single unified email sync loop (cost-optimized: no duplicate loops)
         try:
             background_sync_task = asyncio.create_task(auto_sync_emails())
+            logger.info("🔐 Email sync: Single unified loop started")
         except Exception as e:
             logger.error(f"Failed to start auto-sync: {str(e)}")
     else:
@@ -614,18 +1197,41 @@ async def lifespan(app: FastAPI):
         )
         logger.info("📬 Advanced services initialized (ML, Analytics, Campaigns, SMS)")
         
-        # Start campaign processor background task
-        campaign_task = asyncio.create_task(run_campaign_processor(interval_seconds=300))
-        logger.info("📬 Campaign processor started (checks every 5 minutes)")
+        # Start campaign processor background task (every 1 hour to reduce costs)
+        campaign_task = asyncio.create_task(run_campaign_processor(interval_seconds=3600))
+        logger.info("📬 Campaign processor started (checks every 60 minutes)")
     except Exception as e:
         logger.warning(f"⚠️ Advanced services initialization warning: {str(e)}")
     
-    logger.info("✅ Server ready - Visit /api/docs for API documentation" if DEBUG else "✅ Server ready")
+    # Start periodic GCS database backup (every 30 minutes in production)
+    if _settings.is_production:
+        _db_backup_task = asyncio.create_task(periodic_db_backup(interval_minutes=120))
+        logger.info("💾 GCS auto-backup: Enabled (every 2 hours)")
+    
+    # Launch background seed from JSON if no DB was restored
+    _seed_task = None
+    if _seed_needed:
+        print("💾 Launching background JSON seed task...", flush=True)
+        _seed_task = asyncio.create_task(_background_seed_from_json())
+    
+    # Launch background candidate processing (every 30 min for faster catch-up)
+    _process_task = asyncio.create_task(_background_process_candidates(interval_minutes=30))
+    logger.info("🧠 Background candidate processing: Enabled (every 30 minutes)")
+    
+    print("✅ Server ready", flush=True)
     
     yield
     
     # Shutdown
     logger.info("🛑 Shutting down gracefully...")
+    
+    # 🔒 CRITICAL: Backup database to GCS before shutdown
+    if _settings.is_production:
+        logger.info("💾 Saving database to GCS before shutdown...")
+        backup_db_to_gcs()
+    
+    if _db_backup_task:
+        _db_backup_task.cancel()
     if oauth_automation_service:
         await oauth_automation_service.stop()
     if background_sync_task:
@@ -641,14 +1247,39 @@ app = FastAPI(
     lifespan=lifespan
 )
 
+# Global exception handler — sanitize error details in production
+
+@app.exception_handler(HTTPException)
+async def sanitized_http_exception_handler(request, exc: HTTPException):
+    """Sanitize error messages to prevent internal info leakage in production"""
+    detail = exc.detail
+    if not DEBUG and exc.status_code >= 500:
+        # In production, log the real error but return a generic message
+        logger.error(f"HTTP {exc.status_code} on {request.url.path}: {detail}")
+        detail = "An internal error occurred. Please try again later."
+    return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request, exc: Exception):
+    """Catch unhandled exceptions — never leak stack traces"""
+    logger.error(f"Unhandled exception on {request.url.path}: {type(exc).__name__}: {str(exc)}")
+    detail = f"Internal server error: {type(exc).__name__}" if DEBUG else "An internal error occurred. Please try again later."
+    return JSONResponse(status_code=500, content={"detail": detail})
+
 # Include advanced AI services router
 app.include_router(advanced_router)
 
-# CORS configuration - from centralized config with env override
+# CORS configuration - allow all origins in production for Cloud Run flexibility
 allowed_origins = os.getenv('CORS_ORIGINS', _settings.cors_origins).split(',')
-# Ensure localhost:3001 is included for dev
-if 'http://localhost:3001' not in allowed_origins:
-    allowed_origins.append('http://localhost:3001')
+# In production, always allow the Cloud Run frontend
+if _settings.is_production:
+    # In production, only allow the specific frontend origin
+    _cors_origin = os.getenv('CORS_ORIGINS', 'https://efforts-recruitment.web.app')
+    allowed_origins = [o.strip() for o in _cors_origin.split(',') if o.strip()]
+else:
+    for dev_origin in ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173']:
+        if dev_origin not in allowed_origins:
+            allowed_origins.append(dev_origin)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
@@ -659,23 +1290,9 @@ app.add_middleware(
 )
 logger.info(f"✅ CORS enabled for: {', '.join(allowed_origins)}")
 
-# Performance: Rate limiting and request tracking
-from collections import defaultdict
-from datetime import datetime as dt
-
-request_counts = defaultdict(int)
-last_reset = dt.now()
-
-async def rate_limit_check():
-    """Simple in-memory rate limiting"""
-    global last_reset, request_counts
-    now = dt.now()
-    if (now - last_reset).seconds > 60:
-        request_counts.clear()
-        last_reset = now
-    
-    # Allow up to 1000 requests per minute per IP (adjust as needed)
-    # For production, use Redis or proper rate limiting middleware
+# Set up security, caching, rate-limiting, and timing middleware
+from core.middleware import setup_middleware
+setup_middleware(app)
 
 @app.middleware("http")
 async def add_performance_headers(request, call_next):
@@ -691,14 +1308,27 @@ resume_parser = ResumeParser()
 matching_engine = MatchingEngine()
 email_parser = EmailParser()
 
-# AI Services - Local AI is PRIMARY (zero cost, emergency fallback to OpenAI)
+# AI Services - Smart Tier Selection
+# Priority: auto-detect based on environment (production → Gemini, local → Ollama)
 local_ai_service = get_local_ai_service()
-openai_service = get_openai_service()  # Emergency fallback only
+openai_service = get_openai_service() if USE_OPENAI_FALLBACK else None
+gemini_service = get_gemini_service()  # Initialized if GEMINI_API_KEY is set
 
-# ALWAYS use Local AI as primary
-# OpenAI is only used as emergency fallback when Local AI fails
+# ALWAYS use Local AI (sentence-transformers) as the base embedding/analysis service
 ai_service = local_ai_service
-fallback_service = openai_service  # Emergency backup
+fallback_service = openai_service if USE_OPENAI_FALLBACK else None  # Only if explicitly enabled
+
+# Log AI tier configuration
+_ai_tier = _settings.ai_tier_order
+logger.info(f"🤖 AI Tier Order: {' → '.join(_ai_tier)}")
+if gemini_service and gemini_service.available:
+    logger.info(f"   ✅ Gemini: {gemini_service.model_name} (ready)")
+else:
+    logger.info(f"   ⚠️ Gemini: not configured (set GEMINI_API_KEY)")
+if openai_service:
+    logger.info(f"   ✅ OpenAI: {openai_service.model} (ready)")
+else:
+    logger.info(f"   ⚠️ OpenAI: not configured")
 
 scraper_service = get_scraper_service()
 db_service = get_db_service()
@@ -730,6 +1360,10 @@ async def root():
         ]
     }
 
+@app.get("/version")
+async def version():
+    return {"version": "v16-stable", "deployed": "2026-02-17"}
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint for monitoring"""
@@ -753,6 +1387,20 @@ async def health_check():
             "ai_embedding_cache": len(ai_service.embedding_cache) if hasattr(ai_service, 'embedding_cache') else 0
         }
     }
+
+@app.post("/api/admin/backup-db")
+async def manual_backup_db(auth=Depends(require_auth)):
+    """Manually trigger a database backup to GCS"""
+    try:
+        loop = asyncio.get_event_loop()
+        success = await loop.run_in_executor(None, backup_db_to_gcs)
+        if success:
+            size_mb = os.path.getsize(LOCAL_DB_PATH) / (1024 * 1024) if os.path.exists(LOCAL_DB_PATH) else 0
+            return {"status": "success", "message": f"Database backed up to GCS ({size_mb:.1f} MB)"}
+        else:
+            return {"status": "warning", "message": "Backup skipped — GCS not available or no database file"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Backup failed: {str(e)}")
 
 
 # ============================================
@@ -796,7 +1444,7 @@ async def get_setup_status():
         "sms_enabled": bool(os.getenv('TWILIO_ACCOUNT_SID')),
         "calendar_enabled": bool(os.getenv('GOOGLE_CLIENT_ID') or os.getenv('CALENDLY_API_KEY')),
         "redis_enabled": bool(os.getenv('REDIS_URL')),
-        "version": os.getenv('APP_VERSION', '4.0.0')
+        "version": os.getenv('APP_VERSION', '4.1.0')
     }
 
 
@@ -827,7 +1475,7 @@ async def get_setup_instructions():
                 "required": False,
                 "steps": [
                     "1. Go to portal.azure.com → Azure Active Directory → App registrations",
-                    "2. Click 'New registration' with name 'AI Recruiter'",
+                    "2. Click 'New registration' with name 'Efforts Solutions AI Recruiter'",
                     "3. Set redirect URI: http://localhost:5173/email (Web type)",
                     "4. Go to 'Certificates & secrets' → New client secret",
                     "5. Go to 'API permissions' → Add: Mail.Read, Mail.ReadWrite, User.Read, offline_access",
@@ -977,7 +1625,7 @@ async def test_service_connection(service: str):
 
 # Email Scraper Control Endpoints
 @app.post("/api/scraper/start")
-async def start_scraper(background_tasks: BackgroundTasks):
+async def start_scraper(background_tasks: BackgroundTasks, current_user: dict = Depends(require_auth)):
     """Start the email scraper manually"""
     global scraper_task
     if scraper_task and not scraper_task.done():
@@ -987,7 +1635,7 @@ async def start_scraper(background_tasks: BackgroundTasks):
     return {"message": "Email scraper started"}
 
 @app.post("/api/scraper/stop")
-async def stop_scraper():
+async def stop_scraper(current_user: dict = Depends(require_auth)):
     """Stop the email scraper"""
     global scraper_task
     if scraper_task:
@@ -1017,7 +1665,7 @@ async def scraper_status():
     }
 
 @app.post("/api/scraper/process-now")
-async def trigger_manual_scrape(process_all: bool = True):
+async def trigger_manual_scrape(process_all: bool = False, current_user: dict = Depends(require_auth)):
     """
     Manually trigger email scraping
     process_all=True: Process ALL historical emails (default)
@@ -1083,7 +1731,7 @@ async def trigger_manual_scrape(process_all: bool = True):
 
 
 @app.post("/api/candidates/reset-and-reparse")
-async def reset_and_reparse_all_emails():
+async def reset_and_reparse_all_emails(current_user: dict = Depends(require_auth)):
     """
     Clear all candidates and re-parse ALL emails from inbox.
     Parses email body, attached resumes, and uses Local AI (with OpenAI fallback) for analysis.
@@ -1280,7 +1928,7 @@ async def get_candidates(
         
         # Use connection pooling
         async with db_semaphore:
-            candidates = await asyncio.to_thread(
+            candidates, total_count = await asyncio.to_thread(
                 db_service.get_candidates_paginated,
                 page,
                 limit,
@@ -1291,7 +1939,7 @@ async def get_candidates(
             "page": page,
             "limit": limit,
             "candidates": candidates,
-            "total": len(candidates),
+            "total": total_count,
             "from_cache": False
         }
         
@@ -1320,7 +1968,7 @@ async def get_new_candidates(since: str):
 
 
 @app.post("/api/candidates/reprocess-scores")
-async def reprocess_candidate_scores():
+async def reprocess_candidate_scores(current_user: dict = Depends(require_auth)):
     """
     Reprocess all candidates with match_score = 0 to calculate proper AI scores.
     This fixes candidates that were imported before AI scoring was properly connected.
@@ -1376,7 +2024,7 @@ async def reprocess_candidate_scores():
                     try:
                         ai_analysis = await asyncio.wait_for(
                             ai_service.analyze_candidate(resume_text),
-                            timeout=5
+                            timeout=AI_ANALYSIS_TIMEOUT
                         )
                         new_score = ai_analysis.get('quality_score', 50)
                         new_category = ai_analysis.get('job_category', 'General')
@@ -1457,7 +2105,7 @@ async def download_resume(candidate_id: str):
 
 # Resume upload endpoints
 @app.post("/api/resumes/upload")
-async def upload_resume(file: UploadFile = File(...)):
+async def upload_resume(file: UploadFile = File(...), current_user: dict = Depends(require_auth)):
     """
     Upload a single resume file (PDF or DOCX).
     Parses the resume, runs AI analysis, and saves the candidate.
@@ -1601,7 +2249,7 @@ async def upload_resume(file: UploadFile = File(...)):
 
 
 @app.post("/api/resumes/upload-multiple")
-async def upload_multiple_resumes(files: List[UploadFile] = File(...)):
+async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_user: dict = Depends(require_auth)):
     """
     Upload multiple resume files at once.
     Returns results for each file.
@@ -1796,21 +2444,22 @@ async def get_candidate_deep_analysis(candidate_id: str):
         except Exception as llm_err:
             logger.warning(f"LLM deep analysis failed: {llm_err}")
         
-        # TIER 2: Try OpenAI — Emergency fallback
-        from services.openai_service import get_openai_service
-        openai_svc = get_openai_service()
-        
-        if openai_svc:
-            analysis = openai_svc.analyze_candidate_deep(candidate)
-            result = {
-                "candidate_id": candidate_id,
-                "candidate_name": candidate['name'],
-                **analysis,
-                "ai_powered": True,
-                "source": "openai_fallback"
-            }
-            response_cache[cache_key] = result
-            return result
+        # TIER 2: Try OpenAI — Emergency fallback (only if explicitly enabled)
+        if USE_OPENAI_FALLBACK:
+            from services.openai_service import get_openai_service
+            openai_svc = get_openai_service()
+            
+            if openai_svc:
+                analysis = openai_svc.analyze_candidate_deep(candidate)
+                result = {
+                    "candidate_id": candidate_id,
+                    "candidate_name": candidate['name'],
+                    **analysis,
+                    "ai_powered": True,
+                    "source": "openai_fallback"
+                }
+                response_cache[cache_key] = result
+                return result
         
         # TIER 3: Basic fallback — No AI
         return {
@@ -1883,12 +2532,9 @@ async def match_candidates_to_job_file(
         if not jd_text or len(jd_text.strip()) < 30:
             raise HTTPException(400, "Could not extract sufficient text from the job description. Please provide a file or paste the JD text.")
 
-        # Forward to existing match-job logic
-        from starlette.datastructures import FormData
-        # Reuse the same logic
+        # Search the ENTIRE database for comprehensive matching
         candidates_list = await asyncio.to_thread(
-            db_service.get_candidates_paginated,
-            1, 500, {}  # Get up to 500 candidates
+            db_service.get_all_candidates_for_matching, {}
         )
 
         if not candidates_list:
@@ -1908,9 +2554,47 @@ async def match_candidates_to_job_file(
             llm_svc = await get_llm_service()
             if llm_svc and llm_svc.available:
                 ranked = await llm_svc.rank_candidates_for_job(candidates_list, jd_text, top_n)
+                # Format for frontend: {rank, candidate_id, candidate_name, job_fit_score, ..., candidate_data}
+                formatted_rankings = []
+                for i, r in enumerate(ranked):
+                    c = r.get('candidate', {})
+                    m = r.get('match', {})
+                    formatted_rankings.append({
+                        'rank': i + 1,
+                        'candidate_id': c.get('id', ''),
+                        'candidate_name': c.get('name', 'Unknown'),
+                        'job_fit_score': round(m.get('match_score', r.get('score', 50)), 1),
+                        'overall_fit': m.get('overall_fit', 'Review Needed'),
+                        'matched_skills': m.get('matched_skills', []),
+                        'missing_skills': m.get('missing_skills', []),
+                        'strengths': m.get('strengths', []),
+                        'gaps': m.get('gaps', []),
+                        'recommendation': m.get('recommendation', 'Review candidate profile'),
+                        'match_reasons': m.get('strengths', [])[:3] or [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
+                        'interview_questions': m.get('interview_questions', []),
+                        'candidate_data': {
+                            'id': c.get('id', ''),
+                            'name': c.get('name', 'Unknown'),
+                            'email': c.get('email', ''),
+                            'phone': c.get('phone', ''),
+                            'location': c.get('location', ''),
+                            'experience': c.get('experience', 0),
+                            'matchScore': round(m.get('match_score', r.get('score', 50)), 1),
+                            'status': c.get('status', 'New'),
+                            'skills': c.get('skills', []),
+                            'summary': c.get('summary', ''),
+                            'jobCategory': c.get('jobCategory', c.get('job_category', 'General')),
+                            'jobSubcategory': c.get('jobSubcategory', c.get('job_subcategory', '')),
+                            'education': c.get('education', []),
+                            'workHistory': c.get('workHistory', c.get('work_history', [])),
+                            'hasResume': bool(c.get('resume_text') or c.get('hasResume')),
+                            'appliedDate': c.get('appliedDate', c.get('applied_date', '')),
+                            'isShortlisted': c.get('status', '') == 'Shortlisted',
+                        },
+                    })
                 return {
                     "status": "success",
-                    "rankings": ranked,
+                    "rankings": formatted_rankings,
                     "ai_powered": True,
                     "source": "local_llm",
                     "total_candidates_searched": total_searched,
@@ -1919,17 +2603,18 @@ async def match_candidates_to_job_file(
         except Exception as llm_err:
             logger.warning(f"LLM job file matching failed: {llm_err}")
 
-        # TIER 2: Try OpenAI
-        from services.openai_service import get_openai_service
-        openai_svc = get_openai_service()
+        # TIER 2: Try OpenAI (only if explicitly enabled)
+        if USE_OPENAI_FALLBACK:
+            from services.openai_service import get_openai_service
+            openai_svc = get_openai_service()
 
-        if openai_svc:
-            result = openai_svc.match_candidates_to_job(jd_text, candidates_list, top_n)
-            result['ai_powered'] = True
-            result['source'] = 'openai_fallback'
-            result['total_candidates_searched'] = total_searched
-            result['jd_text_length'] = len(jd_text)
-            return result
+            if openai_svc:
+                result = openai_svc.match_candidates_to_job(jd_text, candidates_list, top_n)
+                result['ai_powered'] = True
+                result['source'] = 'openai_fallback'
+                result['total_candidates_searched'] = total_searched
+                result['jd_text_length'] = len(jd_text)
+                return result
 
         # TIER 3: Enhanced keyword matching fallback
         jd_lower = jd_text.lower()
@@ -1973,7 +2658,8 @@ async def match_candidates_to_job_file(
 async def match_candidates_to_job_description(
     job_description: str = Body(..., embed=True),
     top_n: int = Body(10, embed=True),
-    min_experience: Optional[int] = Body(None, embed=True)
+    min_experience: Optional[int] = Body(None, embed=True),
+    current_user: dict = Depends(require_auth)
 ):
     """
     Match candidates from database against a job description.
@@ -1988,14 +2674,13 @@ async def match_candidates_to_job_description(
         if not job_description or len(job_description.strip()) < 50:
             raise HTTPException(400, "Job description must be at least 50 characters")
         
-        # Get candidates from database
+        # Search the ENTIRE database for comprehensive matching
         filters = {}
         if min_experience:
             filters['min_experience'] = min_experience
         
         candidates = await asyncio.to_thread(
-            db_service.get_candidates_paginated,
-            1, 100, filters  # Get up to 100 candidates for matching
+            db_service.get_all_candidates_for_matching, filters
         )
         
         if not candidates:
@@ -2012,9 +2697,47 @@ async def match_candidates_to_job_description(
             llm_svc = await get_llm_service()
             if llm_svc and llm_svc.available:
                 ranked = await llm_svc.rank_candidates_for_job(candidates, job_description, top_n)
+                # Format for frontend: {rank, candidate_id, candidate_name, job_fit_score, ..., candidate_data}
+                formatted_rankings = []
+                for i, r in enumerate(ranked):
+                    c = r.get('candidate', {})
+                    m = r.get('match', {})
+                    formatted_rankings.append({
+                        'rank': i + 1,
+                        'candidate_id': c.get('id', ''),
+                        'candidate_name': c.get('name', 'Unknown'),
+                        'job_fit_score': round(m.get('match_score', r.get('score', 50)), 1),
+                        'overall_fit': m.get('overall_fit', 'Review Needed'),
+                        'matched_skills': m.get('matched_skills', []),
+                        'missing_skills': m.get('missing_skills', []),
+                        'strengths': m.get('strengths', []),
+                        'gaps': m.get('gaps', []),
+                        'recommendation': m.get('recommendation', 'Review candidate profile'),
+                        'match_reasons': m.get('strengths', [])[:3] or [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
+                        'interview_questions': m.get('interview_questions', []),
+                        'candidate_data': {
+                            'id': c.get('id', ''),
+                            'name': c.get('name', 'Unknown'),
+                            'email': c.get('email', ''),
+                            'phone': c.get('phone', ''),
+                            'location': c.get('location', ''),
+                            'experience': c.get('experience', 0),
+                            'matchScore': round(m.get('match_score', r.get('score', 50)), 1),
+                            'status': c.get('status', 'New'),
+                            'skills': c.get('skills', []),
+                            'summary': c.get('summary', ''),
+                            'jobCategory': c.get('jobCategory', c.get('job_category', 'General')),
+                            'jobSubcategory': c.get('jobSubcategory', c.get('job_subcategory', '')),
+                            'education': c.get('education', []),
+                            'workHistory': c.get('workHistory', c.get('work_history', [])),
+                            'hasResume': bool(c.get('resume_text') or c.get('hasResume')),
+                            'appliedDate': c.get('appliedDate', c.get('applied_date', '')),
+                            'isShortlisted': c.get('status', '') == 'Shortlisted',
+                        },
+                    })
                 return {
                     "status": "success",
-                    "rankings": ranked,
+                    "rankings": formatted_rankings,
                     "ai_powered": True,
                     "source": "local_llm",
                     "total_candidates_searched": len(candidates)
@@ -2022,16 +2745,17 @@ async def match_candidates_to_job_description(
         except Exception as llm_err:
             logger.warning(f"LLM job matching failed: {llm_err}")
         
-        # TIER 2: Try OpenAI — Emergency fallback
-        from services.openai_service import get_openai_service
-        openai_svc = get_openai_service()
-        
-        if openai_svc:
-            result = openai_svc.match_candidates_to_job(job_description, candidates, top_n)
-            result['ai_powered'] = True
-            result['source'] = 'openai_fallback'
-            result['total_candidates_searched'] = len(candidates)
-            return result
+        # TIER 2: Try OpenAI (only if explicitly enabled)
+        if USE_OPENAI_FALLBACK:
+            from services.openai_service import get_openai_service
+            openai_svc = get_openai_service()
+            
+            if openai_svc:
+                result = openai_svc.match_candidates_to_job(job_description, candidates, top_n)
+                result['ai_powered'] = True
+                result['source'] = 'openai_fallback'
+                result['total_candidates_searched'] = len(candidates)
+                return result
         
         # TIER 3: Basic keyword matching fallback
         jd_lower = job_description.lower()
@@ -2109,15 +2833,16 @@ async def compare_candidates(
         except Exception as llm_err:
             logger.warning(f"LLM comparison failed: {llm_err}")
         
-        # TIER 2: OpenAI fallback
-        from services.openai_service import get_openai_service
-        openai_svc = get_openai_service()
-        
-        if openai_svc:
-            result = openai_svc.generate_candidate_comparison(candidates, job_description)
-            result['ai_powered'] = True
-            result['source'] = 'openai_fallback'
-            return result
+        # TIER 2: OpenAI fallback (only if explicitly enabled)
+        if USE_OPENAI_FALLBACK:
+            from services.openai_service import get_openai_service
+            openai_svc = get_openai_service()
+            
+            if openai_svc:
+                result = openai_svc.generate_candidate_comparison(candidates, job_description)
+                result['ai_powered'] = True
+                result['source'] = 'openai_fallback'
+                return result
         
         # TIER 3: Rule-based fallback
         candidates.sort(key=lambda x: x.get('matchScore', 0), reverse=True)
@@ -2154,12 +2879,14 @@ async def compare_candidates(
 @app.post("/api/ai/chat")
 async def ai_chat(
     message: str = Body(..., embed=True),
-    include_candidates: bool = Body(True, embed=True)
+    include_candidates: bool = Body(True, embed=True),
+    conversation_history: list = Body([], embed=True),
+    current_user: dict = Depends(require_auth)
 ):
     """
-    Enhanced AI chat with database context.
-    3-TIER FALLBACK: LLM → OpenAI → Rule-based
-    Passes full candidate data for detailed, context-rich responses.
+    Enhanced AI chat with full database search capability.
+    2-STAGE APPROACH: Pre-filter candidates by query relevance → Send subset to AI
+    3-TIER FALLBACK: Gemini → OpenAI → Rule-based
     """
     try:
         candidates_data = None
@@ -2167,9 +2894,9 @@ async def ai_chat(
         
         if include_candidates:
             stats = await asyncio.to_thread(db_service.get_statistics)
-            # Fetch more candidates (up to 200) for comprehensive AI context
+            # Get ALL candidates with FULL data (work_history, certs, languages) for AI intelligence
             candidates = await asyncio.to_thread(
-                db_service.get_candidates_paginated, 1, 200, {}
+                db_service.get_candidates_for_ai, {}, 10000
             )
             candidates_data = candidates
             context = {
@@ -2180,12 +2907,47 @@ async def ai_chat(
                 'categories': stats.get('categories', {}),
             }
         
-        # TIER 1: Try Local LLM (Ollama) — Free
+        # TIER 1: Try Gemini (cost-effective, always available in production)
         try:
+            from services.gemini_service import get_gemini_service
+            gemini_svc = get_gemini_service()
+            if gemini_svc and gemini_svc.available:
+                gemini_result = await asyncio.wait_for(
+                    gemini_svc.chat(message, context, conversation_history=conversation_history, candidates_data=candidates_data, return_candidates=True),
+                    timeout=AI_TIMEOUT
+                )
+                if gemini_result:
+                    # gemini_result is a dict with 'response' and 'candidates_lookup'
+                    if isinstance(gemini_result, dict):
+                        return {
+                            "response": gemini_result.get('response', ''),
+                            "ai_powered": True,
+                            "context_included": include_candidates,
+                            "source": "gemini",
+                            "candidates_lookup": gemini_result.get('candidates_lookup', [])
+                        }
+                    else:
+                        # Fallback for string response
+                        return {
+                            "response": gemini_result,
+                            "ai_powered": True,
+                            "context_included": include_candidates,
+                            "source": "gemini"
+                        }
+            else:
+                logger.warning(f"Gemini unavailable: svc={gemini_svc is not None}, available={getattr(gemini_svc, 'available', 'N/A')}")
+        except asyncio.TimeoutError:
+            logger.warning(f"Gemini chat timeout (>{AI_TIMEOUT}s)")
+        except Exception as gemini_err:
+            logger.warning(f"Gemini chat error: {gemini_err}")
+        
+        # TIER 2: Try Local LLM (Ollama) — Free, for local dev
+        try:
+            from services.llm_service import get_llm_service
             llm_svc = await get_llm_service()
             if llm_svc and llm_svc.available:
                 llm_response = await asyncio.wait_for(
-                    llm_svc.chat(message, context, candidates_data=candidates_data),
+                    llm_svc.chat(message, context, conversation_history=conversation_history, candidates_data=candidates_data),
                     timeout=AI_TIMEOUT
                 )
                 if llm_response:
@@ -2200,23 +2962,24 @@ async def ai_chat(
         except Exception as llm_err:
             logger.warning(f"LLM chat error: {llm_err}")
         
-        # TIER 2: OpenAI fallback
-        from services.openai_service import get_openai_service
-        openai_svc = get_openai_service()
+        # TIER 3: OpenAI fallback
+        if USE_OPENAI_FALLBACK:
+            from services.openai_service import get_openai_service
+            openai_svc = get_openai_service()
+            
+            if openai_svc:
+                response = openai_svc.chat_with_ai(message, context, candidates_data)
+                return {
+                    "response": response,
+                    "ai_powered": True,
+                    "context_included": include_candidates,
+                    "source": "openai_fallback"
+                }
         
-        if openai_svc:
-            response = openai_svc.chat_with_ai(message, context, candidates_data)
-            return {
-                "response": response,
-                "ai_powered": True,
-                "context_included": include_candidates,
-                "source": "openai_fallback"
-            }
-        
-        # TIER 3: Rule-based fallback
+        # TIER 4: Rule-based fallback
         return {
-            "response": f"I understand you're asking about: '{message}'. Currently both LLM and OpenAI are unavailable. "
-                        f"Please configure Ollama or OPENAI_API_KEY for intelligent responses.",
+            "response": f"I understand you're asking about: '{message}'. Currently no AI services are available. "
+                        f"Please configure GEMINI_API_KEY, Ollama, or OPENAI_API_KEY for intelligent responses.",
             "ai_powered": False,
             "context_included": include_candidates,
             "source": "rule_based"
@@ -2343,7 +3106,8 @@ async def get_stats():
 @app.post("/api/candidates/batch")
 async def batch_import_candidates(
     candidates: List[dict],
-    analyze: bool = True
+    analyze: bool = True,
+    current_user: dict = Depends(require_auth)
 ):
     """
     Import candidates in batch for high-volume scenarios (10,000+)
@@ -2372,15 +3136,16 @@ async def batch_import_candidates(
                                 timeout=AI_ANALYSIS_TIMEOUT
                             )
                             if analysis:
+                                # Email-parsed values take priority over LLM for contact info
                                 batch_candidates[idx].update({
                                     'job_category': analysis.get('job_category', 'General'),
                                     'matchScore': analysis.get('quality_score', 50),
                                     'skills': analysis.get('skills', []),
                                     'experience': analysis.get('experience', 0),
                                     'education': analysis.get('education', []),
-                                    'phone': analysis.get('phone') or batch_candidates[idx].get('phone', ''),
-                                    'location': analysis.get('location') or batch_candidates[idx].get('location', ''),
-                                    'linkedin': analysis.get('linkedin') or batch_candidates[idx].get('linkedin', ''),
+                                    'phone': batch_candidates[idx].get('phone') or analysis.get('phone', ''),
+                                    'location': batch_candidates[idx].get('location') or analysis.get('location', ''),
+                                    'linkedin': batch_candidates[idx].get('linkedin') or analysis.get('linkedin', ''),
                                 })
                         except Exception as e:
                             logger.warning(f"AI batch analysis failed for item {i+idx}: {str(e)[:50]}")
@@ -2433,7 +3198,7 @@ class LinkedInProfileImport(BaseModel):
     scraped_at: Optional[str] = None
 
 @app.post("/api/candidates/linkedin")
-async def import_linkedin_profile(profile: LinkedInProfileImport):
+async def import_linkedin_profile(profile: LinkedInProfileImport, current_user: dict = Depends(require_auth)):
     """
     Import a candidate from LinkedIn profile scraped by browser extension.
     Analyzes the profile and stores in database.
@@ -2616,7 +3381,7 @@ async def evaluate_candidate(candidate_id: str, job_description_id: str):
 
 # Email integration endpoints
 @app.post("/api/email/connect")
-async def connect_email_account(request: EmailConnectRequest):
+async def connect_email_account(request: EmailConnectRequest, current_user: dict = Depends(require_auth)):
     """
     Connect email account (Gmail, Outlook, Yahoo, etc.)
     Supports OAuth2 and app passwords
@@ -2641,7 +3406,7 @@ async def connect_email_account(request: EmailConnectRequest):
         raise HTTPException(500, f"Error connecting email: {str(e)}")
 
 @app.post("/api/email/sync")
-async def sync_email_applications(request: EmailSyncRequest):
+async def sync_email_applications(request: EmailSyncRequest, current_user: dict = Depends(require_auth)):
     """
     Sync and parse candidate applications from email
     Supports both OAuth2 (Microsoft Graph) and IMAP
@@ -2858,6 +3623,13 @@ async def auto_authenticate():
 
 async def trigger_reset_and_reparse(email_address: str):
     """Background task to sync emails after authentication - INCREMENTAL (no data loss)"""
+    # Prevent concurrent syncs
+    if not hasattr(trigger_reset_and_reparse, '_lock'):
+        trigger_reset_and_reparse._lock = asyncio.Lock()
+    if trigger_reset_and_reparse._lock.locked():
+        logger.info("Sync already in progress, skipping duplicate request")
+        return
+    await trigger_reset_and_reparse._lock.acquire()
     try:
         logger.info("🔄 Auto-triggered email sync after authentication (incremental - keeping existing data)...")
         
@@ -3055,6 +3827,59 @@ async def trigger_reset_and_reparse(email_address: str):
         
     except Exception as e:
         logger.error(f"Error in auto-triggered sync: {str(e)}")
+    finally:
+        if hasattr(trigger_reset_and_reparse, '_lock') and trigger_reset_and_reparse._lock.locked():
+            trigger_reset_and_reparse._lock.release()
+
+@app.get("/api/oauth2/callback")
+async def oauth2_callback_get(code: str = None, error: str = None, error_description: str = None):
+    """
+    Handle OAuth2 GET redirect from Microsoft.
+    Microsoft sends: GET /api/oauth2/callback?code=...&state=...
+    We exchange the code for a token server-side and redirect to the frontend.
+    """
+    frontend_url = os.getenv('CORS_ORIGINS', 'http://localhost:5173').split(',')[0].strip()
+    
+    if error:
+        logger.error(f"OAuth2 redirect error: {error} — {error_description}")
+        return RedirectResponse(url=f"{frontend_url}/email?error={error}")
+    
+    if not code:
+        return RedirectResponse(url=f"{frontend_url}/email?error=no_code")
+    
+    try:
+        client_id = os.getenv('MICROSOFT_CLIENT_ID')
+        client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
+        tenant_id = os.getenv('MICROSOFT_TENANT_ID', 'common')
+        email_address = os.getenv('EMAIL_ADDRESS')
+        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', 'http://localhost:3000/auth/callback')
+        
+        if not all([client_id, client_secret, email_address]):
+            return RedirectResponse(url=f"{frontend_url}/email?error=not_configured")
+        
+        graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id)
+        result = await graph_service.authenticate(code, redirect_uri)
+        
+        if result['status'] == 'success':
+            token_storage = get_token_storage()
+            refresh_token = result.get('refresh_token')
+            token_storage.save_token(
+                email=email_address,
+                access_token=result['access_token'],
+                refresh_token=refresh_token,
+                expires_in=result['expires_in'],
+                auth_type='delegated'
+            )
+            logger.info(f"\u2705 OAuth2 token saved for {email_address} (GET callback)")
+            return RedirectResponse(url=f"{frontend_url}/email?auth=success")
+        else:
+            error_msg = result.get('error', 'unknown')
+            logger.error(f"OAuth2 token exchange failed: {error_msg}")
+            return RedirectResponse(url=f"{frontend_url}/email?error=token_exchange_failed")
+    except Exception as e:
+        logger.error(f"OAuth2 GET callback error: {e}")
+        return RedirectResponse(url=f"{frontend_url}/email?error=server_error")
+
 
 @app.get("/api/email/oauth2/url")
 async def get_oauth2_url_simple():
@@ -3065,7 +3890,7 @@ async def get_oauth2_url_simple():
     try:
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID', 'common')
-        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', 'http://localhost:3000/auth/callback')
+        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', os.getenv('OAUTH_REDIRECT_URI', 'http://localhost:3000/auth/callback'))
         
         if not client_id:
             raise HTTPException(400, "Microsoft OAuth2 not configured. Set MICROSOFT_CLIENT_ID in .env")
@@ -3158,6 +3983,14 @@ async def oauth2_callback(request: OAuth2CallbackRequest):
             
             logger.info(f"✅ OAuth2 token saved for {email_address}")
             
+            # Notify oauth_automation_service to refresh its cached auth status
+            if oauth_automation_service:
+                try:
+                    await oauth_automation_service.check_auth_status()
+                    logger.info("✅ OAuth automation service notified of new token")
+                except Exception as e:
+                    logger.warning(f"⚠️ Could not notify OAuth automation service: {e}")
+            
             return {
                 'status': 'connected',
                 'email': email_address,
@@ -3174,9 +4007,11 @@ async def oauth2_callback(request: OAuth2CallbackRequest):
         raise HTTPException(500, f"Error processing OAuth2 callback: {str(e)}")
 
 @app.post("/api/email/sync-now")
-async def sync_emails_now():
+async def sync_emails_now(current_user: dict = Depends(require_auth)):
     """
-    Trigger immediate email sync using saved OAuth2 token
+    Trigger immediate email sync using saved OAuth2 token.
+    Runs as background task. Requires --no-cpu-throttling on Cloud Run
+    so the async task can execute after the HTTP response is sent.
     """
     try:
         email_address = os.getenv('EMAIL_ADDRESS')
@@ -3191,7 +4026,7 @@ async def sync_emails_now():
         if not token_data:
             raise HTTPException(401, "No OAuth2 token found. Please authenticate first.")
         
-        # Trigger sync in background
+        # Run sync in background (requires --no-cpu-throttling on Cloud Run)
         asyncio.create_task(trigger_reset_and_reparse(email_address))
         
         return {
@@ -3209,22 +4044,36 @@ async def sync_emails_now():
 async def get_sync_status():
     """
     Get current email sync status including last sync time and candidate count.
+    All times are in UTC (ISO 8601 with Z suffix).
     Frontend can poll this to detect new candidates.
     """
     try:
         candidate_count = await asyncio.to_thread(lambda: db_service.get_total_candidates())
-        sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', '2'))
+        sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', '15'))
+        now_utc = datetime.utcnow()
+        next_sync_utc = None
+        if _last_email_sync_time:
+            try:
+                last_dt = datetime.fromisoformat(_last_email_sync_time.replace('Z', '+00:00'))
+                next_dt = last_dt + timedelta(minutes=sync_interval)
+                next_sync_utc = next_dt.strftime('%Y-%m-%dT%H:%M:%SZ')
+            except Exception:
+                next_sync_utc = (now_utc + timedelta(minutes=sync_interval)).strftime('%Y-%m-%dT%H:%M:%SZ')
+        else:
+            next_sync_utc = (now_utc + timedelta(minutes=sync_interval)).strftime('%Y-%m-%dT%H:%M:%SZ')
         return {
             'last_sync_time': _last_email_sync_time,
+            'next_sync_time': next_sync_utc,
             'candidate_count': candidate_count,
             'sync_interval_minutes': sync_interval,
+            'server_time_utc': now_utc.strftime('%Y-%m-%dT%H:%M:%SZ'),
             'status': 'active'
         }
     except Exception as e:
         return {
             'last_sync_time': _last_email_sync_time,
             'candidate_count': 0,
-            'sync_interval_minutes': int(os.getenv('SYNC_INTERVAL_MINUTES', '2')),
+            'sync_interval_minutes': int(os.getenv('SYNC_INTERVAL_MINUTES', '15')),
             'status': 'error',
             'error': str(e)
         }
@@ -3337,6 +4186,12 @@ async def email_webhook(request: Request):
         logger.info(f"📬 Received {len(notifications)} webhook notification(s)")
         
         for notification in notifications:
+            # Validate clientState to prevent forged webhook calls
+            expected_state = os.getenv('WEBHOOK_CLIENT_STATE', 'recruitment-tool-secret')
+            if notification.get('clientState') != expected_state:
+                logger.warning(f"Invalid clientState in webhook notification — ignoring")
+                continue
+            
             resource = notification.get('resource', '')
             change_type = notification.get('changeType', '')
             
@@ -3442,32 +4297,28 @@ async def subscribe_to_email_webhook():
 
 
 @app.post("/api/email/outlook/connect")
-async def connect_outlook(
-    client_id: str,
-    client_secret: str,
-    tenant_id: str,
-    authorization_code: str,
-    redirect_uri: str
-):
+async def connect_outlook(request: Request):
     """
     Connect Microsoft Outlook/Office 365 using Graph API
     Enterprise OAuth2 authentication
     """
     try:
+        body = await request.json()
         graph_service = MicrosoftGraphService(
-            client_id=client_id,
-            client_secret=client_secret,
-            tenant_id=tenant_id
+            client_id=body.get('client_id', ''),
+            client_secret=body.get('client_secret', ''),
+            tenant_id=body.get('tenant_id', '')
         )
         
         result = await graph_service.authenticate(
-            authorization_code=authorization_code,
-            redirect_uri=redirect_uri
+            authorization_code=body.get('authorization_code', ''),
+            redirect_uri=body.get('redirect_uri', '')
         )
         
         return result
     except Exception as e:
-        raise HTTPException(500, f"Error connecting Outlook: {str(e)}")
+        logger.error(f"Error connecting Outlook: {e}")
+        raise HTTPException(500, "Error connecting Outlook")
 
 @app.get("/api/email/outlook/auth-url")
 async def get_outlook_auth_url(
@@ -3772,7 +4623,7 @@ async def manual_email_sync():
             tenant_id = os.getenv('MICROSOFT_TENANT_ID')
             
             if client_id and tenant_id:
-                auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?client_id={client_id}&response_type=code&redirect_uri={os.getenv('MICROSOFT_REDIRECT_URI', 'http://localhost:3000/auth/callback')}&scope=https://graph.microsoft.com/Mail.Read%20https://graph.microsoft.com/User.Read%20offline_access"
+                auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?client_id={client_id}&response_type=code&redirect_uri={os.getenv('MICROSOFT_REDIRECT_URI', os.getenv('OAUTH_REDIRECT_URI', 'http://localhost:3000/auth/callback'))}&scope=https://graph.microsoft.com/Mail.Read%20https://graph.microsoft.com/User.Read%20offline_access"
                 return {
                     'status': 'needs_auth',
                     'message': 'No OAuth token found. Please authenticate manually.',
@@ -3901,57 +4752,24 @@ async def register(request: RegisterRequest):
         raise HTTPException(500, f"Registration error: {str(e)}")
 
 @app.get("/api/auth/me")
-async def get_current_user(authorization: Optional[str] = Header(None)):
+async def get_current_user(current_user: dict = Depends(require_auth)):
     """
     Get current user from JWT token
     
     - Validates Authorization header
     - Returns user data if token is valid
     """
-    try:
-        if not authorization:
-            raise HTTPException(401, "Authorization header required")
-        
-        # Extract token from "Bearer <token>"
-        parts = authorization.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            raise HTTPException(401, "Invalid authorization format. Use 'Bearer <token>'")
-        
-        token = parts[1]
-        user = auth_service.verify_token(token)
-        
-        if not user:
-            raise HTTPException(401, "Invalid or expired token")
-        
-        return {"user": user}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Auth verification error: {e}")
-        raise HTTPException(500, f"Auth error: {str(e)}")
+    return {"user": current_user}
 
 # User profile endpoints
 @app.put("/api/users/profile")
-async def update_profile(profile: UserProfile, authorization: Optional[str] = Header(None)):
+async def update_profile(profile: UserProfile, current_user: dict = Depends(require_auth)):
     """
     Update user profile information
     """
     try:
-        if not authorization:
-            raise HTTPException(401, "Authorization required")
-        
-        # Extract and verify token
-        parts = authorization.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            raise HTTPException(401, "Invalid authorization format")
-        
-        user = auth_service.verify_token(parts[1])
-        if not user:
-            raise HTTPException(401, "Invalid or expired token")
-        
         # Update profile
-        updated_user = auth_service.update_profile(user['id'], {
+        updated_user = auth_service.update_profile(current_user['id'], {
             'name': f"{profile.firstName} {profile.lastName}",
             'first_name': profile.firstName,
             'company': profile.company,
@@ -3972,26 +4790,14 @@ async def update_profile(profile: UserProfile, authorization: Optional[str] = He
         raise HTTPException(500, f"Error updating profile: {str(e)}")
 
 @app.put("/api/users/password")
-async def update_password(password_update: PasswordUpdate, authorization: Optional[str] = Header(None)):
+async def update_password(password_update: PasswordUpdate, current_user: dict = Depends(require_auth)):
     """
     Update user password
     """
     try:
-        if not authorization:
-            raise HTTPException(401, "Authorization required")
-        
-        # Extract and verify token
-        parts = authorization.split()
-        if len(parts) != 2 or parts[0].lower() != "bearer":
-            raise HTTPException(401, "Invalid authorization format")
-        
-        user = auth_service.verify_token(parts[1])
-        if not user:
-            raise HTTPException(401, "Invalid or expired token")
-        
         # Change password
         auth_service.change_password(
-            user['id'],
+            current_user['id'],
             password_update.currentPassword,
             password_update.newPassword
         )
@@ -4013,7 +4819,8 @@ class CandidateStatusUpdate(BaseModel):
     status: str  # 'Shortlisted', 'Strong', 'Partial', 'Reject', 'Interviewing', 'Offered', 'Hired', 'Rejected'
 
 async def _send_shortlist_email(candidate: Dict):
-    """Send shortlist notification email to candidate via Microsoft Graph"""
+    """Send smart shortlist notification email to candidate via Microsoft Graph.
+    Dynamically adapts content based on candidate location (UAE asks for visa details)."""
     try:
         candidate_email = candidate.get('email', '')
         candidate_name = candidate.get('name', 'Candidate')
@@ -4026,33 +4833,85 @@ async def _send_shortlist_email(candidate: Dict):
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID')
         sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
-        company_name = os.getenv('COMPANY_NAME', _settings.company_name)
-        recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name)
+        company_name = os.getenv('COMPANY_NAME', _settings.company_name) or 'Efforts Solutions'
+        recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name) or 'Recruitment Team'
 
         if not all([client_id, client_secret, tenant_id]):
             logger.warning("⚠️ Cannot send shortlist email - Microsoft Graph credentials not configured")
             return {'status': 'skipped', 'reason': 'no_credentials'}
 
-        # Render the shortlist email template
-        templates_svc = get_templates_service()
-        job_title = candidate.get('jobCategory', '') or candidate.get('job_category', '')
-        job_sub = candidate.get('jobSubcategory', '') or candidate.get('job_subcategory', '')
+        # Determine location context for dynamic email content
+        candidate_location = (candidate.get('location', '') or '').lower()
+        job_title = candidate.get('jobCategory', '') or candidate.get('job_category', '') or ''
+        job_sub = candidate.get('jobSubcategory', '') or candidate.get('job_subcategory', '') or ''
         display_title = job_sub if job_sub else job_title
 
-        template_vars = {
-            'candidate_name': candidate_name,
-            'company_name': company_name,
-            'recruiter_name': recruiter_name,
-            'job_title': display_title,
-        }
+        # UAE locations that require visa details
+        uae_locations = ['dubai', 'abu dhabi', 'sharjah', 'ajman', 'ras al khaimah', 
+                         'fujairah', 'umm al quwain', 'uae', 'united arab emirates']
+        is_uae = any(loc in candidate_location for loc in uae_locations)
 
-        rendered = templates_svc.render_template('shortlist_notification', template_vars)
-        subject = rendered['subject']
-        body_text = rendered['body']
+        # Determine work location description dynamically
+        if is_uae:
+            # Try to extract specific UAE city
+            work_location = 'Abu Dhabi office'  # default
+            for city in ['Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman']:
+                if city.lower() in candidate_location:
+                    work_location = f'{city} office'
+                    break
+        else:
+            work_location = candidate_location.title() if candidate_location else 'our office'
 
-        # Convert plain text to HTML
-        body_html = body_text.replace('\n', '<br>')
-        body_html = f'<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333;">{body_html}</div>'
+        # Build smart subject
+        subject = f"Thank you for your interest - {company_name}"
+        if display_title:
+            subject = f"Thank you for your interest in {display_title} - {company_name}"
+
+        # Build dynamic email body
+        greeting = f"Dear {candidate_name},"
+        intro = "Thank you for your interest. To proceed further, could you please share the following details with us:"
+
+        # Build bullet points based on location
+        details_requested = []
+        details_requested.append("Your availability to join")
+        
+        if is_uae:
+            details_requested.append("Your visa status")
+            details_requested.append(f"Willingness to work from {work_location}")
+        else:
+            details_requested.append(f"Willingness to work from {work_location}")
+        
+        details_requested.append("Your current salary and expected salary for this role")
+
+        bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{d}</li>" for d in details_requested])
+
+        closing = "Look forward to your response."
+        signature = f"""Best regards,<br>
+{recruiter_name}<br>
+{company_name}"""
+
+        # Professional HTML email
+        body_html = f"""
+<div style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.7; color: #1a1a2e; max-width: 600px; margin: 0 auto;">
+  <div style="background: linear-gradient(135deg, #172554, #1d4ed8); padding: 24px 30px; border-radius: 8px 8px 0 0;">
+    <h2 style="color: #ffffff; margin: 0; font-size: 18px; font-weight: 600;">Efforts Solutions</h2>
+    <p style="color: #93c5fd; margin: 4px 0 0 0; font-size: 12px;">IT Technology & Solutions</p>
+  </div>
+  <div style="padding: 30px; background: #ffffff; border: 1px solid #e5e7eb; border-top: none;">
+    <p style="margin-top: 0;">{greeting}</p>
+    <p>{intro}</p>
+    <ul style="padding-left: 20px; margin: 16px 0;">
+      {bullets_html}
+    </ul>
+    <p style="margin-bottom: 24px;">{closing}</p>
+    <div style="border-top: 1px solid #e5e7eb; padding-top: 16px; margin-top: 24px;">
+      <p style="margin: 0; color: #374151;">{signature}</p>
+    </div>
+  </div>
+  <div style="padding: 12px 30px; background: #f8fafc; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; text-align: center;">
+    <p style="margin: 0; font-size: 11px; color: #9ca3af;">This email was sent by Efforts Solutions Recruitment Platform</p>
+  </div>
+</div>"""
 
         # Setup Graph service and authenticate
         graph = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=sender_email)
@@ -4060,16 +4919,29 @@ async def _send_shortlist_email(candidate: Dict):
         token_data = token_storage.get_token(sender_email)
 
         if token_data and token_data.get('access_token'):
+            # Check if token is expired and try to refresh
+            if token_data.get('is_expired') and token_data.get('refresh_token'):
+                logger.info("🔄 Token expired, refreshing before sending email...")
+                refresh_result = await graph.refresh_access_token(token_data['refresh_token'])
+                if refresh_result['status'] == 'success':
+                    token_storage.save_token(
+                        email=sender_email,
+                        access_token=refresh_result['access_token'],
+                        refresh_token=refresh_result.get('refresh_token', token_data['refresh_token']),
+                        expires_in=refresh_result['expires_in'],
+                        auth_type='delegated'
+                    )
+                    token_data = token_storage.get_token(sender_email)
+                    logger.info("✅ Token refreshed for email sending")
+                else:
+                    logger.warning(f"⚠️ Token refresh failed: {refresh_result.get('error')}")
+                    return {'status': 'failed', 'reason': 'token_refresh_failed'}
             graph.access_token = token_data['access_token']
             graph.auth_type = token_data.get('auth_type', 'delegated')
-            from datetime import timedelta
             graph.token_expiry = datetime.now() + timedelta(hours=1)
         else:
-            # Try client credentials flow
-            auth_result = await graph.authenticate_with_credentials()
-            if auth_result.get('status') != 'success':
-                logger.warning(f"⚠️ Cannot authenticate to send email: {auth_result.get('error')}")
-                return {'status': 'failed', 'reason': 'auth_failed'}
+            logger.warning("⚠️ No OAuth token available for sending email. Please authenticate via Settings → Connect Microsoft Account.")
+            return {'status': 'failed', 'reason': 'no_token'}
 
         # Send the email
         result = await graph.send_mail(
@@ -4080,7 +4952,7 @@ async def _send_shortlist_email(candidate: Dict):
         )
 
         if result.get('status') == 'success':
-            logger.info(f"✅ Shortlist email sent to {candidate_name} ({candidate_email})")
+            logger.info(f"✅ Shortlist email sent to {candidate_name} ({candidate_email}) [UAE={is_uae}]")
         else:
             logger.warning(f"⚠️ Failed to send shortlist email to {candidate_email}: {result.get('message')}")
 
@@ -4091,10 +4963,11 @@ async def _send_shortlist_email(candidate: Dict):
         return {'status': 'error', 'message': str(e)}
 
 @app.put("/api/candidates/{candidate_id}/status")
-async def update_candidate_status(candidate_id: str, status_update: CandidateStatusUpdate, background_tasks: BackgroundTasks = None):
+async def update_candidate_status(candidate_id: str, status_update: CandidateStatusUpdate, background_tasks: BackgroundTasks, current_user: dict = Depends(require_auth)):
     """
     Update candidate status (shortlist, reject, etc.)
     When status is 'Shortlisted', automatically sends a notification email to the candidate.
+    Cache is invalidated so the candidates list is always fresh.
     """
     try:
         # Persist status in database
@@ -4107,14 +4980,18 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
         if not updated:
             raise HTTPException(404, f"Candidate {candidate_id} not found")
 
+        # Invalidate candidate cache so list endpoint returns fresh data
+        response_cache.clear()
+
         email_result = None
 
-        # Auto-send email when candidate is shortlisted
+        # Auto-send email when candidate is shortlisted (non-blocking background task)
         if status_update.status.lower() in ('shortlisted', 'shortlist'):
             candidate = await asyncio.to_thread(db_service.get_candidate_by_id, candidate_id)
             if candidate:
                 # Send email in background so the API responds immediately
-                email_result = await _send_shortlist_email(candidate)
+                background_tasks.add_task(_send_shortlist_email, candidate)
+                email_result = {'status': 'queued', 'message': 'Shortlist email queued for sending'}
             else:
                 email_result = {'status': 'skipped', 'reason': 'candidate_not_found'}
 
@@ -4131,6 +5008,249 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
         logger.error(f"Status update error: {str(e)}")
         raise HTTPException(500, f"Error updating candidate status: {str(e)}")
 
+
+# ============================================================================
+# BULK SHORTLIST + AI EMAIL
+# ============================================================================
+
+class BulkShortlistRequest(BaseModel):
+    candidate_ids: List[str]
+    email_subject: Optional[str] = None
+    email_body: Optional[str] = None
+    send_emails: bool = True
+
+class GenerateEmailRequest(BaseModel):
+    candidate_ids: List[str]
+    job_title: Optional[str] = None
+    tone: Optional[str] = "professional"
+    custom_instructions: Optional[str] = None
+
+
+@app.post("/api/ai/generate-shortlist-email")
+async def generate_shortlist_email_template(
+    request: GenerateEmailRequest,
+    current_user: dict = Depends(require_auth)
+):
+    """
+    Use AI to generate a customizable shortlist notification email.
+    Returns subject + body that the user can edit before sending.
+    """
+    try:
+        # Get candidate info for context
+        candidates = []
+        for cid in request.candidate_ids[:10]:
+            c = await asyncio.to_thread(db_service.get_candidate_by_id, cid)
+            if c:
+                candidates.append(c)
+
+        company_name = os.getenv('COMPANY_NAME', _settings.company_name)
+        recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name)
+        job_title = request.job_title or (candidates[0].get('jobCategory', 'the open position') if candidates else 'the open position')
+
+        # Try LLM to generate a tailored email
+        try:
+            from services.llm_service import get_llm_service
+            llm_svc = await get_llm_service()
+            if llm_svc and llm_svc.available:
+                custom_note = f"\nAdditional instructions: {request.custom_instructions}" if request.custom_instructions else ""
+                prompt = f"""Generate a professional shortlist notification email for a recruitment process.
+
+Context:
+- Company: {company_name}
+- Recruiter: {recruiter_name}
+- Position: {job_title}
+- Tone: {request.tone}
+- Number of candidates being notified: {len(request.candidate_ids)}
+{custom_note}
+
+The email should:
+- Congratulate the candidate on being shortlisted
+- Mention the position/role
+- Explain next steps briefly
+- Be warm but professional
+- Use {{{{candidate_name}}}} as placeholder for the candidate's name
+- Use {{{{company_name}}}} as placeholder for company name
+- Use {{{{job_title}}}} as placeholder for the job title
+- Use {{{{recruiter_name}}}} as placeholder for recruiter name
+
+Return JSON:
+{{
+    "subject": "Email subject line",
+    "body": "Full email body text with placeholders"
+}}"""
+                result = await llm_svc._generate_json(prompt, temperature=0.4)
+                if result and result.get('subject') and result.get('body'):
+                    return {
+                        "status": "success",
+                        "subject": result['subject'],
+                        "body": result['body'],
+                        "placeholders": ["candidate_name", "company_name", "job_title", "recruiter_name"],
+                        "source": "ai_generated",
+                        "company_name": company_name,
+                        "recruiter_name": recruiter_name,
+                        "job_title": job_title,
+                    }
+        except Exception as llm_err:
+            logger.warning(f"LLM email generation failed: {llm_err}")
+
+        # Fallback: use the default template
+        templates_svc = get_templates_service()
+        template = templates_svc.get_template('shortlist_notification')
+        return {
+            "status": "success",
+            "subject": template['subject'].replace('{{company_name}}', company_name),
+            "body": template['body'],
+            "placeholders": ["candidate_name", "company_name", "job_title", "recruiter_name"],
+            "source": "default_template",
+            "company_name": company_name,
+            "recruiter_name": recruiter_name,
+            "job_title": job_title,
+        }
+    except Exception as e:
+        logger.error(f"Email template generation error: {e}")
+        raise HTTPException(500, f"Error generating email template: {str(e)}")
+
+
+@app.post("/api/candidates/bulk-shortlist")
+async def bulk_shortlist_candidates(
+    request: BulkShortlistRequest,
+    current_user: dict = Depends(require_auth)
+):
+    """
+    Bulk shortlist candidates and send customizable notification emails.
+    Accepts optional custom email subject/body; uses AI-generated default if not provided.
+    """
+    try:
+        results = []
+        shortlisted = 0
+        emails_sent = 0
+        emails_failed = 0
+
+        company_name = os.getenv('COMPANY_NAME', _settings.company_name)
+        recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name)
+
+        for cid in request.candidate_ids:
+            try:
+                # Update status
+                updated = await asyncio.to_thread(
+                    db_service.update_candidate_status, cid, 'Shortlisted'
+                )
+                if not updated:
+                    results.append({'candidate_id': cid, 'status': 'not_found'})
+                    continue
+
+                shortlisted += 1
+
+                # Send email if requested
+                if request.send_emails:
+                    candidate = await asyncio.to_thread(db_service.get_candidate_by_id, cid)
+                    if not candidate or not candidate.get('email'):
+                        results.append({'candidate_id': cid, 'status': 'shortlisted', 'email': 'no_email'})
+                        continue
+
+                    candidate_name = candidate.get('name', 'Candidate')
+                    candidate_email = candidate.get('email', '')
+                    job_title = candidate.get('jobCategory', '') or candidate.get('job_category', '')
+
+                    if request.email_subject and request.email_body:
+                        # Use custom email from user
+                        subject = request.email_subject
+                        body = request.email_body
+                    else:
+                        # Use default template
+                        templates_svc = get_templates_service()
+                        rendered = templates_svc.render_template('shortlist_notification', {
+                            'candidate_name': candidate_name,
+                            'company_name': company_name,
+                            'recruiter_name': recruiter_name,
+                            'job_title': job_title,
+                        })
+                        subject = rendered['subject']
+                        body = rendered['body']
+
+                    # Replace placeholders with actual values
+                    subject = subject.replace('{{candidate_name}}', candidate_name)
+                    subject = subject.replace('{{company_name}}', company_name)
+                    subject = subject.replace('{{job_title}}', job_title)
+                    subject = subject.replace('{{recruiter_name}}', recruiter_name)
+                    body = body.replace('{{candidate_name}}', candidate_name)
+                    body = body.replace('{{company_name}}', company_name)
+                    body = body.replace('{{job_title}}', job_title)
+                    body = body.replace('{{recruiter_name}}', recruiter_name)
+
+                    # Convert to HTML
+                    body_html = body.replace('\n', '<br>')
+                    body_html = f'<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333;">{body_html}</div>'
+
+                    # Send via Graph
+                    try:
+                        client_id = os.getenv('MICROSOFT_CLIENT_ID')
+                        client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
+                        tenant_id = os.getenv('MICROSOFT_TENANT_ID')
+                        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
+
+                        if all([client_id, client_secret, tenant_id]):
+                            graph = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=sender_email)
+                            token_storage = get_token_storage()
+                            token_data = token_storage.get_token(sender_email)
+
+                            if token_data and token_data.get('access_token'):
+                                # Refresh if expired
+                                if token_data.get('is_expired') and token_data.get('refresh_token'):
+                                    refresh_result = await graph.refresh_access_token(token_data['refresh_token'])
+                                    if refresh_result['status'] == 'success':
+                                        token_storage.save_token(
+                                            email=sender_email,
+                                            access_token=refresh_result['access_token'],
+                                            refresh_token=refresh_result.get('refresh_token', token_data['refresh_token']),
+                                            expires_in=refresh_result['expires_in'],
+                                            auth_type='delegated'
+                                        )
+                                        token_data = token_storage.get_token(sender_email)
+                                graph.access_token = token_data['access_token']
+                                graph.auth_type = token_data.get('auth_type', 'delegated')
+                                graph.token_expiry = datetime.now() + timedelta(hours=1)
+                            else:
+                                raise Exception("No OAuth token. Authenticate via Settings → Connect Microsoft Account.")
+
+                            email_result = await graph.send_mail(
+                                to_email=candidate_email,
+                                subject=subject,
+                                body=body_html,
+                                content_type='HTML'
+                            )
+                            if email_result.get('status') == 'success':
+                                emails_sent += 1
+                                results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': 'sent'})
+                            else:
+                                emails_failed += 1
+                                results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': 'failed'})
+                        else:
+                            results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': 'no_credentials'})
+                    except Exception as email_err:
+                        emails_failed += 1
+                        logger.warning(f"Email send error for {candidate_name}: {email_err}")
+                        results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': 'error'})
+                else:
+                    results.append({'candidate_id': cid, 'status': 'shortlisted', 'email': 'not_requested'})
+
+            except Exception as e:
+                logger.warning(f"Bulk shortlist error for {cid}: {e}")
+                results.append({'candidate_id': cid, 'status': 'error', 'message': str(e)})
+
+        return {
+            'status': 'success',
+            'total': len(request.candidate_ids),
+            'shortlisted': shortlisted,
+            'emails_sent': emails_sent,
+            'emails_failed': emails_failed,
+            'results': results
+        }
+    except Exception as e:
+        logger.error(f"Bulk shortlist error: {e}")
+        raise HTTPException(500, f"Error in bulk shortlist: {str(e)}")
+
+
 # NOTE: Resume download route is defined earlier (line ~953) with proper database query
 
 # AI Chat endpoints
@@ -4145,6 +5265,9 @@ class AnalyzeMatchRequest(BaseModel):
 # Global thread pool for AI operations (reusable, efficient)
 from concurrent.futures import ThreadPoolExecutor
 _ai_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai_worker")
+
+# Request deduplication: prevent multiple concurrent LLM calls for the same candidate
+_analysis_in_progress: dict = {}  # candidate_id -> asyncio.Event
 
 
 @app.get("/api/candidates/{candidate_id}/ai-analysis")
@@ -4163,6 +5286,39 @@ async def get_candidate_ai_analysis(candidate_id: str, refresh: bool = False):
                 stored['from_cache'] = True
                 return stored
         
+        # Request deduplication: if another request is already generating analysis
+        # for this candidate, wait for it to complete instead of running a second LLM call
+        if candidate_id in _analysis_in_progress:
+            logger.info(f"⏳ Waiting for in-progress analysis for {candidate_id}")
+            try:
+                await asyncio.wait_for(_analysis_in_progress[candidate_id].wait(), timeout=65)
+                stored = await asyncio.to_thread(db_service.get_ai_analysis, candidate_id)
+                if stored and stored.get('executive_summary'):
+                    stored['from_cache'] = True
+                    return stored
+            except asyncio.TimeoutError:
+                pass  # Fall through to generate
+        
+        # Mark this candidate as in-progress
+        event = asyncio.Event()
+        _analysis_in_progress[candidate_id] = event
+        
+        try:
+            return await _run_candidate_analysis(candidate_id, refresh)
+        finally:
+            event.set()
+            _analysis_in_progress.pop(candidate_id, None)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI analysis error for {candidate_id}: {e}")
+        raise HTTPException(500, f"Error generating AI analysis: {str(e)}")
+
+
+async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
+    """Internal: actually run the LLM analysis for a candidate."""
+    try:
         # Get full candidate data
         with db_service.get_connection() as conn:
             cursor = conn.cursor()
@@ -4207,6 +5363,7 @@ async def get_candidate_ai_analysis(candidate_id: str, refresh: bool = False):
         # TIER 1: Try LLM deep analysis
         analysis = None
         try:
+            from services.llm_service import get_llm_service
             llm_svc = await get_llm_service()
             if llm_svc and llm_svc.available:
                 analysis = await asyncio.wait_for(
@@ -4220,8 +5377,8 @@ async def get_candidate_ai_analysis(candidate_id: str, refresh: bool = False):
         except Exception as llm_err:
             logger.warning(f"LLM deep analysis error: {llm_err}")
         
-        # TIER 2: Try OpenAI
-        if not analysis:
+        # TIER 2: Try OpenAI (only if explicitly enabled)
+        if not analysis and USE_OPENAI_FALLBACK:
             try:
                 openai_svc = get_openai_service()
                 if openai_svc:
@@ -4231,7 +5388,7 @@ async def get_candidate_ai_analysis(candidate_id: str, refresh: bool = False):
             except Exception as oai_err:
                 logger.warning(f"OpenAI deep analysis error: {oai_err}")
         
-        # TIER 3: Fallback
+        # TIER 3: Fallback — use LLM-extracted data to build a meaningful report
         if not analysis:
             skills = candidate_for_analysis.get('skills', [])
             exp = candidate_for_analysis.get('experience', 0)
@@ -4267,7 +5424,7 @@ async def get_candidate_ai_analysis(candidate_id: str, refresh: bool = False):
 
 
 @app.post("/api/ai/analyze-match")
-async def analyze_match(request: AnalyzeMatchRequest):
+async def analyze_match(request: AnalyzeMatchRequest, current_user: dict = Depends(require_auth)):
     """
     Use AI to analyze candidate-job match - OPTIMIZED
     Runs AI in separate thread pool to avoid blocking
@@ -4388,7 +5545,7 @@ class InterviewQuestionsRequest(BaseModel):
     num_questions: int = 5
 
 @app.post("/api/ai/interview-questions")
-async def generate_interview_questions(request: InterviewQuestionsRequest):
+async def generate_interview_questions(request: InterviewQuestionsRequest, current_user: dict = Depends(require_auth)):
     """
     Generate AI-powered interview questions
     3-TIER FALLBACK: Local AI → OpenAI → Rule-based
@@ -4445,7 +5602,7 @@ class SummarizeResumeRequest(BaseModel):
     resume_text: str
 
 @app.post("/api/ai/summarize-resume")
-async def summarize_resume(request: SummarizeResumeRequest):
+async def summarize_resume(request: SummarizeResumeRequest, current_user: dict = Depends(require_auth)):
     """
     Generate AI summary of resume
     3-TIER FALLBACK: Local AI → OpenAI → Rule-based
@@ -4479,7 +5636,7 @@ async def summarize_resume(request: SummarizeResumeRequest):
         raise HTTPException(500, f"Error summarizing resume: {str(e)}")
 
 @app.post("/api/ai/batch-analyze")
-async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int = 50):
+async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int = 50, current_user: dict = Depends(require_auth)):
     """
     Batch analyze ONLY NEW candidates with CONCURRENT processing
     PRIMARY: Local AI (FREE, handles 100+ concurrent requests)
@@ -4575,8 +5732,19 @@ async def ai_status():
     
     return {
         "available": True,
-        "primary_engine": "ollama_llm" if llm_status.get('available') else "local_ai",
-        "fallback_engine": "openai" if fallback_service else "local_ai",
+        "ai_tier_mode": _settings.ai_tier_mode,
+        "ai_tier_order": _settings.ai_tier_order,
+        "environment": "production" if _settings.is_production else "development",
+        "primary_engine": _determine_primary_engine(llm_status),
+        "fallback_engine": "openai" if fallback_service else "keyword",
+        "gemini": {
+            "available": gemini_service.available if gemini_service else False,
+            "model": gemini_service.model_name if gemini_service else None,
+            "requests_processed": gemini_service._request_count if gemini_service else 0,
+            "avg_response_time": round(gemini_service._total_time / max(gemini_service._request_count, 1), 2) if gemini_service else 0,
+            "error_count": gemini_service._error_count if gemini_service else 0,
+            "cache_size": len(gemini_service._cache) if gemini_service else 0,
+        },
         "llm": {
             "available": llm_status.get('available', False),
             "primary_model": llm_status.get('primary_model', 'Not loaded'),
@@ -4595,20 +5763,73 @@ async def ai_status():
             "ner": ai_cache.get('ner_cache_size', 0),
             "analysis": ai_cache.get('analysis_cache_size', 0),
             "llm": llm_status.get('cache_size', 0),
+            "gemini": len(gemini_service._cache) if gemini_service else 0,
         },
-        "model": "Multi-Tier AI: LLM (Ollama) → Sentence-Transformers → SpaCy NER → Regex",
+        "model": _determine_model_description(llm_status),
         "fallback_model": openai_service.model if fallback_service else None,
-        "message": "🤖 AI Stack: Local LLM + Embeddings + NER (FREE) with OpenAI emergency fallback",
+        "message": _determine_ai_message(llm_status),
         "caching_enabled": True,
         "concurrent_processing": True,
         "max_concurrent": "100+ requests",
-        "cost": "$0 (all local, OpenAI fallback charges only if all local AI fails)",
+        "cost": _determine_cost_info(llm_status),
         "fallback_available": fallback_service is not None,
+        "gemini_available": gemini_service.available if gemini_service else False,
         "setup_instructions": {
+            "gemini": "Set GEMINI_API_KEY env var. Get key from https://aistudio.google.com/apikey",
             "ollama": "Install from https://ollama.com/download then run: ollama pull qwen2.5:7b",
             "models_recommended": ["qwen2.5:7b (extraction)", "phi3.5 (fast)", "llama3.1:8b (reasoning)"]
         }
     }
+
+
+def _determine_primary_engine(llm_status: Dict) -> str:
+    """Determine which AI engine is currently primary based on tier order and availability."""
+    tier = _settings.ai_tier_order
+    for engine in tier:
+        if engine == "gemini" and gemini_service and gemini_service.available:
+            return "gemini"
+        if engine == "ollama" and llm_status.get('available'):
+            return "ollama_llm"
+        if engine == "openai" and fallback_service:
+            return "openai"
+    return "local_ai"
+
+
+def _determine_model_description(llm_status: Dict) -> str:
+    """Dynamic model description based on what's available."""
+    parts = []
+    if gemini_service and gemini_service.available:
+        parts.append(f"Gemini ({gemini_service.model_name})")
+    if llm_status.get('available'):
+        parts.append(f"Ollama ({llm_status.get('primary_model', 'local')})")
+    if fallback_service:
+        parts.append(f"OpenAI ({openai_service.model})")
+    parts.extend(["Sentence-Transformers", "SpaCy NER", "Keyword"])
+    return "Multi-Tier AI: " + " → ".join(parts)
+
+
+def _determine_ai_message(llm_status: Dict) -> str:
+    """Generate AI status message based on current configuration."""
+    primary = _determine_primary_engine(llm_status)
+    if primary == "gemini":
+        return f"🌟 AI Stack: Gemini {gemini_service.model_name} (primary) + Local Embeddings + NER"
+    elif primary == "ollama_llm":
+        return "🤖 AI Stack: Local LLM + Embeddings + NER (FREE) with Gemini/OpenAI fallback"
+    elif primary == "openai":
+        return f"💳 AI Stack: OpenAI {openai_service.model} (primary) — costs apply"
+    return "⚡ AI Stack: Sentence-Transformers + SpaCy NER + Keyword (FREE, no LLM)"
+
+
+def _determine_cost_info(llm_status: Dict) -> str:
+    """Generate cost information string."""
+    primary = _determine_primary_engine(llm_status)
+    if primary == "gemini":
+        return "~$0.01-0.05/day (Gemini 2.0 Flash is very low cost)"
+    elif primary == "ollama_llm":
+        return "$0 (all local, Gemini/OpenAI fallback charges only if local AI fails)"
+    elif primary == "openai":
+        return "~$0.01-0.10/request (OpenAI pricing applies)"
+    return "$0 (all local, no API costs)"
 
 @app.get("/api/llm/status")
 async def llm_status():
@@ -4665,6 +5886,17 @@ def _format_search_results(raw_results: list, candidates: list) -> list:
             # If it already has the expected shape
             if 'candidate' in item and 'relevance_score' in item:
                 formatted.append(item)
+            # rank_candidates_for_job format: {candidate, match, score}
+            elif 'candidate' in item and 'score' in item:
+                match_data = item.get('match', {})
+                formatted.append({
+                    "candidate": item['candidate'],
+                    "relevance_score": int(item['score']),
+                    "match_reasons": match_data.get('strengths', match_data.get('matched_skills', ["AI matched"])),
+                    "matched_skills": match_data.get('matched_skills', []),
+                    "missing_skills": match_data.get('missing_skills', []),
+                    "recommendation": match_data.get('recommendation', ''),
+                })
             # If it's a raw candidate dict with a score field
             elif 'id' in item or 'name' in item:
                 score = item.get('score', item.get('match_score', item.get('matchScore', 50)))
@@ -4688,20 +5920,40 @@ def _format_search_results(raw_results: list, candidates: list) -> list:
 async def ai_smart_search(
     query: str = Body(..., embed=True),
     top_n: int = Body(20, embed=True),
+    current_user: dict = Depends(require_auth)
 ):
     """
     LLM-powered smart search: takes a natural language query and returns
     the best-matching candidates using semantic understanding.
+    Scans the ENTIRE database using efficient pre-filtering.
     """
     try:
-        # 1. Get all active candidates
+        # 1. Get ALL active candidates (lightweight for AI matching)
         candidates = await asyncio.to_thread(
-            db_service.get_candidates_paginated, 1, 200, {}
+            db_service.get_candidates_lightweight, {}, 10000
         )
         if not candidates:
             return {"results": [], "total": 0, "query": query, "message": "No candidates in database"}
 
-        # 2. Try LLM-based matching first
+        # 2. Try Gemini-based matching first (cost-effective, always available)
+        try:
+            from services.gemini_service import get_gemini_service
+            gemini_svc = get_gemini_service()
+            if gemini_svc and gemini_svc.available:
+                ranked = await gemini_svc.rank_candidates_for_job(candidates, query, top_n)
+                if ranked:
+                    formatted = _format_search_results(ranked, candidates)
+                    return {
+                        "results": formatted,
+                        "total_searched": len(candidates),
+                        "query": query,
+                        "source": "gemini",
+                        "message": f"Found {len(formatted)} matches using Gemini AI search"
+                    }
+        except Exception as gemini_err:
+            logger.warning(f"Gemini smart search failed: {gemini_err}")
+
+        # 3. Try Local LLM matching (for local dev)
         try:
             from services.llm_service import get_llm_service
             llm_svc = await get_llm_service()
@@ -4718,7 +5970,7 @@ async def ai_smart_search(
         except Exception as llm_err:
             logger.warning(f"LLM smart search failed: {llm_err}")
 
-        # 3. Try matching engine (semantic / TF-IDF)
+        # 4. Try matching engine (semantic / TF-IDF)
         try:
             matching_engine = MatchingEngine()
             results = await matching_engine.match_candidates(query, candidates, top_n)
@@ -4733,7 +5985,7 @@ async def ai_smart_search(
         except Exception as sem_err:
             logger.warning(f"Semantic search failed: {sem_err}")
 
-        # 4. OpenAI fallback
+        # 5. OpenAI fallback
         openai_svc = get_openai_service()
         if openai_svc:
             result = openai_svc.match_candidates_to_job(query, candidates, top_n)
@@ -4747,7 +5999,7 @@ async def ai_smart_search(
                 "message": "Used OpenAI for search"
             }
 
-        # 5. Basic keyword fallback
+        # 6. Basic keyword fallback
         q_lower = query.lower()
         scored = []
         for c in candidates:

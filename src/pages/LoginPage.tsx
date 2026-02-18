@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Mail, Lock, Briefcase, Zap, TrendingUp, CheckCircle, ArrowRight, Sparkles, Brain, Target, User, AlertCircle, AtSign } from 'lucide-react'
+import { Mail, Lock, Zap, TrendingUp, CheckCircle, ArrowRight, Sparkles, Brain, Target, User, AlertCircle, AtSign } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { useAuthStore } from '@/store/authStore'
@@ -95,9 +95,9 @@ export default function LoginPage() {
   }, [features.length])
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-purple-50 flex">
+    <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-blue-50 flex">
       {/* Left Side - Features & Branding */}
-      <div className="hidden lg:flex lg:w-[45%] xl:w-1/2 bg-gradient-to-br from-primary-600 via-primary-700 to-purple-600 p-12 flex-col justify-between relative overflow-hidden">
+      <div className="hidden lg:flex lg:w-[45%] xl:w-1/2 bg-gradient-to-br from-primary-700 via-primary-800 to-primary-900 p-12 flex-col justify-between relative overflow-hidden">
         {/* Animated background elements */}
         <motion.div
           animate={{
@@ -113,7 +113,7 @@ export default function LoginPage() {
             rotate: [90, 0, 90],
           }}
           transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
-          className="absolute bottom-0 left-0 w-96 h-96 bg-purple-500/10 rounded-full blur-3xl"
+          className="absolute bottom-0 left-0 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl"
         />
 
         <div className="relative z-10">
@@ -123,11 +123,11 @@ export default function LoginPage() {
             animate={{ opacity: 1, y: 0 }}
             className="flex items-center gap-3 mb-12"
           >
-            <div className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center">
-              <Briefcase className="w-6 h-6 text-white" />
+            <div className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center p-1">
+              <img src="/effortz-logo.png" alt="Efforts Solutions" className="w-10 h-10 object-contain" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white">AI Recruiter</h1>
+              <h1 className="text-2xl font-bold text-white">Efforts Solutions</h1>
               <p className="text-primary-100 text-sm">Smart Hiring Platform</p>
             </div>
           </motion.div>
@@ -241,15 +241,15 @@ export default function LoginPage() {
               initial={{ scale: 0 }}
               animate={{ scale: 1 }}
               transition={{ delay: 0.2, type: "spring" }}
-              className="inline-flex items-center justify-center w-16 h-16 bg-primary-600 rounded-2xl shadow-lg mb-4"
+              className="inline-flex items-center justify-center w-16 h-16 bg-white rounded-2xl shadow-lg mb-4 p-2"
             >
-              <Briefcase className="w-8 h-8 text-white" />
+              <img src="/effortz-logo.png" alt="Efforts Solutions" className="w-12 h-12 object-contain" />
             </motion.div>
             <h1 className="text-3xl font-bold text-gray-900 mb-2">
-              AI Recruiter
+              Efforts Solutions
             </h1>
             <p className="text-gray-600">
-              Intelligent candidate matching
+              Smart Hiring Platform
             </p>
           </div>
 
@@ -396,7 +396,12 @@ export default function LoginPage() {
                   <span className="ml-2 text-sm text-gray-600">Remember me</span>
                 </label>
                 {!isRegistering && (
-                  <button type="button" className="text-sm font-medium text-primary-600 hover:text-primary-700">
+                  <button 
+                    type="button" 
+                    className="text-sm font-medium text-gray-400 cursor-not-allowed"
+                    title="Password reset coming soon"
+                    disabled
+                  >
                     Forgot password?
                   </button>
                 )}
@@ -447,7 +452,7 @@ export default function LoginPage() {
             transition={{ delay: 0.5 }}
             className="text-center text-sm text-gray-500 mt-6"
           >
-            © {new Date().getFullYear()} AI Recruiter Platform. All rights reserved.
+            © {new Date().getFullYear()} Efforts Solutions. All rights reserved.
           </motion.p>
         </motion.div>
       </div>

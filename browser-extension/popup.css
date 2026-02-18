@@ -1,8 +1,8 @@
-/* AI Recruiter LinkedIn Scraper - Popup Styles */
+/* Efforts Solutions AI Recruiter LinkedIn Scraper - Popup Styles */
 
 :root {
-  --primary: #6366f1;
-  --primary-hover: #4f46e5;
+  --primary: #1d4ed8;
+  --primary-hover: #1e40af;
   --success: #10b981;
   --success-hover: #059669;
   --error: #ef4444;
@@ -47,7 +47,7 @@ body {
   align-items: center;
   padding: 16px;
   border-bottom: 1px solid var(--gray-200);
-  background: linear-gradient(135deg, var(--primary) 0%, #8b5cf6 100%);
+  background: linear-gradient(135deg, var(--primary) 0%, #1e40af 100%);
   color: white;
 }
 

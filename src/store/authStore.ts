@@ -39,7 +39,7 @@ export const useAuthStore = create<AuthState>()(
       login: async (email: string, password: string) => {
         set({ isLoading: true })
         const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 12000)
+        const timeoutId = setTimeout(() => controller.abort(), 45000)
         try {
           const response = await fetch(`${config.endpoints.auth}/login`, {
             method: 'POST',
@@ -50,7 +50,7 @@ export const useAuthStore = create<AuthState>()(
           clearTimeout(timeoutId)
           
           if (!response.ok) {
-            const error = await response.json()
+            const error = await response.json().catch(() => ({}))
             throw new Error(error.detail || 'Login failed')
           }
           
@@ -65,7 +65,7 @@ export const useAuthStore = create<AuthState>()(
           clearTimeout(timeoutId)
           set({ isLoading: false })
           if (error?.name === 'AbortError') {
-            throw new Error('Login timed out. Please check your connection and try again.')
+            throw new Error('Server is starting up. Please wait a moment and try again.')
           }
           console.error('Login error:', error)
           throw error
@@ -75,7 +75,7 @@ export const useAuthStore = create<AuthState>()(
       register: async (email: string, password: string, name: string, username?: string) => {
         set({ isLoading: true })
         const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 15000)
+        const timeoutId = setTimeout(() => controller.abort(), 45000)
         try {
           const response = await fetch(`${config.endpoints.auth}/register`, {
             method: 'POST',
@@ -120,7 +120,7 @@ export const useAuthStore = create<AuthState>()(
         }
         
         const controller = new AbortController()
-        const timeoutId = setTimeout(() => controller.abort(), 8000)
+        const timeoutId = setTimeout(() => controller.abort(), 45000)
         try {
           const response = await fetch(`${config.endpoints.auth}/me`, {
             headers: { 
@@ -142,8 +142,15 @@ export const useAuthStore = create<AuthState>()(
         } catch (error) {
           clearTimeout(timeoutId)
           console.error('Token verification failed:', error)
-          set({ isAuthenticated: false, user: null, token: null })
-          return false
+          // Only clear auth on definitive server rejection, not network errors
+          // Network errors (timeout, offline) should keep existing auth state
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            // Timeout — server might be starting up, keep auth state
+            return true
+          }
+          // For other network errors, keep auth state and return true
+          // The user will get logged out on next actual 401 response
+          return true
         }
       },
       

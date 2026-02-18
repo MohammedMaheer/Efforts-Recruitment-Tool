@@ -1,9 +1,11 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useAuthStore } from '@/store/authStore'
 import config from '@/config'
 
 export default function OAuthCallback() {
   const navigate = useNavigate()
+  const token = useAuthStore((s) => s.token)
   const hasProcessed = useRef(false)  // Prevent duplicate requests
 
   useEffect(() => {
@@ -43,9 +45,15 @@ export default function OAuthCallback() {
         if (response.ok) {
           console.log('OAuth2 authentication successful!', data)
           
-          // Trigger email sync in background
+          // Trigger email sync in background (with auth header)
           try {
-            await fetch(`${config.apiUrl}/api/email/sync-now`, { method: 'POST' })
+            await fetch(`${config.apiUrl}/api/email/sync-now`, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+              },
+            })
             console.log('Email sync triggered')
           } catch (syncError) {
             console.warn('Email sync trigger failed, will sync on next interval:', syncError)

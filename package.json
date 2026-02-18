@@ -1,7 +1,7 @@
 {
-  "name": "ai-recruiter-platform",
+  "name": "efforts-solutions-ai-recruiter",
   "version": "1.0.0",
-  "description": "Enterprise AI-powered recruitment platform for intelligent candidate matching",
+  "description": "Efforts Solutions AI-powered recruitment platform for intelligent candidate matching",
   "private": true,
   "type": "module",
   "scripts": {

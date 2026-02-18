@@ -305,9 +305,9 @@
         <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
         <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
       </svg>
-      <span>Add to AI Recruiter</span>
+      <span>Add to Efforts</span>
     `;
-    button.title = 'Scrape this profile and add to AI Recruiter';
+    button.title = 'Scrape this profile and add to Efforts Solutions AI Recruiter';
     
     button.addEventListener('click', async () => {
       button.disabled = true;
@@ -334,7 +334,7 @@
               <span>Added!</span>
             `;
             button.classList.add('success');
-            showNotification('Profile added to AI Recruiter!', 'success');
+            showNotification('Profile added to Efforts Solutions AI Recruiter!', 'success');
           } else {
             throw new Error(response?.error || 'Failed to save profile');
           }
@@ -364,7 +364,7 @@
             <path d="M22 21v-2a4 4 0 0 0-3-3.87"></path>
             <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
           </svg>
-          <span>Add to AI Recruiter</span>
+          <span>Add to Efforts</span>
         `;
       }, 3000);
     });

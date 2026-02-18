@@ -41,7 +41,7 @@ class ApiClient {
 
   constructor(baseUrl: string) {
     this.baseUrl = baseUrl;
-    this.defaultTimeout = 30000; // 30 seconds
+    this.defaultTimeout = 45000; // 45 seconds (Cloud Run cold start)
     this.defaultRetries = 2;
   }
 
@@ -63,10 +63,11 @@ class ApiClient {
     let lastError: Error | null = null;
 
     for (let attempt = 0; attempt <= retries; attempt++) {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
       try {
         // Create abort controller for timeout
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), timeout);
+        timeoutId = setTimeout(() => controller.abort(), timeout);
 
         // Inject auth token from store if available
         const token = useAuthStore.getState().token;
@@ -104,11 +105,13 @@ class ApiClient {
 
         return { data: data as T, error: null, status: response.status };
       } catch (err) {
+        if (timeoutId) clearTimeout(timeoutId);
         lastError = err instanceof Error ? err : new Error('Unknown error');
 
-        // Don't retry on abort (timeout) or if it's the last attempt
+        // Don't retry on abort (timeout)
         if (err instanceof DOMException && err.name === 'AbortError') {
           console.warn(`Request timeout for ${endpoint}`);
+          break; // Stop retrying on timeout
         }
 
         // Wait before retrying
@@ -759,7 +762,8 @@ export const linkedInApi = {
   async getLinkedInCandidates() {
     const response = await client.get('/api/candidates');
     // Filter to only LinkedIn imports
-    const candidates = response.data as any[] || [];
+    const data = response.data as any;
+    const candidates = data?.candidates || [];
     return candidates.filter((c: any) => 
       c.source === 'linkedin_extension' || c.linkedin?.includes('linkedin.com')
     );
@@ -828,13 +832,26 @@ export const aiApi = {
   /**
    * AI chat with database context
    */
-  async chat(message: string, includeCandidates = true): Promise<ApiResponse<{
+  async chat(message: string, includeCandidates = true, conversationHistory?: Array<{ role: string; content: string }>): Promise<ApiResponse<{
     response: string;
     ai_powered: boolean;
     context_included: boolean;
     source: string;
+    candidates_lookup?: Array<{
+      index: number;
+      id: string;
+      name: string;
+      matchScore: number;
+      location: string;
+      jobCategory: string;
+      experience: number;
+      skills: string[];
+      email: string;
+      phone: string;
+      status: string;
+    }>;
   }>> {
-    return client.post('/api/ai/chat', { message, include_candidates: includeCandidates });
+    return client.post('/api/ai/chat', { message, include_candidates: includeCandidates, conversation_history: conversationHistory });
   },
 
   /**

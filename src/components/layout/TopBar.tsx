@@ -1,4 +1,4 @@
-import { Bell, Search, ChevronDown, X, CheckCheck } from 'lucide-react'
+import { Bell, Search, ChevronDown, X, CheckCheck, LogOut, Settings } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
@@ -166,23 +166,48 @@ export default function TopBar() {
         </div>
 
         {/* User Menu */}
-        <div className="flex items-center gap-3 pl-4 border-l border-gray-200">
-          <Avatar className="w-9 h-9">
-            <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${user?.name}`} />
-            <AvatarFallback>{user?.name?.charAt(0) || 'U'}</AvatarFallback>
-          </Avatar>
-          <div className="text-sm">
-            <p className="font-medium text-gray-900">{user?.name || 'User'}</p>
-            <p className="text-xs text-gray-500">{user?.role || 'Recruiter'}</p>
-          </div>
-          <button 
-            onClick={logout}
-            className="p-1 hover:bg-gray-100 rounded transition-colors"
-          >
-            <ChevronDown className="w-4 h-4 text-gray-500" />
-          </button>
-        </div>
+        <UserMenu user={user} logout={logout} navigate={navigate} />
       </div>
     </header>
+  )
+}
+
+function UserMenu({ user, logout, navigate }: { user: any; logout: () => void; navigate: (path: string) => void }) {
+  const [open, setOpen] = useState(false)
+  const menuRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setOpen(false)
+    }
+    document.addEventListener('mousedown', handleClickOutside)
+    return () => document.removeEventListener('mousedown', handleClickOutside)
+  }, [])
+
+  return (
+    <div className="relative flex items-center gap-3 pl-4 border-l border-gray-200" ref={menuRef}>
+      <Avatar className="w-9 h-9">
+        <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${user?.name}`} />
+        <AvatarFallback>{user?.name?.charAt(0) || 'U'}</AvatarFallback>
+      </Avatar>
+      <div className="text-sm">
+        <p className="font-medium text-gray-900">{user?.name || 'User'}</p>
+        <p className="text-xs text-gray-500">{user?.role || 'Recruiter'}</p>
+      </div>
+      <button onClick={() => setOpen(!open)} className="p-1 hover:bg-gray-100 rounded transition-colors">
+        <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
+          <button onClick={() => { navigate('/settings'); setOpen(false) }} className="flex items-center gap-2 w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
+            <Settings className="w-4 h-4" /> Settings
+          </button>
+          <div className="border-t border-gray-100 my-1" />
+          <button onClick={() => { if (window.confirm('Are you sure you want to log out?')) logout() }} className="flex items-center gap-2 w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50">
+            <LogOut className="w-4 h-4" /> Log Out
+          </button>
+        </div>
+      )}
+    </div>
   )
 }

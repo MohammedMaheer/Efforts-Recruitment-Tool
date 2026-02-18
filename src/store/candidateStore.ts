@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { persist } from 'zustand/middleware'
 
 export interface Candidate {
   id: string
@@ -52,7 +53,7 @@ interface CandidateState {
   setCandidates: (candidates: Candidate[]) => void
 }
 
-export const useCandidateStore = create<CandidateState>((set, get) => ({
+export const useCandidateStore = create<CandidateState>()(persist((set, get) => ({
   candidates: [],
   shortlistedIds: [],
   addCandidate: (candidate) =>
@@ -71,4 +72,4 @@ export const useCandidateStore = create<CandidateState>((set, get) => ({
     })),
   isShortlisted: (id) => get().shortlistedIds.includes(id),
   setCandidates: (candidates: Candidate[]) => set({ candidates }),
-}))
+}), { name: 'candidate-storage', partialize: (state) => ({ shortlistedIds: state.shortlistedIds }) }))

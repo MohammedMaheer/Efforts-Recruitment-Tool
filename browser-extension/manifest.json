@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "AI Recruiter - LinkedIn Scraper",
+  "name": "Efforts Solutions AI Recruiter - LinkedIn Scraper",
   "version": "1.0.0",
-  "description": "Scrape LinkedIn profiles directly into AI Recruiter Platform",
+  "description": "Scrape LinkedIn profiles directly into Efforts Solutions AI Recruiter",
   "permissions": [
     "activeTab",
     "storage",

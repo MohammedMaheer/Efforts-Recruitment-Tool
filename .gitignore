@@ -38,9 +38,12 @@ ENV/
 .env
 .env.local
 .env.production
+.env.backup
 
 # Database
 *.db
+*.db-shm
+*.db-wal
 recruitment.db
 
 # OAuth tokens (sensitive)
@@ -49,3 +52,18 @@ oauth_tokens.json
 # OS
 .DS_Store
 Thumbs.db
+
+# Firebase
+.firebase/
+
+# Temp/backup files
+candidates_backup.json
+temp_backup*.json
+env_dump.json
+
+# Build/extraction artifacts
+_extracted/
+deploy-frontend/
+
+# GCloud
+.gcloudignore

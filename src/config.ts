@@ -70,7 +70,7 @@ export const config = {
   
   // API configuration
   api: {
-    timeout: 30000, // 30 seconds
+    timeout: 45000, // 45 seconds (Cloud Run cold start)
     retries: 2,
     retryDelay: 1000,
   },

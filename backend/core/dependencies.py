@@ -3,8 +3,10 @@ Dependency Injection Container
 Clean separation of concerns with proper dependency management
 """
 from functools import lru_cache
-from typing import Generator, AsyncGenerator
+from typing import Generator, AsyncGenerator, Optional
 from contextlib import asynccontextmanager
+
+from fastapi import Depends, HTTPException, Header, status
 
 from services.database_service import DatabaseService, get_db_service
 from services.local_ai_service import LocalAIService, get_local_ai_service
@@ -13,6 +15,63 @@ from services.email_scraper import EmailScraperService, get_scraper_service
 from services.resume_parser import ResumeParser
 from services.matching_engine import MatchingEngine
 from services.token_storage import TokenStorage, get_token_storage
+
+
+# ============================================================================
+# Authentication Dependencies
+# ============================================================================
+
+async def require_auth(authorization: Optional[str] = Header(None)) -> dict:
+    """
+    FastAPI dependency that enforces Bearer token authentication.
+    Use as: current_user: dict = Depends(require_auth)
+    Returns the authenticated user dict with id, email, name, role, etc.
+    """
+    if not authorization:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authorization header required",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid authorization format. Use: Bearer <token>",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    from services.auth_service import get_auth_service
+    auth_service = get_auth_service()
+    user = auth_service.verify_token(parts[1])
+    
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or expired token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    
+    return user
+
+
+async def optional_auth(authorization: Optional[str] = Header(None)) -> Optional[dict]:
+    """
+    FastAPI dependency that optionally validates auth.
+    Returns user dict if valid token provided, None otherwise.
+    Use for endpoints that work with or without authentication.
+    """
+    if not authorization:
+        return None
+    
+    parts = authorization.split()
+    if len(parts) != 2 or parts[0].lower() != "bearer":
+        return None
+    
+    from services.auth_service import get_auth_service
+    auth_service = get_auth_service()
+    return auth_service.verify_token(parts[1])
 
 
 class ServiceContainer:

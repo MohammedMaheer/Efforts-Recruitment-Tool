@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from 'react'
+import { useEffect, useCallback, useState, useRef } from 'react'
 import { useCandidateStore, type Candidate } from '@/store/candidateStore'
 import { useAuthStore } from '@/store/authStore'
 import config from '@/config'
@@ -115,28 +115,79 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [totalCount, setTotalCount] = useState(0)
+  const abortControllerRef = useRef<AbortController | null>(null)
 
   const fetchCandidates = useCallback(async () => {
+    // Cancel any in-flight fetch to prevent race conditions
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
+    }
+    const controller = new AbortController()
+    abortControllerRef.current = controller
+
     setLoading(true)
     setError(null)
     
     try {
       const token = useAuthStore.getState().token
-      const response = await fetch(`${config.endpoints.candidates}?limit=10000`, {
+      
+      // Fetch in pages of 2000 for faster initial load
+      const pageSize = 2000
+      let allCandidates: Candidate[] = []
+      let totalFromServer = 0
+      
+      // First page - fast initial render
+      const firstResponse = await fetch(`${config.endpoints.candidates}?limit=${pageSize}&page=1`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
+        signal: controller.signal,
       })
       
-      if (!response.ok) {
-        throw new Error(`Failed to fetch candidates: ${response.statusText}`)
+      if (!firstResponse.ok) {
+        throw new Error(`Failed to fetch candidates: ${firstResponse.statusText}`)
       }
       
-      const data = await response.json()
-      const transformedCandidates = (data.candidates || []).map(transformCandidate)
+      const firstData = await firstResponse.json()
+      const firstBatch = (firstData.candidates || []).map(transformCandidate)
+      totalFromServer = firstData.total || firstBatch.length
+      allCandidates = firstBatch
       
-      setCandidates(transformedCandidates)
-      setTotalCount(data.total || transformedCandidates.length)
+      // Show first page immediately
+      if (!controller.signal.aborted) {
+        setCandidates(allCandidates)
+        setTotalCount(totalFromServer)
+      }
+      
+      // Fetch remaining pages in parallel if there are more
+      if (totalFromServer > pageSize && !controller.signal.aborted) {
+        const totalPages = Math.ceil(totalFromServer / pageSize)
+        const pagePromises = []
+        for (let p = 2; p <= totalPages; p++) {
+          pagePromises.push(
+            fetch(`${config.endpoints.candidates}?limit=${pageSize}&page=${p}`, {
+              headers: token ? { Authorization: `Bearer ${token}` } : {},
+              signal: controller.signal,
+            }).then(r => r.ok ? r.json() : null)
+          )
+        }
+        const results = await Promise.all(pagePromises)
+        for (const data of results) {
+          if (data) {
+            const batch = (data.candidates || []).map(transformCandidate)
+            if (batch.length > 0) allCandidates = [...allCandidates, ...batch]
+          }
+        }
+        if (!controller.signal.aborted) {
+          setCandidates(allCandidates)
+        }
+      }
+      
+      if (!controller.signal.aborted) {
+        setTotalCount(totalFromServer)
+      }
       
     } catch (err) {
+      // Ignore abort errors — they're expected when a newer fetch supersedes
+      if (err instanceof DOMException && err.name === 'AbortError') return
       const message = err instanceof Error ? err.message : 'Failed to fetch candidates'
       setError(message)
       console.error('Error fetching candidates:', err)
@@ -176,15 +227,15 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
       : 0,  // Alias
     recentCount: candidates.filter(c => {
       const date = new Date(c.appliedDate)
-      const weekAgo = new Date()
-      weekAgo.setDate(weekAgo.getDate() - 7)
-      return date >= weekAgo
+      const oneDayAgo = new Date()
+      oneDayAgo.setDate(oneDayAgo.getDate() - 1)
+      return date >= oneDayAgo
     }).length,
     recentUploads: candidates.filter(c => {
       const date = new Date(c.appliedDate)
-      const weekAgo = new Date()
-      weekAgo.setDate(weekAgo.getDate() - 7)
-      return date >= weekAgo
+      const oneDayAgo = new Date()
+      oneDayAgo.setDate(oneDayAgo.getDate() - 1)
+      return date >= oneDayAgo
     }).length  // Alias
   }
 

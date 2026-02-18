@@ -25,13 +25,17 @@ import {
   Copy,
   Briefcase,
   X,
-  Upload
+  Upload,
+  Square,
+  CheckSquare,
+  Eye
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Avatar, AvatarFallback } from '@/components/ui/Avatar'
 import { useCandidates } from '@/hooks/useCandidates'
+import { useCandidateStore } from '@/store/candidateStore'
 import type { Candidate } from '@/store/candidateStore'
 import { useNavigate } from 'react-router-dom'
 import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
@@ -71,8 +75,8 @@ const suggestedPrompts = [
   {
     icon: Brain,
     text: 'Rank candidates using ML for software engineer',
-    color: 'text-purple-600',
-    bgColor: 'bg-purple-50 hover:bg-purple-100',
+    color: 'text-primary-600',
+    bgColor: 'bg-primary-50 hover:bg-primary-100',
     category: 'ml'
   },
   {
@@ -113,8 +117,8 @@ const suggestedPrompts = [
   {
     icon: Mail,
     text: 'Draft outreach email for top candidates',
-    color: 'text-indigo-600',
-    bgColor: 'bg-indigo-50 hover:bg-indigo-100',
+    color: 'text-blue-600',
+    bgColor: 'bg-blue-50 hover:bg-blue-100',
     category: 'email'
   },
   {
@@ -388,64 +392,106 @@ export default function AIAssistant() {
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
   const [showJobMatchModal, setShowJobMatchModal] = useState(false)
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
-  const { candidates } = useCandidates({ autoFetch: true })
+  const { candidates, totalCount } = useCandidates({ autoFetch: true })
+  const toggleShortlist = useCandidateStore((s) => s.toggleShortlist)
+  const isShortlisted = useCandidateStore((s) => s.isShortlisted)
   const navigate = useNavigate()
   const aiStatus = useAIStatus()
 
+  const toggleSelect = (id: string) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  const handleShortlistSelected = async (candidateList: Candidate[]) => {
+    const toShortlist = candidateList.filter(c => selectedIds.has(c.id) && c.status !== 'Shortlisted')
+    if (toShortlist.length === 0) return
+    let count = 0
+    for (const c of toShortlist) {
+      try {
+        await candidateApi.updateStatus(c.id, 'Shortlisted')
+        if (!isShortlisted(c.id)) toggleShortlist(c.id)
+        count++
+      } catch (e) { console.error('Shortlist error:', e) }
+    }
+    setSelectedIds(new Set())
+    const confirmMsg: Message = {
+      id: Date.now().toString(),
+      type: 'ai',
+      content: `**${count} candidate${count !== 1 ? 's' : ''}** shortlisted successfully.`,
+      timestamp: new Date(),
+      intent: 'shortlist_confirm',
+      actions: [{ label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }]
+    }
+    setMessages(prev => [...prev, confirmMsg])
+  }
+
+  // Track whether welcome has been generated to prevent re-rendering on each page load
+  const welcomeGenerated = useRef(false)
+  
   useEffect(() => {
-    // Welcome message with enhanced capabilities
+    // Only generate welcome message once when we have data
+    // Use totalCount (server-side accurate count) to avoid the 500→1000→5000 flicker
+    if (welcomeGenerated.current) return
+    if (candidates.length === 0) return
+    welcomeGenerated.current = true
+    
+    // Build smart welcome with actual candidate insights
+    const topSkills = new Map<string, number>()
+    const categories = new Map<string, number>()
+    const locations = new Map<string, number>()
+    let strongCount = 0
+    let recentCount = 0
+    const today = new Date()
+    
+    // Use the candidates we have so far for insights
+    candidates.forEach(c => {
+      c.skills?.forEach(s => topSkills.set(s, (topSkills.get(s) || 0) + 1))
+      if (c.jobCategory) categories.set(c.jobCategory, (categories.get(c.jobCategory) || 0) + 1)
+      if (c.location) locations.set(c.location, (locations.get(c.location) || 0) + 1)
+      if (c.matchScore >= 70) strongCount++
+      const d = new Date(c.appliedDate)
+      if (today.getTime() - d.getTime() < 86400000) recentCount++
+    })
+
+    // Use server totalCount for the headline number (accurate from first API call)
+    const displayTotal = totalCount > 0 ? totalCount : candidates.length
+    const topSkillsList = [...topSkills.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([s]) => s)
+    const topCategories = [...categories.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([c, n]) => `${c} (${n})`)
+    const avgScore = candidates.length > 0 ? (candidates.reduce((a, c) => a + (c.matchScore || 0), 0) / candidates.length).toFixed(0) : '0'
+
     const welcomeMessage: Message = {
       id: '0',
       type: 'ai',
-      content: `Hi! I'm your **AI Recruitment Assistant** powered by advanced ML features.
+      content: `Welcome! I'm your **AI Recruitment Assistant** with **${displayTotal} candidates** ready to analyze.
 
-${candidates.length > 0 ? `I can see **${candidates.length} candidates** in your database.` : ''}
+${topCategories.length > 0 ? `**Top Categories:** ${topCategories.join(' · ')}` : ''}
+${topSkillsList.length > 0 ? `**Trending Skills:** ${topSkillsList.join(', ')}` : ''}
 
-**Here's what I can help you with:**
-• **ML Ranking** — Intelligently rank candidates for any role
-• **Job Matching** — Find best fits for open positions
-• **Predictive Analytics** — Forecast hiring success
-• **Duplicate Detection** — Clean up your candidate pool
-• **Email Templates** — Draft professional outreach
-• **Calendar** — Schedule interviews
-• **SMS Notifications** — Send quick updates
+**What I can do:**
+• **Smart Search** — Find candidates by role, skill, location, or any criteria
+• **Job Matching** — Upload a JD and I'll rank your best fits
+• **ML Ranking** — Predict hiring success with machine learning
+• **Analytics** — Pipeline insights, quality breakdown, hiring forecasts
+• **Actions** — Shortlist, email, schedule interviews directly from chat
 
-Try one of the suggestions below or ask me anything!`,
+Try a suggestion below or ask anything!`,
       timestamp: new Date(),
-      insights: candidates.length > 0 ? [
-        {
-          title: 'Total Candidates',
-          value: candidates.length,
-          icon: Users,
-          color: 'blue'
-        },
-        {
-          title: 'Avg Score',
-          value: `${(candidates.reduce((acc, c) => acc + (c.matchScore || 0), 0) / candidates.length).toFixed(0)}%`,
-          icon: TrendingUp,
-          color: 'green'
-        },
-        {
-          title: 'Strong Matches',
-          value: candidates.filter(c => c.status === 'Strong').length,
-          icon: Star,
-          color: 'yellow'
-        },
-        {
-          title: 'New Today',
-          value: candidates.filter(c => {
-            const today = new Date().toDateString()
-            return new Date(c.appliedDate).toDateString() === today
-          }).length,
-          icon: Clock,
-          color: 'purple'
-        }
+      insights: displayTotal > 0 ? [
+        { title: 'Candidates', value: displayTotal, icon: Users, color: 'blue' },
+        { title: 'Avg Score', value: `${avgScore}%`, icon: TrendingUp, color: 'green' },
+        { title: 'Strong (70%+)', value: strongCount, icon: Star, color: 'yellow' },
+        { title: 'New Today', value: recentCount, icon: Clock, color: 'indigo' }
       ] : undefined
     }
     setMessages([welcomeMessage])
-  }, [candidates.length])
+  }, [candidates.length, totalCount])
 
   useEffect(() => {
     scrollToBottom()
@@ -487,7 +533,7 @@ Try one of the suggestions below or ask me anything!`,
           response = `**ML-Powered Ranking Complete**\n\nI've analyzed ${candidateIds.length} candidates using machine learning. Here are the top matches ranked by predicted success:`
           
           insights = [
-            { title: 'Analyzed', value: candidateIds.length, icon: Brain, color: 'purple' },
+            { title: 'Analyzed', value: candidateIds.length, icon: Brain, color: 'indigo' },
             { title: 'Top Score', value: `${(rankings[0]?.score * 100 || 0).toFixed(0)}%`, icon: Star, color: 'yellow' },
             { title: 'Avg Score', value: `${(rankings.reduce((a, r) => a + r.score, 0) / rankings.length * 100).toFixed(0)}%`, icon: TrendingUp, color: 'green' }
           ]
@@ -509,7 +555,7 @@ Try one of the suggestions below or ask me anything!`,
     else if (lowerQuery.includes('predict') || lowerQuery.includes('analytics') || lowerQuery.includes('forecast')) {
       intent = 'predictive_analytics'
       try {
-        const topCandidates = candidates.sort((a, b) => b.matchScore - a.matchScore).slice(0, 5)
+        const topCandidates = [...candidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, 5)
         const predictions = await Promise.all(
           topCandidates.map(c => advancedApi.analytics.predict(c.id).catch(() => null))
         )
@@ -622,7 +668,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     // RESUME QUALITY
     else if (lowerQuery.includes('quality') || lowerQuery.includes('resume quality') || lowerQuery.includes('analyze resume')) {
       intent = 'resume_quality'
-      filteredCandidates = candidates.sort((a, b) => b.matchScore - a.matchScore).slice(0, 10)
+      filteredCandidates = [...candidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, 10)
       
       const highQuality = filteredCandidates.filter(c => c.matchScore >= 70).length
       const mediumQuality = filteredCandidates.filter(c => c.matchScore >= 50 && c.matchScore < 70).length
@@ -644,7 +690,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     // JOB MATCHING
     else if (lowerQuery.includes('match') || lowerQuery.includes('job') || lowerQuery.includes('position') || lowerQuery.includes('fit')) {
       intent = 'job_matching'
-      filteredCandidates = candidates.sort((a, b) => b.matchScore - a.matchScore).slice(0, 10)
+      filteredCandidates = [...candidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, 10)
       response = `**Job Matching Results**\n\nTop candidates matched to your open positions:`
       
       actions = [
@@ -797,62 +843,87 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     }])
 
     try {
-      // Check if this looks like a candidate search query
-      const lowerInput = userInput.toLowerCase()
-      const isSearchQuery = lowerInput.includes('find') || lowerInput.includes('search') || 
-                            lowerInput.includes('smart search') || lowerInput.includes('who') ||
-                            lowerInput.includes('candidates for') || lowerInput.includes('developers') ||
-                            lowerInput.includes('engineers')
+      // Build conversation history for backend context
+      const conversationHistory = messages
+        .filter(m => !m.loading && m.content)
+        .slice(-10)
+        .map(m => ({
+          role: m.type === 'user' ? 'user' : 'assistant',
+          content: m.content.substring(0, 500)
+        }))
       
-      let smartSearchResults: Candidate[] | null = null
-      let smartSearchResponse = ''
+      // Use AI chat (3-tier: Gemini → LLM → OpenAI → rule-based)
+      // The backend now returns candidates_lookup alongside the text response
+      const chatResult = await aiApi.chat(userInput, true, conversationHistory)
       
-      // Try AI smart search for search-like queries
-      if (isSearchQuery) {
-        try {
-          const searchResult = await aiApi.smartSearch(userInput, 10)
-          if (searchResult.data?.results && searchResult.data.results.length > 0) {
-            smartSearchResults = searchResult.data.results.map((r: { candidate: Candidate }) => r.candidate)
-            smartSearchResponse = `**AI Smart Search Results** (via ${searchResult.data.source})\n\nFound **${searchResult.data.results.length}** candidates out of ${searchResult.data.total_searched} searched:\n\n`
-            searchResult.data.results.forEach((r: { candidate: Candidate; relevance_score: number; match_reasons: string[] }, idx: number) => {
-              const tier = r.relevance_score >= 80 ? '★' : r.relevance_score >= 60 ? '●' : '○'
-              smartSearchResponse += `${tier} **#${idx + 1} ${r.candidate.name}** — ${r.relevance_score}% relevance\n`
-              if (r.match_reasons?.length) {
-                smartSearchResponse += `   _${r.match_reasons.slice(0, 2).join(', ')}_\n`
+      // Remove loading message
+      setMessages(prev => prev.filter(m => m.id !== loadingId))
+      
+      const aiText = chatResult.data?.response || 'AI service unavailable. Please try again.'
+      const sourceInfo = chatResult.data?.source || ''
+      const candidatesLookup = chatResult.data?.candidates_lookup || []
+      
+      // Extract candidate references from AI text (e.g. "#6." or "#25." or "**#6.")
+      // and match them to the candidates_lookup by index
+      let displayCandidates: Candidate[] = []
+      
+      if (candidatesLookup.length > 0) {
+        // Find all #N. references in the AI text
+        const refPattern = /[#*]*#(\d+)\.\s/g
+        const mentionedIndices = new Set<number>()
+        let match
+        while ((match = refPattern.exec(aiText)) !== null) {
+          mentionedIndices.add(parseInt(match[1]))
+        }
+        
+        if (mentionedIndices.size > 0) {
+          // Map mentioned indices to candidates from lookup
+          for (const idx of mentionedIndices) {
+            const lookupEntry = candidatesLookup.find(c => c.index === idx)
+            if (lookupEntry) {
+              // Try to find the full candidate in local data first
+              const localCandidate = candidates.find(c => c.id === lookupEntry.id)
+              if (localCandidate) {
+                displayCandidates.push(localCandidate)
+              } else {
+                // Use lookup data as a lightweight candidate
+                displayCandidates.push({
+                  id: lookupEntry.id,
+                  name: lookupEntry.name,
+                  matchScore: lookupEntry.matchScore,
+                  location: lookupEntry.location,
+                  jobCategory: lookupEntry.jobCategory,
+                  experience: lookupEntry.experience,
+                  skills: lookupEntry.skills,
+                  email: lookupEntry.email,
+                  phone: lookupEntry.phone,
+                  status: lookupEntry.status,
+                  // Fill defaults for required Candidate fields
+                  appliedDate: new Date().toISOString(),
+                  summary: '',
+                  isShortlisted: lookupEntry.status === 'Shortlisted',
+                } as Candidate)
               }
-              smartSearchResponse += '\n'
-            })
+            }
           }
-        } catch (searchErr) {
-          console.warn('Smart search unavailable:', searchErr)
+          // Sort by match score descending
+          displayCandidates.sort((a, b) => (b.matchScore ?? 0) - (a.matchScore ?? 0))
         }
       }
       
-      // Use AI chat (3-tier: LLM → OpenAI → rule-based)
-      const chatResult = await aiApi.chat(userInput)
-      
-      // Parse candidates from local data as fallback
-      const { candidates: foundCandidates, actions, insights } = await parseQuery(userInput)
-      
-      // Remove loading and add real message
-      setMessages(prev => prev.filter(m => m.id !== loadingId))
-      
-      const displayCandidates = smartSearchResults || foundCandidates
-      const displayContent = smartSearchResults 
-        ? smartSearchResponse + (chatResult.data?.response ? `\n---\n${chatResult.data.response}` : '')
-        : chatResult.data?.response || 'AI service unavailable. Please try again.'
-      
-      const sourceInfo = chatResult.data?.source ? ` (${chatResult.data.source})` : ''
+      // If no candidates extracted from AI text, fall back to local parseQuery
+      if (displayCandidates.length === 0) {
+        const { candidates: fallbackCandidates } = await parseQuery(userInput)
+        displayCandidates = fallbackCandidates
+      }
       
       const aiMessage: Message = {
         id: (Date.now() + 2).toString(),
         type: 'ai',
-        content: displayContent + (sourceInfo ? `\n\n_Source: ${sourceInfo}_` : ''),
+        content: aiText + (sourceInfo ? `\n\n_Source: ${sourceInfo}_` : ''),
         timestamp: new Date(),
         candidates: displayCandidates,
-        intent: smartSearchResults ? 'smart_search' : 'ai_response',
-        actions,
-        insights
+        intent: 'ai_response'
       }
 
       setMessages(prev => [...prev, aiMessage])
@@ -1005,6 +1076,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                 for (const c of matchedCandidates) {
                   try {
                     await candidateApi.updateStatus(c.id, 'Shortlisted')
+                    if (!isShortlisted(c.id)) toggleShortlist(c.id)
                     shortlisted++
                   } catch (e) {
                     console.error(`Failed to shortlist ${c.name}:`, e)
@@ -1067,8 +1139,80 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     }
   }
 
+  /**
+   * Split AI response into header + per-candidate sections.
+   * E.g. "#1. Name | Score..." blocks get separated so each can render above its card.
+   */
+  const splitContentByCandidates = (content: string, count: number): { header: string; sections: string[] } => {
+    // Match "#N." patterns at start of line (with optional bold **)
+    const first = content.search(/(?:^|\n)\s*\*{0,2}#1\./)
+    if (first === -1 || count === 0) {
+      return { header: content, sections: [] }
+    }
+    const header = content.slice(0, first).trim()
+    const body = content.slice(first)
+    
+    const sections: string[] = []
+    for (let i = 1; i <= count; i++) {
+      const current = new RegExp(`(?:^|\\n)\\s*\\*{0,2}#${i}\\.`)
+      const next = i < count ? new RegExp(`(?:^|\\n)\\s*\\*{0,2}#${i + 1}\\.`) : null
+      const startMatch = body.search(current)
+      if (startMatch === -1) { sections.push(''); continue }
+      const endMatch = next ? body.slice(startMatch + 1).search(next) : -1
+      if (endMatch === -1) {
+        sections.push(body.slice(startMatch).trim())
+      } else {
+        sections.push(body.slice(startMatch, startMatch + 1 + endMatch).trim())
+      }
+    }
+    return { header, sections }
+  }
+
+  /**
+   * Format AI response content with enhanced markdown rendering and clickable candidate refs.
+   * Converts #N. Name patterns into clickable links that navigate to candidate profile.
+   */
+  const formatAIContent = (content: string, messageCandidates?: Candidate[]): string => {
+    let html = content
+    
+    // Make candidate #N. references clickable if we have matching candidates
+    if (messageCandidates && messageCandidates.length > 0) {
+      // Match patterns like "#6. ANJALI J S" or "**#6. ANJALI J S**"
+      html = html.replace(/(\*{0,2})#(\d+)\.\s+([A-Z][A-Za-z\s.]+?)(?=\s*\||\s*\*{0,2}\s*\|)/g, (match, bold, num, name) => {
+        const trimmedName = name.trim()
+        // Find matching candidate by name
+        const cand = messageCandidates.find(c => {
+          const cn = c.name.toLowerCase().trim()
+          const rn = trimmedName.toLowerCase().trim()
+          return cn === rn || cn.includes(rn) || rn.includes(cn)
+        })
+        if (cand) {
+          return `${bold}<a href="/candidates/${cand.id}" class="ai-candidate-link" data-candidate-id="${cand.id}">#${num}. ${trimmedName}</a>${bold} `
+        }
+        return match
+      })
+    }
+    
+    // Horizontal rules --- or ***
+    html = html.replace(/^[\s]*[-*]{3,}[\s]*$/gm, '<hr class="my-3 border-gray-200"/>')
+    
+    // Bold **text**
+    html = html.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
+    
+    // Italic _text_ (single-line only to avoid matching across paragraphs)
+    html = html.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '<em class="text-gray-500">$1</em>')
+    
+    // Bullet points (- item)
+    html = html.replace(/^(\s*)[-•]\s+(.+)$/gm, '$1<span class="flex gap-2"><span class="text-primary-400">•</span><span>$2</span></span>')
+    
+    // Newlines
+    html = html.replace(/\n/g, '<br/>')
+    
+    return html
+  }
+
   return (
-    <div className="h-full flex flex-col bg-gradient-to-br from-primary-50/30 via-white to-purple-50/30">
+    <div className="h-full flex flex-col bg-gradient-to-br from-primary-50/30 via-white to-primary-50/20">
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
@@ -1087,7 +1231,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                 repeat: Infinity,
                 repeatDelay: 3
               }}
-              className="w-12 h-12 bg-gradient-to-br from-primary-500 to-purple-600 rounded-2xl flex items-center justify-center shadow-lg"
+              className="w-12 h-12 bg-gradient-to-br from-primary-600 to-primary-800 rounded-2xl flex items-center justify-center shadow-lg"
             >
               <Brain className="w-6 h-6 text-white" />
             </motion.div>
@@ -1103,7 +1247,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="flex items-center gap-1 bg-purple-50 text-purple-700 border-purple-200">
+            <Badge variant="outline" className="flex items-center gap-1 bg-primary-50 text-primary-700 border-primary-200">
               <Brain className="w-3 h-3" />
               ML Ranking
             </Badge>
@@ -1149,7 +1293,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                 className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
                   message.type === 'user'
                     ? 'bg-gradient-to-br from-gray-600 to-gray-700'
-                    : 'bg-gradient-to-br from-primary-500 to-purple-600'
+                    : 'bg-gradient-to-br from-primary-600 to-primary-800'
                 } shadow-md`}
               >
                 {message.type === 'user' ? (
@@ -1175,13 +1319,208 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                       <span className="text-sm text-gray-500">Processing...</span>
                     </div>
                   ) : (
-                    <div className="text-sm leading-relaxed whitespace-pre-wrap" 
-                      dangerouslySetInnerHTML={{ 
-                        __html: message.content
-                          .replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>')
-                          .replace(/\n/g, '<br/>') 
-                      }} 
-                    />
+                    (() => {
+                      const hasCandidates = message.candidates && message.candidates.length > 0
+                      const split = hasCandidates
+                        ? splitContentByCandidates(message.content, message.candidates!.length)
+                        : null
+
+                      return (
+                        <>
+                          {/* Header / full text (if no per-candidate split, show everything) */}
+                          <div className="text-sm leading-relaxed whitespace-pre-wrap ai-response-content" 
+                            onClick={(e) => {
+                              const target = e.target as HTMLElement
+                              const link = target.closest('a.ai-candidate-link')
+                              if (link) {
+                                e.preventDefault()
+                                const candidateId = link.getAttribute('data-candidate-id')
+                                if (candidateId) navigate(`/candidates/${candidateId}`)
+                              }
+                            }}
+                            dangerouslySetInnerHTML={{ 
+                              __html: formatAIContent(
+                                split && split.sections.length > 0 ? split.header : message.content,
+                                message.candidates
+                              )
+                            }} 
+                          />
+
+                          {/* Interleaved: Per-candidate AI section → candidate card */}
+                          {hasCandidates && split && split.sections.length > 0 && (
+                            <motion.div
+                              initial={{ opacity: 0, height: 0 }}
+                              animate={{ opacity: 1, height: 'auto' }}
+                              transition={{ delay: 0.3 }}
+                              className="mt-4 space-y-3"
+                            >
+                              {/* Bulk actions bar */}
+                              <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                                <button
+                                  onClick={() => {
+                                    const all = message.candidates!.map(c => c.id)
+                                    setSelectedIds(prev => {
+                                      const allSelected = all.every(id => prev.has(id))
+                                      return allSelected ? new Set() : new Set(all)
+                                    })
+                                  }}
+                                  className="text-xs text-gray-600 hover:text-blue-600 flex items-center gap-1"
+                                >
+                                  {message.candidates!.every(c => selectedIds.has(c.id))
+                                    ? <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
+                                    : <Square className="w-3.5 h-3.5" />}
+                                  {selectedIds.size > 0 ? `${[...selectedIds].filter(id => message.candidates!.some(c => c.id === id)).length} selected` : 'Select all'}
+                                </button>
+                                {selectedIds.size > 0 && (
+                                  <div className="flex items-center gap-2">
+                                    <motion.button
+                                      whileHover={{ scale: 1.05 }}
+                                      whileTap={{ scale: 0.95 }}
+                                      onClick={() => handleShortlistSelected(message.candidates!)}
+                                      className="flex items-center gap-1 px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium"
+                                    >
+                                      <CheckCircle2 className="w-3 h-3" />
+                                      Shortlist Selected
+                                    </motion.button>
+                                  </div>
+                                )}
+                              </div>
+
+                              {message.candidates!.map((candidate, idx) => (
+                                <motion.div
+                                  key={candidate.id}
+                                  initial={{ opacity: 0, x: -20 }}
+                                  animate={{ opacity: 1, x: 0 }}
+                                  transition={{ delay: 0.4 + idx * 0.05 }}
+                                >
+                                  {/* Per-candidate AI detail section */}
+                                  {split.sections[idx] && (
+                                    <div 
+                                      className="text-xs leading-relaxed whitespace-pre-wrap ai-response-content bg-gray-50 border border-gray-100 rounded-t-xl px-3 py-2 text-gray-700"
+                                      onClick={(e) => {
+                                        const target = e.target as HTMLElement
+                                        const link = target.closest('a.ai-candidate-link')
+                                        if (link) {
+                                          e.preventDefault()
+                                          const candidateId = link.getAttribute('data-candidate-id')
+                                          if (candidateId) navigate(`/candidates/${candidateId}`)
+                                        }
+                                      }}
+                                      dangerouslySetInnerHTML={{ 
+                                        __html: formatAIContent(split.sections[idx], message.candidates)
+                                      }} 
+                                    />
+                                  )}
+                                  {/* Candidate card */}
+                                  <Card 
+                                    className={`hover:shadow-md transition-all border-2 overflow-hidden ${split.sections[idx] ? 'rounded-t-none border-t-0' : ''} ${
+                                      selectedIds.has(candidate.id) ? 'border-blue-400 bg-blue-50/30' : 'hover:border-primary-200'
+                                    }`}
+                                  >
+                                    <CardContent className="p-3">
+                                      {/* Row 1: Checkbox + Rank + Avatar + Name ... Score + Status */}
+                                      <div className="flex items-center gap-2">
+                                        <button
+                                          onClick={(e) => { e.stopPropagation(); toggleSelect(candidate.id) }}
+                                          className="flex-shrink-0"
+                                        >
+                                          {selectedIds.has(candidate.id)
+                                            ? <CheckSquare className="w-4.5 h-4.5 text-blue-600" />
+                                            : <Square className="w-4.5 h-4.5 text-gray-400 hover:text-gray-600" />}
+                                        </button>
+                                        <div className="w-7 h-7 flex-shrink-0 rounded-full bg-gradient-to-br from-primary-100 to-primary-200 flex items-center justify-center text-primary-700 font-bold text-xs">
+                                          {idx + 1}
+                                        </div>
+                                        <Avatar className="w-8 h-8 flex-shrink-0 border-2 border-white shadow">
+                                          <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-primary-100 to-primary-200 text-primary-700">
+                                            {candidate.name.charAt(0)}
+                                          </AvatarFallback>
+                                        </Avatar>
+                                        <div className="min-w-0 flex-1 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
+                                          <h4 className="font-semibold text-gray-900 text-sm truncate hover:text-blue-600">{candidate.name}</h4>
+                                          <p className="text-xs text-gray-500 flex items-center gap-1 truncate">
+                                            <MapPin className="w-3 h-3 flex-shrink-0" />
+                                            <span className="truncate">{candidate.location || 'N/A'}</span>
+                                          </p>
+                                        </div>
+                                        <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
+                                          <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
+                                            {(candidate.matchScore ?? 50).toFixed(0)}%
+                                          </p>
+                                          <Badge
+                                            className={`text-xs whitespace-nowrap ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}
+                                          >
+                                            {candidate.status}
+                                          </Badge>
+                                        </div>
+                                      </div>
+                                      {/* Row 2: Skills ... Action buttons */}
+                                      <div className="flex items-center justify-between mt-2 pl-[4.5rem]">
+                                        <div className="flex items-center gap-1 flex-wrap min-w-0 overflow-hidden max-w-[60%]">
+                                          {candidate.skills.slice(0, 3).map((skill: string) => (
+                                            <Badge key={skill} variant="outline" className="text-[10px] px-1.5 py-0 whitespace-nowrap">
+                                              {skill.length > 12 ? skill.slice(0, 12) + '..' : skill}
+                                            </Badge>
+                                          ))}
+                                          {(candidate as any).jobCategory && (candidate as any).jobCategory !== 'General' && (
+                                            <Badge className="text-[10px] px-1.5 py-0 bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap">
+                                              {((candidate as any).jobCategory || '').length > 16 ? ((candidate as any).jobCategory || '').slice(0, 16) + '..' : (candidate as any).jobCategory}
+                                            </Badge>
+                                          )}
+                                        </div>
+                                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                                          <motion.button
+                                            whileHover={{ scale: 1.1 }}
+                                            whileTap={{ scale: 0.9 }}
+                                            onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }}
+                                            className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"
+                                            title="View profile"
+                                          >
+                                            <Eye className="w-3 h-3" />
+                                            View
+                                          </motion.button>
+                                          {candidate.status !== 'Shortlisted' && (
+                                            <motion.button
+                                              whileHover={{ scale: 1.1 }}
+                                              whileTap={{ scale: 0.9 }}
+                                              onClick={async (e) => {
+                                                e.stopPropagation()
+                                                try {
+                                                  await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+                                                  if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id)
+                                                  const confirmMsg: Message = {
+                                                    id: Date.now().toString(),
+                                                    type: 'ai',
+                                                    content: `**${candidate.name}** has been shortlisted.`,
+                                                    timestamp: new Date(),
+                                                    intent: 'shortlist_single',
+                                                  }
+                                                  setMessages(prev => [...prev, confirmMsg])
+                                                } catch (err) {
+                                                  console.error('Shortlist error:', err)
+                                                }
+                                              }}
+                                              className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"
+                                              title="Shortlist this candidate"
+                                            >
+                                              <CheckCircle2 className="w-3 h-3" />
+                                              Shortlist
+                                            </motion.button>
+                                          )}
+                                          {candidate.status === 'Shortlisted' && (
+                                            <Badge className="bg-green-100 text-green-700 text-xs whitespace-nowrap">Shortlisted</Badge>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </CardContent>
+                                  </Card>
+                                </motion.div>
+                              ))}
+                            </motion.div>
+                          )}
+                        </>
+                      )
+                    })()
                   )}
                   
                   {/* Insight Cards */}
@@ -1198,7 +1537,8 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                           blue: 'bg-blue-50 text-blue-700 border-blue-200',
                           green: 'bg-green-50 text-green-700 border-green-200',
                           yellow: 'bg-yellow-50 text-yellow-700 border-yellow-200',
-                          purple: 'bg-purple-50 text-purple-700 border-purple-200',
+                          purple: 'bg-primary-50 text-primary-700 border-primary-200',
+                          indigo: 'bg-primary-50 text-primary-700 border-primary-200',
                           orange: 'bg-orange-50 text-orange-700 border-orange-200',
                           red: 'bg-red-50 text-red-700 border-red-200',
                         }
@@ -1221,90 +1561,89 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                     </motion.div>
                   )}
                   
-                  {/* Candidate Results */}
-                  {message.candidates && message.candidates.length > 0 && (
+                  {/* Candidate Results (non-split fallback: when AI text has no per-candidate sections) */}
+                  {message.candidates && message.candidates.length > 0 && (() => {
+                    const split = splitContentByCandidates(message.content, message.candidates!.length)
+                    // Only render old-style list if we didn't already render interleaved above
+                    return split.sections.length > 0 ? null : (
                     <motion.div
                       initial={{ opacity: 0, height: 0 }}
                       animate={{ opacity: 1, height: 'auto' }}
                       transition={{ delay: 0.3 }}
-                      className="mt-4 space-y-3"
+                      className="mt-4 space-y-2"
                     >
-                      {message.candidates.map((candidate, idx) => (
+                      <div className="flex items-center justify-between bg-gray-50 rounded-lg px-3 py-2">
+                        <button
+                          onClick={() => {
+                            const all = message.candidates!.map(c => c.id)
+                            setSelectedIds(prev => {
+                              const allSelected = all.every(id => prev.has(id))
+                              return allSelected ? new Set() : new Set(all)
+                            })
+                          }}
+                          className="text-xs text-gray-600 hover:text-blue-600 flex items-center gap-1"
+                        >
+                          {message.candidates!.every(c => selectedIds.has(c.id))
+                            ? <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
+                            : <Square className="w-3.5 h-3.5" />}
+                          {selectedIds.size > 0 ? `${[...selectedIds].filter(id => message.candidates!.some(c => c.id === id)).length} selected` : 'Select all'}
+                        </button>
+                        {selectedIds.size > 0 && (
+                          <div className="flex items-center gap-2">
+                            <motion.button
+                              whileHover={{ scale: 1.05 }}
+                              whileTap={{ scale: 0.95 }}
+                              onClick={() => handleShortlistSelected(message.candidates!)}
+                              className="flex items-center gap-1 px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium"
+                            >
+                              <CheckCircle2 className="w-3 h-3" />
+                              Shortlist Selected
+                            </motion.button>
+                          </div>
+                        )}
+                      </div>
+
+                      {message.candidates!.map((candidate, idx) => (
                         <motion.div
                           key={candidate.id}
                           initial={{ opacity: 0, x: -20 }}
                           animate={{ opacity: 1, x: 0 }}
-                          transition={{ delay: 0.4 + idx * 0.1 }}
-                          whileHover={{ scale: 1.02, x: 4 }}
+                          transition={{ delay: 0.4 + idx * 0.05 }}
                         >
                           <Card 
-                            className="cursor-pointer hover:shadow-md transition-all border-2 hover:border-primary-200"
+                            className={`hover:shadow-md transition-all border-2 overflow-hidden ${
+                              selectedIds.has(candidate.id) ? 'border-blue-400 bg-blue-50/30' : 'hover:border-primary-200'
+                            }`}
                           >
                             <CardContent className="p-3">
-                              <div className="flex items-center justify-between">
-                                <div className="flex items-center gap-3 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
-                                  <div className="w-8 h-8 rounded-full bg-gradient-to-br from-primary-100 to-purple-100 flex items-center justify-center text-primary-700 font-bold text-sm">
-                                    {idx + 1}
-                                  </div>
-                                  <Avatar className="w-9 h-9 border-2 border-white shadow">
-                                    <AvatarFallback className="text-sm font-semibold bg-gradient-to-br from-primary-100 to-purple-100 text-primary-700">
-                                      {candidate.name.charAt(0)}
-                                    </AvatarFallback>
-                                  </Avatar>
-                                  <div className="min-w-0">
-                                    <h4 className="font-semibold text-gray-900 text-sm truncate">{candidate.name}</h4>
-                                    <p className="text-xs text-gray-500 flex items-center gap-1">
-                                      <MapPin className="w-3 h-3" />
-                                      {candidate.location}
-                                    </p>
-                                  </div>
+                              <div className="flex items-center gap-2">
+                                <button onClick={(e) => { e.stopPropagation(); toggleSelect(candidate.id) }} className="flex-shrink-0">
+                                  {selectedIds.has(candidate.id) ? <CheckSquare className="w-4.5 h-4.5 text-blue-600" /> : <Square className="w-4.5 h-4.5 text-gray-400 hover:text-gray-600" />}
+                                </button>
+                                <div className="w-7 h-7 flex-shrink-0 rounded-full bg-gradient-to-br from-primary-100 to-primary-200 flex items-center justify-center text-primary-700 font-bold text-xs">{idx + 1}</div>
+                                <Avatar className="w-8 h-8 flex-shrink-0 border-2 border-white shadow">
+                                  <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-primary-100 to-primary-200 text-primary-700">{candidate.name.charAt(0)}</AvatarFallback>
+                                </Avatar>
+                                <div className="min-w-0 flex-1 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
+                                  <h4 className="font-semibold text-gray-900 text-sm truncate hover:text-blue-600">{candidate.name}</h4>
+                                  <p className="text-xs text-gray-500 flex items-center gap-1 truncate"><MapPin className="w-3 h-3 flex-shrink-0" /><span className="truncate">{candidate.location || 'N/A'}</span></p>
                                 </div>
-                                <div className="flex items-center gap-3">
-                                  <div className="flex gap-1">
-                                    {candidate.skills.slice(0, 2).map((skill: string) => (
-                                      <Badge key={skill} variant="outline" className="text-xs px-1.5 py-0">
-                                        {skill.length > 10 ? skill.slice(0, 10) + '..' : skill}
-                                      </Badge>
-                                    ))}
-                                  </div>
-                                  <div className="text-right">
-                                    <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
-                                      {(candidate.matchScore ?? 50).toFixed(0)}%
-                                    </p>
-                                  </div>
-                                  <Badge
-                                    className={`text-xs ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}
-                                  >
-                                    {candidate.status}
-                                  </Badge>
-                                  {/* Individual Shortlist Button */}
-                                  {message.intent === 'job_match' && candidate.status !== 'Shortlisted' && (
-                                    <motion.button
-                                      whileHover={{ scale: 1.1 }}
-                                      whileTap={{ scale: 0.9 }}
-                                      onClick={async (e) => {
-                                        e.stopPropagation()
-                                        try {
-                                          await candidateApi.updateStatus(candidate.id, 'Shortlisted')
-                                          const confirmMsg: Message = {
-                                            id: Date.now().toString(),
-                                            type: 'ai',
-                                            content: `**${candidate.name}** has been shortlisted. A notification email has been sent automatically.`,
-                                            timestamp: new Date(),
-                                            intent: 'shortlist_single',
-                                          }
-                                          setMessages(prev => [...prev, confirmMsg])
-                                        } catch (err) {
-                                          console.error('Shortlist error:', err)
-                                        }
-                                      }}
-                                      className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1"
-                                      title="Shortlist this candidate"
-                                    >
-                                      <CheckCircle2 className="w-3 h-3" />
-                                      Shortlist
-                                    </motion.button>
-                                  )}
+                                <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
+                                  <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</p>
+                                  <Badge className={`text-xs whitespace-nowrap ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}>{candidate.status}</Badge>
+                                </div>
+                              </div>
+                              <div className="flex items-center justify-between mt-2 pl-[4.5rem]">
+                                <div className="flex items-center gap-1 flex-wrap min-w-0 overflow-hidden max-w-[60%]">
+                                  {candidate.skills.slice(0, 3).map((skill: string) => (
+                                    <Badge key={skill} variant="outline" className="text-[10px] px-1.5 py-0 whitespace-nowrap">{skill.length > 12 ? skill.slice(0, 12) + '..' : skill}</Badge>
+                                  ))}
+                                </div>
+                                <div className="flex items-center gap-1.5 flex-shrink-0">
+                                  <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }} className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><Eye className="w-3 h-3" />View</motion.button>
+                                  {candidate.status !== 'Shortlisted' ? (
+                                    <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={async (e) => { e.stopPropagation(); try { await candidateApi.updateStatus(candidate.id, 'Shortlisted'); if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id); setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${candidate.name}** has been shortlisted.`, timestamp: new Date(), intent: 'shortlist_single' }]) } catch (err) { console.error('Shortlist error:', err) } }} className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><CheckCircle2 className="w-3 h-3" />Shortlist</motion.button>
+                                  ) : <Badge className="bg-green-100 text-green-700 text-xs whitespace-nowrap">Shortlisted</Badge>}
                                 </div>
                               </div>
                             </CardContent>
@@ -1312,7 +1651,8 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                         </motion.div>
                       ))}
                     </motion.div>
-                  )}
+                    )
+                  })()}
                   
                   {/* Action Buttons */}
                   {message.actions && message.actions.length > 0 && (
@@ -1363,7 +1703,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
             exit={{ opacity: 0 }}
             className="flex gap-3"
           >
-            <div className="w-10 h-10 bg-gradient-to-br from-primary-500 to-purple-600 rounded-full flex items-center justify-center shadow-md">
+            <div className="w-10 h-10 bg-gradient-to-br from-primary-600 to-primary-800 rounded-full flex items-center justify-center shadow-md">
               <Bot className="w-5 h-5 text-white" />
             </div>
             <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm">
@@ -1439,7 +1779,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                 type="text"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
-                onKeyPress={handleKeyPress}
+                onKeyDown={handleKeyPress}
                 placeholder="Ask about ML ranking, duplicates, analytics, templates, scheduling..."
                 className="w-full px-4 py-3 pr-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-primary-400 transition-colors text-sm"
                 disabled={isTyping}

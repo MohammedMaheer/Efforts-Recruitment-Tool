@@ -29,25 +29,25 @@ import { useNotificationStore } from '@/store/notificationStore'
 import { candidateApi } from '@/services/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { Badge } from '@/components/ui/Badge'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
 import { Progress } from '@/components/ui/Progress'
 import { getMatchScoreColor } from '@/lib/utils'
 import config from '@/config'
 import { authFetch } from '@/lib/authFetch'
+import { generateCandidatePDF } from '@/lib/pdfGenerator'
 
 // Category colors for visual distinction
 const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
   'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'DevOps Engineer': { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
+  'DevOps Engineer': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
   'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
   'Cybersecurity': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
-  'QA/Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+  'QA / Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
   'IT & Systems': { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
   'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
   'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
   'Product Manager': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
-  'Project Management': { bg: 'bg-violet-50', text: 'text-violet-700', border: 'border-violet-200' },
+  'Project Management': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
   'Business Analyst': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
   'Consulting': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
   'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
@@ -73,7 +73,7 @@ const getCategoryColor = (category: string) => {
 export default function CandidateDetail() {
   const { id } = useParams()
   const navigate = useNavigate()
-  const { candidates } = useCandidates({ autoFetch: true })
+  const { candidates, loading } = useCandidates({ autoFetch: true })
   const isShortlisted = useCandidateStore((state) => state.isShortlisted)
   const toggleShortlist = useCandidateStore((state) => state.toggleShortlist)
   const addNotification = useNotificationStore((state) => state.addNotification)
@@ -116,8 +116,8 @@ export default function CandidateDetail() {
           actionUrl: '/shortlist'
         })
       } else {
-        // Un-shortlisting — revert status
-        await candidateApi.updateStatus(candidate.id, candidate.status || 'Strong')
+        // Un-shortlisting — revert to Reviewed status
+        await candidateApi.updateStatus(candidate.id, 'Reviewed')
         toggleShortlist(candidate.id)
         addNotification({
           type: 'info',
@@ -135,29 +135,6 @@ export default function CandidateDetail() {
       })
     } finally {
       setIsShortlisting(false)
-    }
-  }
-
-  const handleDownloadResume = async () => {
-    if (!candidate) return
-    try {
-      const response = await authFetch(`${config.endpoints.candidates}/${candidate.id}/resume`)
-      
-      if (!response.ok) {
-        alert('Resume file not available. Please upload the resume first.')
-        return
-      }
-      
-      const blob = await response.blob()
-      const url = window.URL.createObjectURL(blob)
-      const a = document.createElement('a')
-      a.href = url
-      a.download = `${candidate.name.replace(/\s+/g, '_')}_resume.pdf`
-      a.click()
-      window.URL.revokeObjectURL(url)
-    } catch (error) {
-      console.error('Download error:', error)
-      alert('Resume download not available yet. Feature coming soon!')
     }
   }
 
@@ -238,9 +215,9 @@ export default function CandidateDetail() {
         cons: ['Detailed AI analysis unavailable - manual review recommended'],
         hiring_recommendation: 'CONSIDER',
         hiring_recommendation_rationale: 'Automated analysis was limited. A manual review and interview is recommended to fully assess fit.',
-        confidence_score: 40,
-        overall_rating: 'C+',
-        source: 'fallback',
+        confidence_score: fallbackScore || 50,
+        overall_rating: fallbackScore >= 70 ? 'B+' : fallbackScore >= 50 ? 'B' : 'C+',
+        source: 'profile-based',
         isFallback: true
       })
     } finally {
@@ -269,6 +246,17 @@ export default function CandidateDetail() {
     }
   }
 
+  if (!candidate && loading) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <p className="text-gray-500">Loading candidate...</p>
+        </div>
+      </div>
+    )
+  }
+
   if (!candidate) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -284,343 +272,267 @@ export default function CandidateDetail() {
 
   const shortlisted = isShortlisted(candidate.id)
 
-  return (
-    <div className="space-y-6">
-      {/* Header */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3 }}
-      >
-        <Button
-          variant="ghost"
-          onClick={() => navigate('/candidates')}
-          className="mb-4"
-        >
-          <ArrowLeft className="w-4 h-4 mr-2" />
-          Back to Candidates
-        </Button>
+  const scoreColor = candidate.matchScore >= 80 ? 'text-emerald-600' : candidate.matchScore >= 60 ? 'text-blue-600' : candidate.matchScore >= 40 ? 'text-amber-600' : 'text-red-500'
+  const scoreBg = candidate.matchScore >= 80 ? 'from-emerald-500 to-emerald-600' : candidate.matchScore >= 60 ? 'from-blue-500 to-blue-600' : candidate.matchScore >= 40 ? 'from-amber-500 to-amber-600' : 'from-red-500 to-red-600'
+  const catColor = getCategoryColor(candidate.jobCategory || 'General')
 
-        <div className="flex items-start justify-between">
-          <div className="flex items-center gap-4">
-            <Avatar className="w-20 h-20">
-              <AvatarImage
-                src={`https://api.dicebear.com/7.x/initials/svg?seed=${candidate.name}`}
-              />
-              <AvatarFallback className="text-2xl">
-                {candidate.name.charAt(0)}
-              </AvatarFallback>
-            </Avatar>
-            <div>
-              <div className="flex items-center gap-3 mb-1">
-                <h1 className="text-3xl font-bold text-gray-900">{candidate.name}</h1>
-                {candidate.jobCategory && (
-                  <Badge 
-                    className={`${getCategoryColor(candidate.jobCategory).bg} ${getCategoryColor(candidate.jobCategory).text} border ${getCategoryColor(candidate.jobCategory).border} text-sm`}
-                  >
-                    <Tag className="w-3 h-3 mr-1" />
-                    {candidate.jobCategory}
-                  </Badge>
-                )}
-                {candidate.jobSubcategory && (
-                  <Badge variant="outline" className="text-sm">
-                    {candidate.jobSubcategory}
-                  </Badge>
-                )}
-              </div>
-              <div className="flex items-center gap-4 mt-2 text-gray-600">
-                <span className="flex items-center gap-1">
-                  <Mail className="w-4 h-4" />
-                  {candidate.email}
-                </span>
-                {candidate.phone && candidate.phone.replace(/\D/g, '').length >= 7 && (
-                  <span className="flex items-center gap-1">
-                    <Phone className="w-4 h-4" />
-                    {candidate.phone}
-                  </span>
-                )}
-                <span className="flex items-center gap-1">
-                  <MapPin className="w-4 h-4" />
-                  {candidate.location}
-                </span>
-              </div>
-              {/* Quick Contact Buttons */}
-              <div className="flex items-center gap-2 mt-3 flex-wrap">
-                {/* Email Button */}
-                {candidate.email && (
-                  <Button 
-                    variant="outline" 
-                    size="sm"
-                    onClick={() => window.location.href = `mailto:${candidate.email}?subject=Regarding Your Application&body=Hi ${candidate.name},%0A%0A`}
-                    className="text-blue-600 border-blue-200 hover:bg-blue-50"
-                  >
-                    <Mail className="w-4 h-4 mr-1" />
-                    Email
-                  </Button>
-                )}
-                
-                {/* WhatsApp Button - uses phone number */}
-                {candidate.phone && (
-                  <Button 
-                    variant="outline" 
-                    size="sm"
-                    onClick={() => {
-                      // Clean phone number for WhatsApp (remove spaces, dashes, parentheses)
-                      const cleanPhone = candidate.phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '')
-                      window.open(`https://wa.me/${cleanPhone}?text=Hi ${encodeURIComponent(candidate.name)}, I'm reaching out regarding your job application.`, '_blank')
-                    }}
-                    className="text-green-600 border-green-200 hover:bg-green-50"
-                  >
-                    <MessageCircle className="w-4 h-4 mr-1" />
-                    WhatsApp
-                  </Button>
-                )}
-                
-                {/* LinkedIn Button */}
-                {candidate.linkedin && (
-                  <Button 
-                    variant="outline" 
-                    size="sm"
-                    onClick={() => window.open(candidate.linkedin, '_blank')}
-                    className="text-[#0077B5] border-[#0077B5]/30 hover:bg-[#0077B5]/10"
-                  >
-                    <Linkedin className="w-4 h-4 mr-1" />
-                    LinkedIn
-                    <ExternalLink className="w-3 h-3 ml-1" />
-                  </Button>
-                )}
-                
-                {/* Phone Call Button */}
-                {candidate.phone && (
-                  <Button 
-                    variant="outline" 
-                    size="sm"
-                    onClick={() => window.location.href = `tel:${candidate.phone}`}
-                    className="text-purple-600 border-purple-200 hover:bg-purple-50"
-                  >
-                    <Phone className="w-4 h-4 mr-1" />
-                    Call
-                  </Button>
-                )}
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center gap-3">
-            <Button 
-              variant="outline" 
-              onClick={handleAIAnalysis}
-              disabled={isAnalyzing}
-              className="bg-gradient-to-r from-primary-500 to-purple-600 text-white border-0 hover:from-primary-600 hover:to-purple-700"
-            >
-              {isAnalyzing ? (
-                <>
-                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                  Analyzing...
-                </>
-              ) : (
-                <>
-                  <Sparkles className="w-4 h-4 mr-2" />
-                  {aiAnalysis ? 'Refresh AI Analysis' : 'AI Analysis'}
-                </>
-              )}
-            </Button>
-            <Button variant="outline" onClick={handleToggleShortlist} disabled={isShortlisting}>
-              {isShortlisting ? (
-                <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-              ) : (
-                <Star className={`w-4 h-4 mr-2 ${shortlisted ? 'fill-yellow-400 text-yellow-400' : ''}`} />
-              )}
-              {isShortlisting ? 'Updating...' : shortlisted ? 'Shortlisted' : 'Add to Shortlist'}
-            </Button>
-            {candidate.hasResume && (
-              <Button variant="outline" onClick={handleDownloadResume}>
-                <Download className="w-4 h-4 mr-2" />
-                Download Resume
-              </Button>
-            )}
-          </div>
-        </div>
+  return (
+    <div className="max-w-6xl mx-auto space-y-5">
+      {/* Breadcrumb */}
+      <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
+        <button
+          onClick={() => navigate('/candidates')}
+          className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-blue-600 transition-colors font-medium"
+        >
+          <ArrowLeft className="w-3.5 h-3.5" />
+          Back to Candidates
+        </button>
       </motion.div>
 
-      {/* AI Analysis Results — Detailed Assessment */}
+      {/* Hero Card */}
+      <motion.div
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.25 }}
+      >
+        <Card className="overflow-hidden border-0 shadow-sm">
+          {/* Colored accent bar */}
+          <div className={`h-1 bg-gradient-to-r ${scoreBg}`} />
+          <CardContent className="p-6">
+            <div className="flex flex-col lg:flex-row lg:items-start gap-5">
+              {/* Left: Avatar + Info */}
+              <div className="flex items-start gap-4 flex-1 min-w-0">
+                <Avatar className="w-16 h-16 ring-2 ring-gray-100 flex-shrink-0">
+                  <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${candidate.name}&backgroundColor=1e40af&textColor=ffffff`} />
+                  <AvatarFallback className="text-xl bg-blue-700 text-white font-semibold">{candidate.name.charAt(0)}</AvatarFallback>
+                </Avatar>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap mb-1.5">
+                    <h1 className="text-xl font-bold text-gray-900 truncate">{candidate.name}</h1>
+                    {candidate.jobCategory && (
+                      <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${catColor.bg} ${catColor.text} border ${catColor.border}`}>
+                        <Tag className="w-3 h-3" />
+                        {candidate.jobCategory}
+                      </span>
+                    )}
+                    {candidate.jobSubcategory && (
+                      <span className="text-xs text-gray-500 bg-gray-100 px-2 py-0.5 rounded-full">{candidate.jobSubcategory}</span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-3 text-sm text-gray-500 flex-wrap">
+                    {candidate.email && (
+                      <span className="inline-flex items-center gap-1 truncate">
+                        <Mail className="w-3.5 h-3.5 text-gray-400" />{candidate.email}
+                      </span>
+                    )}
+                    {candidate.phone && candidate.phone.replace(/\D/g, '').length >= 7 && (
+                      <span className="inline-flex items-center gap-1">
+                        <Phone className="w-3.5 h-3.5 text-gray-400" />{candidate.phone}
+                      </span>
+                    )}
+                    {candidate.location && (
+                      <span className="inline-flex items-center gap-1">
+                        <MapPin className="w-3.5 h-3.5 text-gray-400" />{candidate.location}
+                      </span>
+                    )}
+                    {candidate.experience > 0 && (
+                      <span className="inline-flex items-center gap-1">
+                        <Briefcase className="w-3.5 h-3.5 text-gray-400" />{candidate.experience} yrs
+                      </span>
+                    )}
+                  </div>
+                  {/* Quick Contact Row */}
+                  <div className="flex items-center gap-1.5 mt-3 flex-wrap">
+                    {candidate.email && (
+                      <button onClick={() => window.location.href = `mailto:${candidate.email}?subject=Regarding Your Application&body=Hi ${candidate.name},%0A%0A`} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md border border-blue-200 text-blue-600 bg-blue-50/50 hover:bg-blue-100 transition-colors">
+                        <Mail className="w-3 h-3" />Email
+                      </button>
+                    )}
+                    {candidate.phone && (
+                      <button onClick={() => { const p = candidate.phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, ''); window.open(`https://wa.me/${p}?text=Hi ${encodeURIComponent(candidate.name)}, I'm reaching out regarding your job application.`, '_blank') }} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md border border-green-200 text-green-600 bg-green-50/50 hover:bg-green-100 transition-colors">
+                        <MessageCircle className="w-3 h-3" />WhatsApp
+                      </button>
+                    )}
+                    {candidate.linkedin && (
+                      <button onClick={() => window.open(candidate.linkedin, '_blank')} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md border border-sky-200 text-sky-600 bg-sky-50/50 hover:bg-sky-100 transition-colors">
+                        <Linkedin className="w-3 h-3" />LinkedIn<ExternalLink className="w-2.5 h-2.5" />
+                      </button>
+                    )}
+                    {candidate.phone && (
+                      <button onClick={() => window.location.href = `tel:${candidate.phone}`} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md border border-gray-200 text-gray-600 hover:bg-gray-100 transition-colors">
+                        <Phone className="w-3 h-3" />Call
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {/* Right: Score + Actions */}
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {/* Score badge */}
+                <div className="text-center px-4">
+                  <div className={`text-3xl font-bold ${scoreColor}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</div>
+                  <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mt-0.5">Match</div>
+                </div>
+                <div className="h-12 w-px bg-gray-200" />
+                {/* Action buttons */}
+                <div className="flex items-center gap-2">
+                  <Button 
+                    size="sm"
+                    onClick={handleAIAnalysis}
+                    disabled={isAnalyzing}
+                    className="bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 shadow-sm text-xs h-8"
+                  >
+                    {isAnalyzing ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1" />}
+                    {isAnalyzing ? 'Analyzing...' : aiAnalysis ? 'Refresh' : 'AI Analysis'}
+                  </Button>
+                  <Button 
+                    size="sm"
+                    variant="outline" 
+                    onClick={() => generateCandidatePDF(candidate, aiAnalysis)}
+                    className="text-xs h-8"
+                  >
+                    <Download className="w-3.5 h-3.5 mr-1" />PDF
+                  </Button>
+                  <Button 
+                    size="sm"
+                    variant="outline" 
+                    onClick={handleToggleShortlist} 
+                    disabled={isShortlisting}
+                    className={`text-xs h-8 ${shortlisted ? 'border-yellow-300 bg-yellow-50 text-yellow-700' : ''}`}
+                  >
+                    {isShortlisting ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Star className={`w-3.5 h-3.5 mr-1 ${shortlisted ? 'fill-yellow-400 text-yellow-500' : ''}`} />}
+                    {isShortlisting ? '...' : shortlisted ? 'Saved' : 'Shortlist'}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      </motion.div>
+
+      {/* AI Analysis — Compact Assessment Card */}
       {aiAnalysis && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-6"
-        >
-          <Card className="border-2 border-primary-200 bg-gradient-to-r from-primary-50 to-purple-50">
-            <CardHeader>
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+          <Card className="border border-blue-100 bg-white overflow-hidden">
+            <div className="h-0.5 bg-gradient-to-r from-blue-500 to-indigo-500" />
+            <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <CardTitle className="flex items-center gap-2">
-                  <Sparkles className="w-5 h-5 text-primary-600" />
-                  AI Candidate Assessment
-                  {aiAnalysis.isFallback && (
-                    <Badge variant="outline" className="ml-2 text-xs">Basic</Badge>
-                  )}
-                  {aiAnalysis.from_cache && (
-                    <Badge variant="outline" className="ml-2 text-xs text-gray-500">Cached</Badge>
-                  )}
-                </CardTitle>
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <Sparkles className="w-4 h-4 text-blue-600" />
+                  <CardTitle className="text-sm font-semibold text-gray-900">AI Assessment</CardTitle>
+                  {aiAnalysis.isFallback && <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Basic</span>}
+                  {aiAnalysis.from_cache && <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Cached</span>}
+                </div>
+                <div className="flex items-center gap-2">
                   {aiAnalysis.overall_rating && (
-                    <div className="flex items-center gap-1">
-                      <span className="text-sm text-gray-500">Rating:</span>
-                      <Badge className={`text-lg px-3 py-1 ${
-                        aiAnalysis.overall_rating?.startsWith('A') ? 'bg-green-100 text-green-800' :
-                        aiAnalysis.overall_rating?.startsWith('B') ? 'bg-blue-100 text-blue-800' :
-                        aiAnalysis.overall_rating?.startsWith('C') ? 'bg-yellow-100 text-yellow-800' :
-                        'bg-red-100 text-red-800'
-                      }`}>
-                        {aiAnalysis.overall_rating}
-                      </Badge>
-                    </div>
+                    <span className={`text-sm font-bold px-2 py-0.5 rounded ${
+                      aiAnalysis.overall_rating?.startsWith('A') ? 'bg-emerald-100 text-emerald-700' :
+                      aiAnalysis.overall_rating?.startsWith('B') ? 'bg-blue-100 text-blue-700' :
+                      aiAnalysis.overall_rating?.startsWith('C') ? 'bg-amber-100 text-amber-700' :
+                      'bg-red-100 text-red-700'
+                    }`}>{aiAnalysis.overall_rating}</span>
                   )}
                   {aiAnalysis.hiring_recommendation && (
-                    <Badge className={`text-sm px-3 py-1 ${
-                      aiAnalysis.hiring_recommendation === 'STRONGLY_RECOMMEND' ? 'bg-green-600 text-white' :
-                      aiAnalysis.hiring_recommendation === 'RECOMMEND' ? 'bg-green-500 text-white' :
-                      aiAnalysis.hiring_recommendation === 'CONSIDER' ? 'bg-yellow-500 text-white' :
+                    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
+                      aiAnalysis.hiring_recommendation === 'STRONGLY_RECOMMEND' ? 'bg-emerald-600 text-white' :
+                      aiAnalysis.hiring_recommendation === 'RECOMMEND' ? 'bg-emerald-500 text-white' :
+                      aiAnalysis.hiring_recommendation === 'CONSIDER' ? 'bg-amber-500 text-white' :
                       'bg-red-500 text-white'
-                    }`}>
-                      {aiAnalysis.hiring_recommendation.replace('_', ' ')}
-                    </Badge>
+                    }`}>{aiAnalysis.hiring_recommendation.replace('_', ' ')}</span>
                   )}
                 </div>
               </div>
             </CardHeader>
-            <CardContent className="space-y-5">
+            <CardContent className="space-y-4 pt-0">
               {/* Executive Summary */}
               {aiAnalysis.executive_summary && (
-                <div className="bg-white rounded-lg p-5 border border-gray-100">
-                  <h3 className="font-semibold text-gray-900 mb-3 text-base">Executive Summary</h3>
-                  <p className="text-gray-700 leading-relaxed">{aiAnalysis.executive_summary}</p>
-                </div>
+                <p className="text-sm text-gray-700 leading-relaxed bg-slate-50 rounded-lg p-4">{aiAnalysis.executive_summary}</p>
               )}
 
-              {/* Technical Assessment */}
-              {aiAnalysis.technical_assessment && (
-                <div className="bg-white rounded-lg p-5 border border-gray-100">
-                  <h3 className="font-semibold text-gray-900 mb-3 text-base">Technical Assessment</h3>
-                  <p className="text-gray-700 leading-relaxed">{aiAnalysis.technical_assessment}</p>
-                </div>
-              )}
+              {/* Assessment grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {aiAnalysis.technical_assessment && (
+                  <div className="rounded-lg p-3 bg-gray-50/70 border border-gray-100">
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Technical</h4>
+                    <p className="text-sm text-gray-700 leading-relaxed">{aiAnalysis.technical_assessment}</p>
+                  </div>
+                )}
+                {aiAnalysis.experience_assessment && (
+                  <div className="rounded-lg p-3 bg-gray-50/70 border border-gray-100">
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Experience</h4>
+                    <p className="text-sm text-gray-700 leading-relaxed">{aiAnalysis.experience_assessment}</p>
+                  </div>
+                )}
+                {aiAnalysis.education_assessment && (
+                  <div className="rounded-lg p-3 bg-gray-50/70 border border-gray-100">
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Education</h4>
+                    <p className="text-sm text-gray-700 leading-relaxed">{aiAnalysis.education_assessment}</p>
+                  </div>
+                )}
+                {aiAnalysis.career_trajectory && (
+                  <div className="rounded-lg p-3 bg-gray-50/70 border border-gray-100">
+                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 flex items-center gap-1"><TrendingUp className="w-3 h-3" />Career</h4>
+                    <p className="text-sm text-gray-700 leading-relaxed">{aiAnalysis.career_trajectory}</p>
+                  </div>
+                )}
+              </div>
 
-              {/* Experience Assessment */}
-              {aiAnalysis.experience_assessment && (
-                <div className="bg-white rounded-lg p-5 border border-gray-100">
-                  <h3 className="font-semibold text-gray-900 mb-3 text-base">Experience Assessment</h3>
-                  <p className="text-gray-700 leading-relaxed">{aiAnalysis.experience_assessment}</p>
-                </div>
-              )}
-
-              {/* Education Assessment */}
-              {aiAnalysis.education_assessment && (
-                <div className="bg-white rounded-lg p-5 border border-gray-100">
-                  <h3 className="font-semibold text-gray-900 mb-3 text-base">Education Assessment</h3>
-                  <p className="text-gray-700 leading-relaxed">{aiAnalysis.education_assessment}</p>
-                </div>
-              )}
-
-              {/* Pros & Cons Side by Side */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Pros */}
-                {aiAnalysis.pros && aiAnalysis.pros.length > 0 && (
-                  <div className="bg-white rounded-lg p-5 border border-green-100">
-                    <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                      <CheckCircle className="w-5 h-5 text-green-600" />
-                      Pros
-                    </h3>
-                    <ul className="space-y-2">
-                      {aiAnalysis.pros.map((pro: string, idx: number) => (
-                        <li key={idx} className="text-gray-700 flex items-start gap-2 text-sm">
-                          <span className="text-green-600 mt-0.5 font-bold">+</span>
-                          <span>{pro}</span>
-                        </li>
+              {/* Pros & Cons — compact side-by-side */}
+              <div className="grid grid-cols-2 gap-3">
+                {aiAnalysis.pros?.length > 0 && (
+                  <div className="rounded-lg p-3 border border-emerald-100 bg-emerald-50/30">
+                    <h4 className="text-xs font-semibold text-emerald-700 mb-2 flex items-center gap-1"><CheckCircle className="w-3 h-3" />Strengths</h4>
+                    <ul className="space-y-1">
+                      {aiAnalysis.pros.map((pro: string, i: number) => (
+                        <li key={i} className="text-xs text-gray-700 flex items-start gap-1.5"><span className="text-emerald-500 mt-px font-bold">+</span><span>{pro}</span></li>
                       ))}
                     </ul>
                   </div>
                 )}
-
-                {/* Cons */}
-                {aiAnalysis.cons && aiAnalysis.cons.length > 0 && (
-                  <div className="bg-white rounded-lg p-5 border border-red-100">
-                    <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                      <AlertCircle className="w-5 h-5 text-red-500" />
-                      Cons
-                    </h3>
-                    <ul className="space-y-2">
-                      {aiAnalysis.cons.map((con: string, idx: number) => (
-                        <li key={idx} className="text-gray-700 flex items-start gap-2 text-sm">
-                          <span className="text-red-500 mt-0.5 font-bold">-</span>
-                          <span>{con}</span>
-                        </li>
+                {aiAnalysis.cons?.length > 0 && (
+                  <div className="rounded-lg p-3 border border-red-100 bg-red-50/30">
+                    <h4 className="text-xs font-semibold text-red-600 mb-2 flex items-center gap-1"><AlertCircle className="w-3 h-3" />Gaps</h4>
+                    <ul className="space-y-1">
+                      {aiAnalysis.cons.map((con: string, i: number) => (
+                        <li key={i} className="text-xs text-gray-700 flex items-start gap-1.5"><span className="text-red-400 mt-px font-bold">-</span><span>{con}</span></li>
                       ))}
                     </ul>
                   </div>
                 )}
               </div>
 
-              {/* Career Trajectory */}
-              {aiAnalysis.career_trajectory && (
-                <div className="bg-white rounded-lg p-5 border border-gray-100">
-                  <h3 className="font-semibold text-gray-900 mb-3 flex items-center gap-2">
-                    <TrendingUp className="w-5 h-5 text-blue-600" />
-                    Career Trajectory
-                  </h3>
-                  <p className="text-gray-700 leading-relaxed">{aiAnalysis.career_trajectory}</p>
-                </div>
-              )}
-
-              {/* Interview Focus Areas & Ideal Roles */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {aiAnalysis.interview_focus_areas && aiAnalysis.interview_focus_areas.length > 0 && (
-                  <div className="bg-white rounded-lg p-5 border border-gray-100">
-                    <h3 className="font-semibold text-gray-900 mb-3">Interview Focus Areas</h3>
-                    <ul className="space-y-2">
-                      {aiAnalysis.interview_focus_areas.map((area: string, idx: number) => (
-                        <li key={idx} className="text-gray-700 flex items-start gap-2 text-sm">
-                          <span className="text-primary-600 mt-0.5">&#8226;</span>
-                          <span>{area}</span>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                )}
-                {aiAnalysis.ideal_roles && aiAnalysis.ideal_roles.length > 0 && (
-                  <div className="bg-white rounded-lg p-5 border border-gray-100">
-                    <h3 className="font-semibold text-gray-900 mb-3">Ideal Roles</h3>
-                    <div className="flex flex-wrap gap-2">
-                      {aiAnalysis.ideal_roles.map((role: string, idx: number) => (
-                        <Badge key={idx} variant="primary" className="py-1.5 px-3">{role}</Badge>
-                      ))}
+              {/* Interview Focus & Ideal Roles */}
+              {(aiAnalysis.interview_focus_areas?.length > 0 || aiAnalysis.ideal_roles?.length > 0) && (
+                <div className="grid grid-cols-2 gap-3">
+                  {aiAnalysis.interview_focus_areas?.length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Interview Focus</h4>
+                      <ul className="space-y-0.5">{aiAnalysis.interview_focus_areas.map((a: string, i: number) => <li key={i} className="text-xs text-gray-600">• {a}</li>)}</ul>
                     </div>
-                    {aiAnalysis.salary_range_estimate && (
-                      <p className="text-sm text-gray-500 mt-3">
-                        <span className="font-medium">Est. Salary:</span> {aiAnalysis.salary_range_estimate}
-                      </p>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              {/* Culture Fit & Hiring Recommendation Rationale */}
-              {aiAnalysis.hiring_recommendation_rationale && (
-                <div className="bg-gradient-to-r from-primary-100 to-purple-100 rounded-lg p-5">
-                  <h3 className="font-semibold text-gray-900 mb-3">Hiring Recommendation</h3>
-                  <p className="text-gray-800 leading-relaxed">{aiAnalysis.hiring_recommendation_rationale}</p>
-                  {aiAnalysis.culture_fit_notes && (
-                    <p className="text-gray-700 mt-3 text-sm"><span className="font-medium">Culture Fit:</span> {aiAnalysis.culture_fit_notes}</p>
+                  )}
+                  {aiAnalysis.ideal_roles?.length > 0 && (
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Ideal Roles</h4>
+                      <div className="flex flex-wrap gap-1">{aiAnalysis.ideal_roles.map((r: string, i: number) => <span key={i} className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full border border-blue-100">{r}</span>)}</div>
+                      {aiAnalysis.salary_range_estimate && <p className="text-[11px] text-gray-400 mt-1.5">Est. Salary: {aiAnalysis.salary_range_estimate}</p>}
+                    </div>
                   )}
                 </div>
               )}
 
-              {/* Confidence */}
+              {/* Recommendation + Confidence */}
+              {aiAnalysis.hiring_recommendation_rationale && (
+                <div className="bg-blue-50/60 rounded-lg p-3 border border-blue-100">
+                  <p className="text-sm text-gray-800 leading-relaxed">{aiAnalysis.hiring_recommendation_rationale}</p>
+                  {aiAnalysis.culture_fit_notes && <p className="text-xs text-gray-500 mt-2">Culture: {aiAnalysis.culture_fit_notes}</p>}
+                </div>
+              )}
               {aiAnalysis.confidence_score && (
-                <div className="flex items-center gap-3 text-sm text-gray-500 pt-2">
-                  <span>AI Confidence: {aiAnalysis.confidence_score}%</span>
-                  <Progress value={aiAnalysis.confidence_score} className="h-2 flex-1 max-w-48" />
-                  {aiAnalysis.source && <span className="text-xs">Source: {aiAnalysis.source}</span>}
+                <div className="flex items-center gap-2 text-xs text-gray-400">
+                  <span>Confidence: {aiAnalysis.confidence_score}%</span>
+                  <Progress value={aiAnalysis.confidence_score} className="h-1.5 flex-1 max-w-32" />
+                  {aiAnalysis.source && <span className="capitalize">{aiAnalysis.source === 'fallback' ? 'profile-based' : aiAnalysis.source}</span>}
                 </div>
               )}
             </CardContent>
@@ -629,65 +541,44 @@ export default function CandidateDetail() {
       )}
 
       {analysisError && !aiAnalysis && (
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-6"
-        >
-          <Card className="border-2 border-amber-200 bg-amber-50">
-            <CardContent className="pt-6">
-              <div className="flex items-start gap-3">
-                <AlertCircle className="w-5 h-5 text-amber-600 flex-shrink-0 mt-0.5" />
-                <div>
-                  <p className="font-medium text-amber-900">AI Analysis Unavailable</p>
-                  <p className="text-sm text-amber-700 mt-1">{analysisError}</p>
-                  <p className="text-xs text-amber-600 mt-2">Using local matching algorithm as fallback.</p>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
+        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+          <div className="flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-lg p-3">
+            <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="text-sm font-medium text-amber-800">AI Analysis Unavailable</p>
+              <p className="text-xs text-amber-600 mt-0.5">{analysisError}</p>
+            </div>
+          </div>
         </motion.div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* Left Column - Candidate Info */}
-        <div className="lg:col-span-2 space-y-6">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+        {/* Left Column — Main Content */}
+        <div className="lg:col-span-2 space-y-4">
           {/* Summary */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.1 }}
-          >
-            <Card>
-              <CardHeader>
-                <CardTitle>Professional Summary</CardTitle>
-              </CardHeader>
-              <CardContent>
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+            <Card className="border-0 shadow-sm">
+              <CardContent className="p-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Professional Summary</h3>
                 {candidate.summary ? (
-                  <p className="text-gray-700 leading-relaxed whitespace-pre-line">{candidate.summary}</p>
+                  <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{candidate.summary}</p>
                 ) : (
-                  <p className="text-gray-500 text-sm italic">No professional summary available. Run AI Analysis to generate one.</p>
+                  <p className="text-sm text-gray-400 italic">No summary available. Run AI Analysis to generate one.</p>
                 )}
               </CardContent>
             </Card>
           </motion.div>
 
-          {/* Skills Matrix */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.2 }}
-          >
-            <Card>
-              <CardHeader>
-                <CardTitle>Skills & Expertise</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex flex-wrap gap-2">
+          {/* Skills */}
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+            <Card className="border-0 shadow-sm">
+              <CardContent className="p-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Skills & Expertise</h3>
+                <div className="flex flex-wrap gap-1.5">
                   {candidate.skills.map((skill) => (
-                    <Badge key={skill} variant="primary" className="text-sm py-1.5 px-3">
+                    <span key={skill} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
                       {skill}
-                    </Badge>
+                    </span>
                   ))}
                 </div>
               </CardContent>
@@ -695,40 +586,30 @@ export default function CandidateDetail() {
           </motion.div>
 
           {/* Work Experience */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.3 }}
-          >
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <Briefcase className="w-5 h-5" />
-                  Work Experience
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-6">
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
+            <Card className="border-0 shadow-sm">
+              <CardContent className="p-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-4 flex items-center gap-1.5">
+                  <Briefcase className="w-3.5 h-3.5" />Work Experience
+                </h3>
+                <div className="space-y-4">
                   {candidate.workHistory && candidate.workHistory.length > 0 ? (
                     candidate.workHistory.map((job, index) => (
-                      <div
-                        key={index}
-                        className="relative pl-6 pb-6 border-l-2 border-gray-200 last:pb-0 last:border-l-0"
-                      >
-                        <div className="absolute left-0 top-0 w-3 h-3 -translate-x-[7px] rounded-full bg-primary-600 border-2 border-white"></div>
-                        <h4 className="font-semibold text-gray-900">{job.title}</h4>
+                      <div key={index} className="relative pl-5 pb-4 last:pb-0 border-l border-gray-200 last:border-l-transparent">
+                        <div className="absolute left-0 top-1 w-2 h-2 -translate-x-[5px] rounded-full bg-blue-600 ring-2 ring-white" />
+                        <h4 className="text-sm font-semibold text-gray-900">{job.title}</h4>
                         {(job.company || job.duration) && (
-                          <p className="text-sm text-gray-600 mt-1">
+                          <p className="text-xs text-gray-500 mt-0.5">
                             {job.company}{job.company && job.duration ? ' · ' : ''}{job.duration}
                           </p>
                         )}
                         {job.description && (
-                          <p className="text-sm text-gray-700 mt-2 leading-relaxed">{job.description}</p>
+                          <p className="text-xs text-gray-600 mt-1.5 leading-relaxed">{job.description}</p>
                         )}
                       </div>
                     ))
                   ) : (
-                    <p className="text-gray-500 text-sm italic">No work experience data available from resume</p>
+                    <p className="text-sm text-gray-400 italic">No work experience data available</p>
                   )}
                 </div>
               </CardContent>
@@ -736,244 +617,182 @@ export default function CandidateDetail() {
           </motion.div>
 
           {/* Education */}
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.4 }}
-          >
-            <Card>
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2">
-                  <GraduationCap className="w-5 h-5" />
-                  Education
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="space-y-4">
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
+            <Card className="border-0 shadow-sm">
+              <CardContent className="p-5">
+                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3 flex items-center gap-1.5">
+                  <GraduationCap className="w-3.5 h-3.5" />Education
+                </h3>
+                <div className="space-y-3">
                   {candidate.education && candidate.education.length > 0 ? (
                     candidate.education.map((edu, index) => (
                       <div key={index}>
-                        <h4 className="font-semibold text-gray-900">
+                        <h4 className="text-sm font-semibold text-gray-900">
                           {edu.degree}{edu.field ? ` in ${edu.field}` : ''}
                         </h4>
-                        <p className="text-sm text-gray-600">
+                        <p className="text-xs text-gray-500">
                           {edu.institution || 'Institution not specified'}{edu.year ? ` · ${edu.year}` : ''}
                         </p>
                       </div>
                     ))
                   ) : (
-                    <p className="text-gray-500 text-sm italic">No education data available from resume</p>
+                    <p className="text-sm text-gray-400 italic">No education data available</p>
                   )}
                 </div>
               </CardContent>
             </Card>
           </motion.div>
 
-          {/* Certifications */}
-          {candidate.certifications && candidate.certifications.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.45 }}
-            >
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Award className="w-5 h-5" />
-                    Certifications
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="space-y-2">
-                    {candidate.certifications.map((cert, index) => (
-                      <div key={index} className="flex items-start gap-2">
-                        <Award className="w-4 h-4 text-amber-500 mt-0.5 flex-shrink-0" />
-                        <span className="text-sm text-gray-800">{cert}</span>
+          {/* Certifications & Languages — combined row */}
+          {((candidate.certifications && candidate.certifications.length > 0) || (candidate.languages && candidate.languages.length > 0)) && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {candidate.certifications && candidate.certifications.length > 0 && (
+                  <Card className="border-0 shadow-sm">
+                    <CardContent className="p-5">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1.5">
+                        <Award className="w-3.5 h-3.5" />Certifications
+                      </h3>
+                      <div className="space-y-1.5">
+                        {candidate.certifications.map((cert, i) => (
+                          <div key={i} className="flex items-start gap-1.5">
+                            <Award className="w-3 h-3 text-amber-500 mt-0.5 flex-shrink-0" />
+                            <span className="text-xs text-gray-700">{cert}</span>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            </motion.div>
-          )}
-
-          {/* Languages */}
-          {candidate.languages && candidate.languages.length > 0 && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.5 }}
-            >
-              <Card>
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <Globe className="w-5 h-5" />
-                    Languages
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex flex-wrap gap-2">
-                    {candidate.languages.map((lang, index) => (
-                      <Badge key={index} variant="outline" className="text-sm px-3 py-1 border-blue-200 bg-blue-50 text-blue-700">
-                        <Globe className="w-3 h-3 mr-1" />
-                        {lang}
-                      </Badge>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
+                    </CardContent>
+                  </Card>
+                )}
+                {candidate.languages && candidate.languages.length > 0 && (
+                  <Card className="border-0 shadow-sm">
+                    <CardContent className="p-5">
+                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1.5">
+                        <Globe className="w-3.5 h-3.5" />Languages
+                      </h3>
+                      <div className="flex flex-wrap gap-1.5">
+                        {candidate.languages.map((lang, i) => (
+                          <span key={i} className="text-xs px-2 py-0.5 rounded-full border border-blue-100 bg-blue-50/50 text-blue-700">{lang}</span>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
             </motion.div>
           )}
         </div>
 
-        {/* Right Column - AI Evaluation */}
-        <div className="space-y-6">
-          {/* Match Score */}
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.1 }}
-          >
-            <Card>
-              <CardHeader>
-                <CardTitle>Match Score</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="text-center">
-                  <div
-                    className={`text-6xl font-bold mb-2 ${getMatchScoreColor(
-                      candidate.matchScore
-                    )}`}
-                  >
-                    {(candidate.matchScore ?? 50).toFixed(1)}%
+        {/* Right Column — Sidebar */}
+        <div className="space-y-4">
+          {/* Match Score — compact */}
+          <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.05 }}>
+            <Card className="border-0 shadow-sm overflow-hidden">
+              <div className="h-1 bg-gradient-to-r from-blue-500 to-blue-600" />
+              <CardContent className="p-4 text-center">
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Match Score</p>
+                <div className={`text-4xl font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
+                  {(candidate.matchScore ?? 50).toFixed(0)}%
+                </div>
+                <Progress
+                  value={candidate.matchScore}
+                  className="h-1.5 mt-3 mb-2"
+                  indicatorClassName={
+                    candidate.matchScore >= 80
+                      ? 'bg-emerald-500'
+                      : candidate.matchScore >= 60
+                      ? 'bg-amber-500'
+                      : 'bg-red-500'
+                  }
+                />
+                <span className={`inline-block text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full ${
+                  candidate.status === 'Strong'
+                    ? 'bg-emerald-50 text-emerald-700'
+                    : candidate.status === 'Partial'
+                    ? 'bg-amber-50 text-amber-700'
+                    : 'bg-red-50 text-red-700'
+                }`}>
+                  {candidate.status} Match
+                </span>
+              </CardContent>
+            </Card>
+          </motion.div>
+
+          {/* Quick Info — compact rows */}
+          <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }}>
+            <Card className="border-0 shadow-sm">
+              <CardContent className="p-4 space-y-2.5">
+                <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Quick Info</p>
+                {[
+                  { label: 'Experience', value: `${candidate.experience} years` },
+                  { label: 'Applied', value: new Date(candidate.appliedDate).toLocaleDateString() },
+                  { label: 'Location', value: candidate.location },
+                ].map((row) => (
+                  <div key={row.label} className="flex items-center justify-between text-xs">
+                    <span className="text-gray-500">{row.label}</span>
+                    <span className="font-medium text-gray-900">{row.value}</span>
                   </div>
-                  <Progress
-                    value={candidate.matchScore}
-                    className="h-3 mb-4"
-                    indicatorClassName={
-                      candidate.matchScore >= 80
-                        ? 'bg-success'
-                        : candidate.matchScore >= 60
-                        ? 'bg-warning'
-                        : 'bg-danger'
-                    }
-                  />
-                  <Badge
-                    variant={
-                      candidate.status === 'Strong'
-                        ? 'success'
-                        : candidate.status === 'Partial'
-                        ? 'warning'
-                        : 'danger'
-                    }
-                    className="text-sm py-1.5 px-4"
-                  >
-                    {candidate.status} Match
-                  </Badge>
-                </div>
+                ))}
               </CardContent>
             </Card>
           </motion.div>
 
-          {/* Quick Info */}
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.2 }}
-          >
-            <Card>
-              <CardHeader>
-                <CardTitle>Quick Info</CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600">Experience</span>
-                  <span className="font-semibold text-gray-900">
-                    {candidate.experience} years
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600">Applied</span>
-                  <span className="font-semibold text-gray-900">
-                    {new Date(candidate.appliedDate).toLocaleDateString()}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600">Location</span>
-                  <span className="font-semibold text-gray-900">{candidate.location}</span>
-                </div>
-              </CardContent>
-            </Card>
-          </motion.div>
-
-          {/* AI Evaluation */}
+          {/* AI Evaluation — compact */}
           {candidate.evaluation && (
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.3 }}
-            >
-              <Card className="border-primary-200 bg-primary-50/30">
-                <CardHeader>
-                  <CardTitle className="text-primary-900">AI Evaluation</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
+            <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.15 }}>
+              <Card className="border-0 shadow-sm overflow-hidden">
+                <div className="h-0.5 bg-blue-500" />
+                <CardContent className="p-4 space-y-3">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">AI Evaluation</p>
+
                   <div>
-                    <h4 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                      <CheckCircle className="w-4 h-4 text-success" />
-                      Strengths
+                    <h4 className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wide mb-1 flex items-center gap-1">
+                      <CheckCircle className="w-3 h-3" />Strengths
                     </h4>
-                    <ul className="space-y-2">
-                      {candidate.evaluation.strengths.map((strength, index) => (
-                        <li key={index} className="text-sm text-gray-700 flex items-start gap-2">
-                          <span className="w-1 h-1 bg-success rounded-full mt-2 flex-shrink-0"></span>
-                          {strength}
+                    <ul className="space-y-1">
+                      {candidate.evaluation.strengths.map((s, i) => (
+                        <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
+                          <span className="w-1 h-1 rounded-full bg-emerald-400 mt-1.5 flex-shrink-0" />
+                          {s}
                         </li>
                       ))}
                     </ul>
                   </div>
 
                   <div>
-                    <h4 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-2">
-                      <XCircle className="w-4 h-4 text-warning" />
-                      Gaps
+                    <h4 className="text-[11px] font-semibold text-red-600 uppercase tracking-wide mb-1 flex items-center gap-1">
+                      <XCircle className="w-3 h-3" />Gaps
                     </h4>
-                    <ul className="space-y-2">
-                      {candidate.evaluation.gaps.map((gap, index) => (
-                        <li key={index} className="text-sm text-gray-700 flex items-start gap-2">
-                          <span className="w-1 h-1 bg-warning rounded-full mt-2 flex-shrink-0"></span>
-                          {gap}
+                    <ul className="space-y-1">
+                      {candidate.evaluation.gaps.map((g, i) => (
+                        <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
+                          <span className="w-1 h-1 rounded-full bg-red-400 mt-1.5 flex-shrink-0" />
+                          {g}
                         </li>
                       ))}
                     </ul>
                   </div>
 
-                  <div className="pt-4 border-t border-primary-200">
-                    <h4 className="text-sm font-semibold text-gray-900 mb-2">
-                      Recommendation
-                    </h4>
-                    <p className="text-sm text-gray-700">{candidate.evaluation.recommendation}</p>
+                  <div className="pt-2 border-t border-gray-100">
+                    <h4 className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Recommendation</h4>
+                    <p className="text-xs text-gray-700 leading-relaxed">{candidate.evaluation.recommendation}</p>
                   </div>
                 </CardContent>
               </Card>
             </motion.div>
           )}
 
-          {/* Actions */}
-          <motion.div
-            initial={{ opacity: 0, x: 20 }}
-            animate={{ opacity: 1, x: 0 }}
-            transition={{ delay: 0.4 }}
-          >
-            <Card>
-              <CardContent className="p-4 space-y-2">
-                <Button variant="success" className="w-full" onClick={handleScheduleInterview}>
+          {/* Actions — slim buttons */}
+          <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 }}>
+            <Card className="border-0 shadow-sm">
+              <CardContent className="p-3 space-y-1.5">
+                <Button variant="success" className="w-full h-8 text-xs" onClick={handleScheduleInterview}>
                   Schedule Interview
                 </Button>
-                <Button variant="outline" className="w-full" onClick={handleSendMessage}>
+                <Button variant="outline" className="w-full h-8 text-xs" onClick={handleSendMessage}>
                   Send Message
                 </Button>
-                <Button variant="destructive" className="w-full" onClick={handleRejectCandidate}>
+                <Button variant="destructive" className="w-full h-8 text-xs" onClick={handleRejectCandidate}>
                   Reject Candidate
                 </Button>
               </CardContent>

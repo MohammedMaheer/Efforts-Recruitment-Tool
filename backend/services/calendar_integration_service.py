@@ -458,7 +458,7 @@ Interview Details:
 {notes}
 
 ---
-Scheduled via AI Recruiter
+Scheduled via Efforts Solutions - AI Recruiter
         """.strip()
         
         end_time = datetime_slot + timedelta(minutes=duration_minutes)

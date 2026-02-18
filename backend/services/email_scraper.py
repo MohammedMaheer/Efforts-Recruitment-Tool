@@ -8,7 +8,7 @@ import hashlib
 import logging
 import re
 from datetime import datetime, timedelta
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 import imaplib
 import email
 from email.header import decode_header
@@ -196,16 +196,11 @@ def parse_indeed_email(body: str, subject: str) -> Optional[Dict]:
                 pass
             break
     
-    # Extract skills from body
-    skill_keywords = [
-        'python', 'java', 'javascript', 'react', 'node', 'sql', 'aws', 'docker',
-        'kubernetes', 'devops', 'agile', 'scrum', 'git', 'ci/cd', 'api',
-        'typescript', 'vue', 'angular', 'django', 'flask', 'spring',
-        'mongodb', 'postgresql', 'redis', 'machine learning', 'data science',
-        'excel', 'marketing', 'sales', 'customer service', 'management'
-    ]
-    found_skills = [skill.title() for skill in skill_keywords if skill in body_lower]
-    result['skills'] = list(set(found_skills))
+    # Extract skills from body — use expanded keyword list
+    result['skills'] = _extract_skills_from_text(body_lower)
+    
+    # Extract education
+    result['education'] = extract_education_from_text(clean_body)
     
     # Use cleaned body as summary
     result['summary'] = clean_body[:500] if clean_body else ''
@@ -241,6 +236,8 @@ def parse_linkedin_email(body: str, subject: str) -> Optional[Dict]:
         r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+has applied',
         r'New applicant[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
         r'Applicant:\s*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+        r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+is interested',
+        r'Application from\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
     ]
     
     for pattern in name_patterns:
@@ -285,8 +282,10 @@ def parse_linkedin_email(body: str, subject: str) -> Optional[Dict]:
     for pattern in phone_patterns:
         match = re.search(pattern, clean_body)
         if match:
-            result['phone'] = match.group()
-            break
+            digits = re.sub(r'\D', '', match.group())
+            if len(digits) >= 7:
+                result['phone'] = match.group()
+                break
     
     # Extract location
     location_patterns = [
@@ -314,21 +313,205 @@ def parse_linkedin_email(body: str, subject: str) -> Optional[Dict]:
                 pass
             break
     
-    # Extract skills
-    skill_keywords = [
-        'python', 'java', 'javascript', 'react', 'node', 'sql', 'aws', 'docker',
-        'kubernetes', 'devops', 'agile', 'scrum', 'git', 'ci/cd', 'api',
-        'typescript', 'vue', 'angular', 'django', 'flask', 'spring',
-        'mongodb', 'postgresql', 'redis', 'machine learning', 'data science',
-        'excel', 'marketing', 'sales', 'customer service', 'management',
-        'figma', 'photoshop', 'leadership', 'communication'
-    ]
-    found_skills = [skill.title() for skill in skill_keywords if skill in body_lower]
-    result['skills'] = list(set(found_skills))
+    # Extract skills — use expanded keyword list
+    found_skills = _extract_skills_from_text(body_lower)
+    result['skills'] = found_skills
     
     result['summary'] = clean_body[:500]
     
     return result if result['name'] or result['email'] else None
+
+
+# ============================================================================
+# ADDITIONAL JOB PORTAL PARSERS
+# ============================================================================
+
+def parse_glassdoor_email(body: str, subject: str) -> Optional[Dict]:
+    """Parse Glassdoor job application notification emails."""
+    combined = (body + subject).lower()
+    if 'glassdoor' not in combined:
+        return None
+    clean_body = clean_html_to_text(body)
+    return _generic_portal_parser(clean_body, subject, 'Glassdoor')
+
+
+def parse_ziprecruiter_email(body: str, subject: str) -> Optional[Dict]:
+    """Parse ZipRecruiter job application notification emails."""
+    combined = (body + subject).lower()
+    if 'ziprecruiter' not in combined:
+        return None
+    clean_body = clean_html_to_text(body)
+    return _generic_portal_parser(clean_body, subject, 'ZipRecruiter')
+
+
+def parse_naukri_email(body: str, subject: str) -> Optional[Dict]:
+    """Parse Naukri.com job application notification emails."""
+    combined = (body + subject).lower()
+    if 'naukri' not in combined:
+        return None
+    clean_body = clean_html_to_text(body)
+    return _generic_portal_parser(clean_body, subject, 'Naukri')
+
+
+def parse_bayt_email(body: str, subject: str) -> Optional[Dict]:
+    """Parse Bayt.com job application notification emails."""
+    combined = (body + subject).lower()
+    if 'bayt' not in combined:
+        return None
+    clean_body = clean_html_to_text(body)
+    return _generic_portal_parser(clean_body, subject, 'Bayt')
+
+
+def parse_gulftalent_email(body: str, subject: str) -> Optional[Dict]:
+    """Parse GulfTalent job application notification emails."""
+    combined = (body + subject).lower()
+    if 'gulftalent' not in combined:
+        return None
+    clean_body = clean_html_to_text(body)
+    return _generic_portal_parser(clean_body, subject, 'GulfTalent')
+
+
+def _generic_portal_parser(clean_body: str, subject: str, source: str) -> Optional[Dict]:
+    """
+    Generic portal email parser — uses a comprehensive set of regex patterns
+    to extract candidate data from any job-board notification email.
+    """
+    result: Dict[str, Any] = {
+        'name': '',
+        'email': '',
+        'phone': '',
+        'location': '',
+        'skills': [],
+        'summary': '',
+        'linkedin': '',
+        'experience': 0,
+        'education': [],
+        'source': source,
+    }
+
+    # ---- Name ----
+    name_patterns = [
+        r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+(?:has applied|applied|just applied)',
+        r'New applicant[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+        r'Application from[:\s]+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+        r'([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\s+is interested',
+        r'Applicant[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+        r'Candidate[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+        r'Name[:\s]*([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)',
+    ]
+    for pat in name_patterns:
+        m = re.search(pat, subject, re.IGNORECASE) or re.search(pat, clean_body)
+        if m:
+            result['name'] = m.group(1).strip()
+            break
+
+    # ---- Email ----
+    em = re.search(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}', clean_body)
+    if em:
+        result['email'] = em.group()
+
+    # ---- LinkedIn ----
+    lm = re.search(r'(?:https?://)?(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-]+)', clean_body, re.IGNORECASE)
+    if lm:
+        result['linkedin'] = f"https://linkedin.com/in/{lm.group(1)}"
+
+    # ---- Phone ----
+    phone_pats = [
+        r'\+971[\s.\-]?\d{1,2}[\s.\-]?\d{3}[\s.\-]?\d{4}',
+        r'\+\d{1,3}[\s.\-]?\(?\d{2,4}\)?[\s.\-]?\d{3,4}[\s.\-]?\d{3,4}',
+        r'\(\d{3}\)\s*\d{3}[\s.\-]?\d{4}',
+        r'(?:phone|mobile|cell|tel)[:\s]+([\d\s\-\.\+\(\)]{7,20})',
+    ]
+    for pat in phone_pats:
+        pm = re.search(pat, clean_body, re.IGNORECASE)
+        if pm:
+            val = pm.group(1) if pm.lastindex else pm.group()
+            digits = re.sub(r'\D', '', val)
+            if len(digits) >= 7:
+                result['phone'] = val.strip()
+                break
+
+    # ---- Location ----
+    loc_pats = [
+        r'Location[:\s]+([A-Za-z\s,]+?)(?:\n|$|\.)',
+        r'City[:\s]+([A-Za-z\s,]+?)(?:\n|$|\.)',
+        r'(?:based in|located in|from)\s+([A-Za-z\s,]+?)(?:\n|$|\.)',
+    ]
+    for pat in loc_pats:
+        lm2 = re.search(pat, clean_body, re.IGNORECASE)
+        if lm2:
+            result['location'] = lm2.group(1).strip()[:50]
+            break
+
+    # ---- Experience ----
+    exp_pats = [
+        r'(\d+)\+?\s*years?\s+(?:of\s+)?experience',
+        r'experience[:\s]+(\d+)\+?\s*years?',
+        r'(\d+)\+?\s*years?\s+in\s+',
+    ]
+    for pat in exp_pats:
+        em2 = re.search(pat, clean_body, re.IGNORECASE)
+        if em2:
+            try:
+                result['experience'] = int(em2.group(1))
+            except Exception:
+                pass
+            break
+
+    # ---- Skills ----
+    body_lower = clean_body.lower()
+    result['skills'] = _extract_skills_from_text(body_lower)
+
+    # ---- Education ----
+    result['education'] = extract_education_from_text(clean_body)
+
+    result['summary'] = clean_body[:500] if clean_body else ''
+    return result if result['name'] or result['email'] else None
+
+
+# ============================================================================
+# SHARED EXTRACTION HELPERS
+# ============================================================================
+
+_EXPANDED_SKILL_KEYWORDS: List[str] = [
+    # Programming
+    'python', 'java', 'javascript', 'react', 'node', 'sql', 'aws', 'docker',
+    'kubernetes', 'devops', 'agile', 'scrum', 'git', 'ci/cd', 'api',
+    'typescript', 'vue', 'angular', 'django', 'flask', 'spring', 'fastapi',
+    'mongodb', 'postgresql', 'redis', 'machine learning', 'data science',
+    'deep learning', 'tensorflow', 'pytorch', 'pandas', 'numpy',
+    'excel', 'marketing', 'sales', 'customer service', 'management',
+    'figma', 'photoshop', 'leadership', 'communication',
+    # Cloud & Infra
+    'azure', 'gcp', 'terraform', 'ansible', 'jenkins', 'nginx', 'linux',
+    'kafka', 'spark', 'hadoop', 'elasticsearch', 'graphql',
+    # Mobile
+    'react native', 'flutter', 'swift', 'kotlin', 'ios', 'android',
+    # Data / BI
+    'power bi', 'tableau', 'looker', 'sas', 'spss', 'r programming',
+    # Security
+    'cybersecurity', 'penetration testing', 'siem', 'encryption',
+    # Project / Methodology
+    'jira', 'confluence', 'kanban', 'waterfall', 'prince2', 'pmp',
+    # Design
+    'ui/ux', 'sketch', 'adobe xd', 'wireframing', 'prototyping',
+    # Business
+    'salesforce', 'hubspot', 'seo', 'ppc', 'content marketing',
+    'google analytics', 'social media', 'crm',
+    # Languages
+    'c++', 'c#', '.net', 'go', 'rust', 'ruby', 'php', 'scala', 'perl',
+]
+
+
+def _extract_skills_from_text(text_lower: str) -> List[str]:
+    """Extract skills from lowercased text using the expanded keyword list."""
+    found = []
+    seen: set = set()
+    for skill in _EXPANDED_SKILL_KEYWORDS:
+        if skill in text_lower and skill not in seen:
+            seen.add(skill)
+            found.append(skill.title())
+    return found
 
 
 def extract_education_from_text(text: str) -> List[Dict]:
@@ -450,6 +633,73 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
+
+def compute_extraction_quality(candidate: Dict) -> int:
+    """
+    Compute an extraction quality score (0-100) reflecting how complete and
+    trustworthy the extracted candidate data is.  Higher = more fields
+    populated with plausible values.
+    """
+    score = 0
+    max_score = 0
+
+    # Name (20 pts)
+    max_score += 20
+    name = candidate.get('name', '')
+    if name and is_valid_name(name) and len(name.split()) >= 2:
+        score += 20
+    elif name and is_valid_name(name):
+        score += 10
+
+    # Email (20 pts)
+    max_score += 20
+    em = candidate.get('email', '')
+    if em and '@' in em and 'noreply' not in em.lower() and 'example.com' not in em.lower():
+        score += 20
+    elif em:
+        score += 5
+
+    # Phone (10 pts)
+    max_score += 10
+    phone = candidate.get('phone', '')
+    if phone and len(re.sub(r'\D', '', phone)) >= 7:
+        score += 10
+
+    # Skills (15 pts)
+    max_score += 15
+    skills = candidate.get('skills', [])
+    if len(skills) >= 5:
+        score += 15
+    elif len(skills) >= 2:
+        score += 10
+    elif len(skills) >= 1:
+        score += 5
+
+    # Experience (10 pts)
+    max_score += 10
+    exp = candidate.get('experience', 0)
+    if isinstance(exp, (int, float)) and exp > 0:
+        score += 10
+
+    # Location (10 pts)
+    max_score += 10
+    if candidate.get('location'):
+        score += 10
+
+    # Education (10 pts)
+    max_score += 10
+    edu = candidate.get('education', '')
+    if edu and edu != '[]' and edu != '':
+        score += 10
+
+    # Summary (5 pts)
+    max_score += 5
+    summary = candidate.get('summary', '')
+    if summary and len(summary) >= 30:
+        score += 5
+
+    return int(score / max_score * 100) if max_score > 0 else 0
+
 class EmailAccount:
     """Configuration for a single email account"""
     def __init__(self, name: str, server: str, port: int, email: str, password: str):
@@ -482,7 +732,7 @@ class EmailScraperService:
         if os.getenv('EMAIL_ADDRESS'):
             accounts.append(EmailAccount(
                 name="Primary",
-                server=os.getenv('IMAP_SERVER', 'imap.gmail.com'),
+                server=os.getenv('IMAP_SERVER', 'outlook.office365.com'),
                 port=int(os.getenv('IMAP_PORT', '993')),
                 email=os.getenv('EMAIL_ADDRESS'),
                 password=os.getenv('EMAIL_PASSWORD')
@@ -509,8 +759,9 @@ class EmailScraperService:
     
     def connect_to_inbox(self, account: EmailAccount):
         """Connect to specific email account via IMAP with timeout"""
+        import socket
+        old_timeout = socket.getdefaulttimeout()
         try:
-            import socket
             # Set shorter timeout for socket operations (10 seconds)
             socket.setdefaulttimeout(10)
             
@@ -518,12 +769,12 @@ class EmailScraperService:
             mail.login(account.email, account.password)
             mail.select('INBOX')
             
-            # Reset to no timeout after successful connection
-            socket.setdefaulttimeout(None)
             return mail
         except Exception as e:
             logger.warning(f"âŒ Connection failed for {account.name} ({account.email}): {str(e)[:100]}")
             return None
+        finally:
+            socket.setdefaulttimeout(old_timeout)
     
     async def fetch_emails(self, mail, process_all: bool = False, since_date=None) -> List[Dict]:
         """
@@ -643,6 +894,11 @@ class EmailScraperService:
             subject_lower = subject.lower()
             has_job_keyword = any(keyword in subject_lower for keyword in job_keywords)
             
+            # Extract sender early — needed for portal detection below
+            from_email = msg.get("From", "")
+            sender_email = email.utils.parseaddr(from_email)[1]
+            sender_name = email.utils.parseaddr(from_email)[0]
+            
             # Check if from job portal (Indeed, LinkedIn, etc.)
             is_job_portal = any(portal in sender_email.lower() for portal in 
                                ['indeed.com', 'linkedin.com', 'glassdoor.com', 'ziprecruiter.com', 
@@ -656,11 +912,6 @@ class EmailScraperService:
             if should_skip and not has_job_keyword and not is_job_portal:
                 # Skip newsletters, notifications, etc.
                 return None
-            
-            # Extract sender
-            from_email = msg.get("From", "")
-            sender_email = email.utils.parseaddr(from_email)[1]
-            sender_name = email.utils.parseaddr(from_email)[0]
             
             # Extract email date
             date_str = msg.get("Date", "")
@@ -779,7 +1030,7 @@ class EmailScraperService:
                 if indeed_data:
                     job_portal_data = indeed_data
                     portal_source = 'Indeed'
-                    logger.info(f"ðŸ“§ Parsed Indeed application: {indeed_data.get('name', 'Unknown')}")
+                    logger.info(f"Parsed Indeed application: {indeed_data.get('name', 'Unknown')}")
                 
                 # Check LinkedIn
                 if not job_portal_data:
@@ -787,7 +1038,23 @@ class EmailScraperService:
                     if linkedin_data:
                         job_portal_data = linkedin_data
                         portal_source = 'LinkedIn'
-                        logger.info(f"ðŸ“§ Parsed LinkedIn application: {linkedin_data.get('name', 'Unknown')}")
+                        logger.info(f"Parsed LinkedIn application: {linkedin_data.get('name', 'Unknown')}")
+                
+                # Check additional portals
+                if not job_portal_data:
+                    for parser_fn, portal_name in [
+                        (parse_glassdoor_email, 'Glassdoor'),
+                        (parse_ziprecruiter_email, 'ZipRecruiter'),
+                        (parse_naukri_email, 'Naukri'),
+                        (parse_bayt_email, 'Bayt'),
+                        (parse_gulftalent_email, 'GulfTalent'),
+                    ]:
+                        portal_result = parser_fn(raw_body, subject)
+                        if portal_result:
+                            job_portal_data = portal_result
+                            portal_source = portal_name
+                            logger.info(f"Parsed {portal_name}: {portal_result.get('name', 'Unknown')}")
+                            break
             
             # Parse resume if attached
             resume_data = None
@@ -947,6 +1214,11 @@ class EmailScraperService:
                 'resume_file_data': resume_file_data,
                 'resume_filename': resume_filename
             }
+            
+            # Compute data quality score — useful for prioritising review
+            candidate['extraction_quality'] = compute_extraction_quality(candidate)
+            logger.info(f"Extraction quality for {candidate_name}: "
+                        f"{candidate['extraction_quality']}%")
             
             return candidate
             

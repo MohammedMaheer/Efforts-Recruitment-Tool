@@ -128,7 +128,7 @@ export function getStatusBadgeColor(status: string): { bg: string; text: string;
     case 'shortlisted':
       return { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' }
     case 'interviewing':
-      return { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' }
+      return { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' }
     case 'offered':
       return { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' }
     case 'hired':
@@ -369,7 +369,7 @@ export function sleep(ms: number): Promise<void> {
 
 export const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
   'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'DevOps Engineer': { bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200' },
+  'DevOps Engineer': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
   'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
   'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
   'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },

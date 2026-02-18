@@ -146,8 +146,8 @@ class OAuthAutomationService:
             **self._stats,
             'auth_status': self._auth_status.value,
             'sync_status': self._sync_status.value,
-            'last_sync': self._last_sync_time.isoformat() if self._last_sync_time else None,
-            'next_sync': self._next_sync_time.isoformat() if self._next_sync_time else None,
+            'last_sync': self._last_sync_time.strftime('%Y-%m-%dT%H:%M:%SZ') if self._last_sync_time else None,
+            'next_sync': self._next_sync_time.strftime('%Y-%m-%dT%H:%M:%SZ') if self._next_sync_time else None,
             'sync_interval_minutes': self._sync_interval_minutes
         }
     
@@ -227,8 +227,17 @@ class OAuthAutomationService:
             return await self.refresh_token()
         
         if status == AuthStatus.NO_TOKEN:
-            # Try client credentials as fallback
-            return await self.authenticate_with_credentials()
+            # No token found — user needs to authenticate via Settings
+            # Don't use client_credentials: it creates application tokens that fail
+            # when the email is not an Azure AD mailbox (e.g., Gmail accounts)
+            logger.info("No OAuth token found. User needs to authenticate via Settings → Connect Microsoft Account.")
+            self._set_auth_status(AuthStatus.NEEDS_REAUTH)
+            return {
+                'status': 'error',
+                'message': 'No token. Please authenticate via Settings → Connect Microsoft Account.',
+                'needs_manual_auth': True,
+                'auth_url': self._get_auth_url()
+            }
         
         return {'status': 'error', 'message': f'Auth status: {status.value}'}
     
@@ -239,9 +248,16 @@ class OAuthAutomationService:
         try:
             token_data = self._token_storage.get_token(self.primary_email)
             if not token_data or not token_data.get('refresh_token'):
-                # No refresh token - try client credentials
-                logger.info("No refresh token available, trying client credentials...")
-                return await self.authenticate_with_credentials()
+                # No refresh token — DON'T fall back to client_credentials
+                # (it would overwrite the delegated token + destroy refresh_token)
+                logger.info("No refresh token available. User needs to authenticate via Settings → Connect Microsoft Account.")
+                self._set_auth_status(AuthStatus.NEEDS_REAUTH)
+                return {
+                    'status': 'error',
+                    'message': 'No refresh token. Please authenticate via Settings.',
+                    'needs_manual_auth': True,
+                    'auth_url': self._get_auth_url()
+                }
             
             refresh_token = token_data['refresh_token']
             
@@ -272,8 +288,14 @@ class OAuthAutomationService:
                 }
             else:
                 logger.warning(f"Token refresh failed: {result.get('error')}")
-                # Try client credentials as fallback
-                return await self.authenticate_with_credentials()
+                # DON'T fall back to client_credentials — it would destroy the refresh_token
+                self._set_auth_status(AuthStatus.NEEDS_REAUTH)
+                return {
+                    'status': 'error',
+                    'message': f"Token refresh failed: {result.get('error')}. Please re-authenticate via Settings.",
+                    'needs_manual_auth': True,
+                    'auth_url': self._get_auth_url()
+                }
                 
         except Exception as e:
             logger.error(f"Token refresh error: {e}")
@@ -293,13 +315,16 @@ class OAuthAutomationService:
             result = await graph_service.authenticate_with_credentials()
             
             if result['status'] == 'success':
-                # Save token (no refresh token for client credentials)
+                # Save token — but PRESERVE existing refresh_token if we have one
+                existing_token = self._token_storage.get_token(self.primary_email)
+                existing_refresh = existing_token.get('refresh_token') if existing_token else None
+                
                 self._token_storage.save_token(
                     email=self.primary_email,
                     access_token=result['access_token'],
-                    refresh_token=None,
+                    refresh_token=existing_refresh,  # Preserve existing refresh token!
                     expires_in=result['expires_in'],
-                    auth_type='application'
+                    auth_type='application' if not existing_refresh else 'delegated'
                 )
                 
                 self._stats['auto_reauths'] += 1
@@ -373,8 +398,8 @@ class OAuthAutomationService:
                     logger.info("🔄 Token expiring soon, auto-refreshing...")
                     await self.ensure_valid_token()
                 
-                # Check every 5 minutes
-                await asyncio.sleep(300)
+                # Check every 15 minutes (reduced frequency to save costs)
+                await asyncio.sleep(900)
                 
             except asyncio.CancelledError:
                 break
@@ -389,8 +414,8 @@ class OAuthAutomationService:
         
         while self._running:
             try:
-                # Calculate next sync time
-                self._next_sync_time = datetime.now() + timedelta(minutes=self._sync_interval_minutes)
+                # Calculate next sync time (UTC for consistency)
+                self._next_sync_time = datetime.utcnow() + timedelta(minutes=self._sync_interval_minutes)
                 
                 # Perform sync
                 await self.perform_sync()
@@ -456,7 +481,7 @@ class OAuthAutomationService:
                     'token': token_result['token']
                 }
             
-            self._last_sync_time = datetime.now()
+            self._last_sync_time = datetime.utcnow()
             self._last_sync_result = result
             
             if result.get('status') == 'success':
@@ -498,8 +523,9 @@ class OAuthAutomationService:
             graph_service = self._graph_service_factory(
                 self.client_id, self.client_secret, self.tenant_id, self.primary_email
             )
+            redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', 'http://localhost:5173/email')
             return graph_service.get_authorization_url(
-                redirect_uri='http://localhost:5173/email',
+                redirect_uri=redirect_uri,
                 state=self.primary_email
             )
         except Exception as e:
@@ -507,14 +533,14 @@ class OAuthAutomationService:
             return None
     
     def get_status_summary(self) -> Dict[str, Any]:
-        """Get comprehensive status summary for frontend"""
+        """Get comprehensive status summary for frontend. All times in UTC."""
         return {
             'is_configured': self.is_configured,
             'auth_status': self._auth_status.value,
             'sync_status': self._sync_status.value,
             'primary_email': self.primary_email,
-            'last_sync': self._last_sync_time.isoformat() if self._last_sync_time else None,
-            'next_sync': self._next_sync_time.isoformat() if self._next_sync_time else None,
+            'last_sync': self._last_sync_time.strftime('%Y-%m-%dT%H:%M:%SZ') if self._last_sync_time else None,
+            'next_sync': self._next_sync_time.strftime('%Y-%m-%dT%H:%M:%SZ') if self._next_sync_time else None,
             'sync_interval_minutes': self._sync_interval_minutes,
             'stats': self._stats,
             'needs_manual_auth': self._auth_status == AuthStatus.NEEDS_REAUTH,

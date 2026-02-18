@@ -381,7 +381,7 @@ export default function EmailIntegration() {
                 </div>
                 <div className="text-center p-3 bg-white rounded-lg shadow-sm">
                   <div className="flex items-center justify-center gap-1 mb-1">
-                    <RefreshCw className="w-4 h-4 text-purple-600" />
+                    <RefreshCw className="w-4 h-4 text-blue-600" />
                     <span className="text-xs text-gray-500">Sync Status</span>
                   </div>
                   <Badge className={getSyncStatusColor(oauthStatus.sync_status)}>
@@ -423,8 +423,8 @@ export default function EmailIntegration() {
                     <p className="text-lg font-bold text-red-600">{oauthStatus.stats.failed_syncs}</p>
                     <p className="text-xs text-gray-500">Failed</p>
                   </div>
-                  <div className="p-2 bg-purple-50 rounded">
-                    <p className="text-lg font-bold text-purple-600">{oauthStatus.stats.token_refreshes}</p>
+                  <div className="p-2 bg-blue-50 rounded">
+                    <p className="text-lg font-bold text-blue-600">{oauthStatus.stats.token_refreshes}</p>
                     <p className="text-xs text-gray-500">Refreshes</p>
                   </div>
                   <div className="p-2 bg-orange-50 rounded">
@@ -655,8 +655,8 @@ export default function EmailIntegration() {
                   </p>
                   <p className="text-sm text-gray-600 mt-1">New Applications</p>
                 </div>
-                <div className="text-center p-4 bg-purple-50 rounded-lg">
-                  <p className="text-3xl font-bold text-purple-600">
+                <div className="text-center p-4 bg-blue-50 rounded-lg">
+                  <p className="text-3xl font-bold text-blue-600">
                     {syncResult.resumes_parsed}
                   </p>
                   <p className="text-sm text-gray-600 mt-1">Resumes Parsed</p>
@@ -720,8 +720,8 @@ export default function EmailIntegration() {
               </div>
 
               <div className="flex items-start gap-3">
-                <div className="w-10 h-10 bg-purple-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                  <CheckCircle className="w-5 h-5 text-purple-600" />
+                <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <CheckCircle className="w-5 h-5 text-blue-600" />
                 </div>
                 <div>
                   <h4 className="font-semibold text-gray-900 mb-1">Smart Detection</h4>

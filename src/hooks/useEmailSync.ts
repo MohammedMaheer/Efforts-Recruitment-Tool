@@ -33,6 +33,10 @@ export function useEmailSync(
   const lastKnownCount = useRef<number>(0)
   const isFirstCheck = useRef(true)
 
+  // Use ref for callback to keep checkSyncStatus stable
+  const callbackRef = useRef(onNewCandidates)
+  callbackRef.current = onNewCandidates
+
   const checkSyncStatus = useCallback(async () => {
     try {
       const token = useAuthStore.getState().token
@@ -58,8 +62,8 @@ export function useEmailSync(
       })
       
       // Trigger callback if new candidates detected
-      if (hasNewData && onNewCandidates) {
-        onNewCandidates()
+      if (hasNewData && callbackRef.current) {
+        callbackRef.current()
       }
       
       lastKnownCount.current = newCount
@@ -67,7 +71,7 @@ export function useEmailSync(
     } catch {
       // Silently ignore - sync status is optional
     }
-  }, [onNewCandidates])
+  }, [])
 
   useEffect(() => {
     // Initial check

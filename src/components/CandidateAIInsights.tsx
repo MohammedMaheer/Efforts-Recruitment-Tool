@@ -203,7 +203,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
   return (
     <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 overflow-hidden">
       {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b dark:border-gray-700 bg-gradient-to-r from-purple-600 to-blue-600">
+      <div className="flex items-center justify-between p-4 border-b dark:border-gray-700 bg-gradient-to-r from-primary-700 to-primary-600">
         <div className="flex items-center gap-2 text-white">
           <Brain className="h-5 w-5" />
           <h3 className="font-semibold">AI Insights</h3>
@@ -221,13 +221,13 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
         <div className="p-4 border-b dark:border-gray-700">
           <div className="flex items-center justify-between">
             <span className="text-sm text-gray-600 dark:text-gray-400">Hire Probability</span>
-            <span className="text-2xl font-bold text-purple-600">
+            <span className="text-2xl font-bold text-blue-600">
               {(mlRanking.hire_probability * 100).toFixed(0)}%
             </span>
           </div>
           <div className="mt-2 h-2 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
             <div
-              className="h-full bg-gradient-to-r from-purple-500 to-blue-500 rounded-full transition-all"
+              className="h-full bg-gradient-to-r from-primary-600 to-primary-500 rounded-full transition-all"
               style={{ width: `${mlRanking.hire_probability * 100}%` }}
             />
           </div>
@@ -241,10 +241,10 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
           className="w-full flex items-center justify-between p-4 hover:bg-gray-50 dark:hover:bg-gray-700/50"
         >
           <div className="flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-purple-500" />
+            <Sparkles className="h-4 w-4 text-blue-500" />
             <span className="font-medium text-gray-900 dark:text-white">AI Analysis (Pros & Cons)</span>
             {deepAnalysis?.ai_powered && (
-              <span className="px-2 py-0.5 text-xs rounded-full bg-purple-100 text-purple-700">
+              <span className="px-2 py-0.5 text-xs rounded-full bg-blue-100 text-blue-700">
                 GPT-4
               </span>
             )}
@@ -260,14 +260,14 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
           <div className="px-4 pb-4 space-y-4">
             {loadingDeepAnalysis ? (
               <div className="flex items-center justify-center py-4">
-                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-purple-600"></div>
+                <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-600"></div>
                 <span className="ml-2 text-sm text-gray-500">Analyzing with AI...</span>
               </div>
             ) : deepAnalysis ? (
               <>
                 {/* Overall Score */}
                 {deepAnalysis.overall_score && (
-                  <div className="flex items-center justify-between p-3 bg-gradient-to-r from-purple-50 to-blue-50 dark:from-purple-900/20 dark:to-blue-900/20 rounded-lg">
+                  <div className="flex items-center justify-between p-3 bg-gradient-to-r from-primary-50 to-blue-50 dark:from-primary-900/20 dark:to-blue-900/20 rounded-lg">
                     <span className="text-sm font-medium text-gray-700 dark:text-gray-300">AI Score</span>
                     <span className={`text-xl font-bold ${
                       deepAnalysis.overall_score >= 70 ? 'text-green-600' :
@@ -323,7 +323,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
                   <div className="p-3 bg-gray-50 dark:bg-gray-900/50 rounded-lg">
                     <div className="flex items-center justify-between mb-2">
                       <span className="text-sm font-medium text-gray-700 dark:text-gray-300 flex items-center gap-1">
-                        <Award className="h-3.5 w-3.5 text-purple-500" />
+                        <Award className="h-3.5 w-3.5 text-blue-500" />
                         Recommendation
                       </span>
                       <span className={`px-2 py-0.5 text-xs rounded-full font-medium ${
@@ -350,7 +350,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
                         <span className="text-xs text-gray-500">Interview Focus: </span>
                         <div className="flex flex-wrap gap-1 mt-1">
                           {deepAnalysis.hiring_recommendation.interview_focus_areas.map((area, idx) => (
-                            <span key={idx} className="px-1.5 py-0.5 bg-purple-100 dark:bg-purple-900/30 text-purple-700 dark:text-purple-300 text-xs rounded">
+                            <span key={idx} className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300 text-xs rounded">
                               {area}
                             </span>
                           ))}
@@ -375,7 +375,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
                 <p className="text-sm text-gray-500">AI analysis not available</p>
                 <button
                   onClick={fetchDeepAnalysis}
-                  className="mt-2 text-xs text-purple-600 hover:text-purple-700 font-medium"
+                  className="mt-2 text-xs text-blue-600 hover:text-blue-700 font-medium"
                 >
                   Try Again
                 </button>
@@ -418,7 +418,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
               <PredictionRow
                 label="Offer Acceptance"
                 value={prediction.offer_acceptance}
-                color="purple"
+                color="blue"
               />
               <div className="flex items-center justify-between">
                 <span className="text-sm text-gray-600 dark:text-gray-400">Retention Risk</span>
@@ -535,13 +535,13 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
               {quality.interview_questions.length > 0 && (
                 <div>
                   <h4 className="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2 flex items-center gap-1">
-                    <Sparkles className="h-3.5 w-3.5 text-purple-500" />
+                    <Sparkles className="h-3.5 w-3.5 text-blue-500" />
                     Suggested Questions
                   </h4>
                   <ul className="space-y-1 text-xs text-gray-600 dark:text-gray-400">
                     {quality.interview_questions.slice(0, 3).map((q, index) => (
                       <li key={index} className="flex items-start gap-1">
-                        <span className="text-purple-500">•</span>
+                        <span className="text-blue-500">•</span>
                         {q}
                       </li>
                     ))}
@@ -577,9 +577,9 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
           </button>
           <button
             onClick={() => window.location.href = `/schedule?candidate=${candidateId}`}
-            className="flex flex-col items-center gap-1 p-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg hover:border-purple-500 text-xs"
+            className="flex flex-col items-center gap-1 p-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg hover:border-blue-500 text-xs"
           >
-            <Calendar className="h-4 w-4 text-purple-500" />
+            <Calendar className="h-4 w-4 text-blue-500" />
             <span>Schedule</span>
           </button>
         </div>
@@ -592,14 +592,14 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
 interface PredictionRowProps {
   label: string;
   value: number;
-  color: 'blue' | 'green' | 'purple' | 'yellow' | 'red';
+  color: 'blue' | 'green' | 'blue' | 'yellow' | 'red';
 }
 
 const PredictionRow: React.FC<PredictionRowProps> = ({ label, value, color }) => {
   const colors = {
     blue: 'bg-blue-500',
     green: 'bg-green-500',
-    purple: 'bg-purple-500',
+    purple: 'bg-blue-500',
     yellow: 'bg-yellow-500',
     red: 'bg-red-500',
   };

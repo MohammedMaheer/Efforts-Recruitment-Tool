@@ -7,6 +7,7 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ToastContainer } from '@/components/ui/Toast'
+import config from '@/config'
 import LoginPage from '@/pages/LoginPage'
 import OAuthCallback from '@/pages/OAuthCallback'
 import DashboardLayout from '@/components/layout/DashboardLayout'
@@ -15,7 +16,6 @@ import Candidates from '@/pages/Candidates'
 import CandidateDetail from '@/pages/CandidateDetail'
 import Shortlist from '@/pages/Shortlist'
 import Settings from '@/pages/Settings'
-import EmailIntegration from '@/components/EmailIntegration'
 import AIAssistant from '@/pages/AIAssistant'
 import AnalyticsDashboard from '@/components/AnalyticsDashboard'
 // JobDescriptions removed - JD matching integrated into AI Assistant
@@ -57,9 +57,11 @@ function App() {
   const verifyToken = useAuthStore((state) => state.verifyToken)
   const token = useAuthStore((state) => state.token)
   
-  // Verify token on app load
+  // Warm up Cloud Run (fire-and-forget) then verify token
   useEffect(() => {
     const verify = async () => {
+      // Wake up Cloud Run backend with a lightweight health ping
+      fetch(`${config.apiUrl}/health`, { method: 'GET' }).catch(() => {})
       if (token) {
         await verifyToken()
       }
@@ -114,7 +116,7 @@ function App() {
           <Route path="candidates" element={<Candidates />} />
           <Route path="candidates/:id" element={<CandidateDetail />} />
           <Route path="shortlist" element={<Shortlist />} />
-          <Route path="email-integration" element={<EmailIntegration />} />
+          <Route path="email-integration" element={<Navigate to="/setup" replace />} />
           <Route path="settings" element={<Settings />} />
           <Route path="setup" element={<SetupWizard />} />
         </Route>

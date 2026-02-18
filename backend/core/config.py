@@ -16,9 +16,9 @@ class Settings(BaseSettings):
     """
     
     # Application
-    app_name: str = "AI Recruiter Platform"
+    app_name: str = "Efforts Solutions - AI Recruiter"
     app_version: str = "4.0.0"
-    debug: bool = Field(default=True, description="Enable debug mode")
+    debug: bool = Field(default=False, description="Enable debug mode")
     environment: str = Field(default="development", description="Environment name")
     
     # Server
@@ -32,11 +32,22 @@ class Settings(BaseSettings):
     db_timeout: float = Field(default=30.0, description="Database timeout in seconds")
     
     # AI Services
-    ai_timeout: float = Field(default=8.0, description="AI request timeout")
-    ai_analysis_timeout: float = Field(default=5.0, description="AI analysis timeout")
+    ai_timeout: float = Field(default=30.0, description="AI request timeout")
+    ai_analysis_timeout: float = Field(default=30.0, description="AI analysis timeout for LLM inference")
     use_local_ai: bool = Field(default=True, description="Use local AI (free) as primary")
     openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key for fallback")
     openai_model: str = Field(default="gpt-3.5-turbo", description="OpenAI model to use")
+    
+    # Google Gemini (primary for deployment)
+    gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key")
+    gemini_model: str = Field(default="gemini-2.0-flash", description="Gemini model (2.0 Flash is fast & cheap)")
+    
+    # AI Tier Mode — controls which AI engine is tried first
+    # "auto"   = smart detection: production → Gemini first; local → Ollama first
+    # "gemini" = always try Gemini first
+    # "ollama" = always try Ollama first
+    # "openai" = always try OpenAI first
+    ai_tier_mode: str = Field(default="auto", description="AI tier selection: auto|gemini|ollama|openai")
     
     # Local LLM (Ollama)
     ollama_base_url: str = Field(default="http://localhost:11434", description="Ollama API URL")
@@ -51,13 +62,13 @@ class Settings(BaseSettings):
     microsoft_client_secret: Optional[str] = Field(default=None)
     microsoft_tenant_id: Optional[str] = Field(default=None)
     email_address: Optional[str] = Field(default=None, description="Primary email for sync")
-    company_name: str = Field(default="AI Recruiter Platform", description="Company name for emails")
+    company_name: str = Field(default="Efforts Solutions", description="Company name for emails")
     recruiter_name: str = Field(default="HR Team", description="Recruiter name for emails")
     
     # Email Sync
     auto_sync_enabled: bool = Field(default=True, description="Enable auto email sync")
-    sync_interval_minutes: int = Field(default=15, description="Email sync interval")
-    max_emails_per_sync: int = Field(default=100000, description="Max emails to fetch")
+    sync_interval_minutes: int = Field(default=60, description="Email sync interval")
+    max_emails_per_sync: int = Field(default=500, description="Max emails to fetch per sync cycle")
     
     # Twilio SMS
     twilio_account_sid: Optional[str] = Field(default=None, description="Twilio Account SID")
@@ -113,11 +124,40 @@ class Settings(BaseSettings):
     
     @property
     def is_production(self) -> bool:
-        return self.environment == "production"
+        """Detect production: explicit env var or Cloud Run environment"""
+        if self.environment == "production":
+            return True
+        # Auto-detect GCP Cloud Run (K_SERVICE is always set in Cloud Run)
+        return bool(os.getenv('K_SERVICE'))
     
     @property
     def is_development(self) -> bool:
-        return self.environment == "development"
+        return not self.is_production
+    
+    @property
+    def ai_tier_order(self) -> List[str]:
+        """
+        Return the AI engine priority order based on ai_tier_mode and environment.
+        
+        In 'auto' mode:
+          - Production/Cloud Run → ["gemini", "openai", "ollama", "keyword"]
+          - Local development   → ["ollama", "gemini", "openai", "keyword"]
+        
+        Manual overrides: "gemini", "ollama", "openai" force that engine first.
+        """
+        mode = self.ai_tier_mode.lower().strip()
+        
+        if mode == "gemini":
+            return ["gemini", "openai", "ollama", "keyword"]
+        elif mode == "ollama":
+            return ["ollama", "gemini", "openai", "keyword"]
+        elif mode == "openai":
+            return ["openai", "gemini", "ollama", "keyword"]
+        else:  # "auto" — smart detection
+            if self.is_production:
+                return ["gemini", "openai", "ollama", "keyword"]
+            else:
+                return ["ollama", "gemini", "openai", "keyword"]
     
     class Config:
         env_file = ".env"

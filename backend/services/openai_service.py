@@ -249,7 +249,7 @@ Return as JSON array of questions: {{"questions": ["question 1", "question 2", .
         """
         prompt = f"""Summarize this resume in 2-3 sentences, highlighting key qualifications:
 
-{resume_text[:2000]}  # Limit to first 2000 chars
+{resume_text[:2000]}
 
 Provide a professional, concise summary."""
 
