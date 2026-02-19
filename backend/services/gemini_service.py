@@ -1064,23 +1064,87 @@ RESPONSE RULES:
         text_response = result or f"I'm here to help! We have **{total} candidates** in the database. What would you like to know?"
         
         if return_candidates:
-            # Return dict with response text + the candidates lookup (1-indexed)
-            # Each candidate is a lightweight dict with id, name, etc.
+            # ── Parse which candidates Gemini ACTUALLY mentioned in its response ──
+            # Gemini re-ranks and picks its own top-N from the pool, so we must
+            # build candidates_lookup from the NAMES in the response text, not
+            # from the original pool order. This prevents card/text mismatch.
+            import re as _re
+            mentioned_pattern = _re.compile(
+                r'\*{0,2}#(\d+)\.\s*(.+?)(?:\s*\*{0,2}\s*\||\s*\*{0,2}\s*\n|\s*\*{2,})',
+                _re.MULTILINE
+            )
+            mentioned_entries = mentioned_pattern.findall(text_response or '')
+            
             candidates_lookup = []
-            for i, c in enumerate(_selected_candidates):
-                candidates_lookup.append({
-                    'index': i + 1,  # 1-indexed to match [N] in prompt
-                    'id': c.get('id', ''),
-                    'name': c.get('name', ''),
-                    'matchScore': c.get('matchScore', c.get('match_score', 0)),
-                    'location': c.get('location', ''),
-                    'jobCategory': c.get('jobCategory', c.get('job_category', '')),
-                    'experience': c.get('experience', 0),
-                    'skills': c.get('skills', [])[:10],
-                    'email': c.get('email', ''),
-                    'phone': c.get('phone', ''),
-                    'status': c.get('status', 'New'),
-                })
+            used_ids = set()
+            
+            if mentioned_entries:
+                # Build lookup in the order Gemini listed them
+                for rank_str, raw_name in mentioned_entries:
+                    name_clean = raw_name.strip().strip('*').strip().lower()
+                    # Find best match in pool by name
+                    best_match = None
+                    best_score = 0
+                    for c in _selected_candidates:
+                        if c.get('id', '') in used_ids:
+                            continue
+                        cname = (c.get('name', '') or '').lower().strip()
+                        # Exact match
+                        if cname == name_clean:
+                            best_match = c
+                            best_score = 100
+                            break
+                        # Starts-with or contains
+                        cname_base = cname.split('–')[0].split('-')[0].strip()
+                        nclean_base = name_clean.split('–')[0].split('-')[0].strip()
+                        if cname_base == nclean_base or cname.startswith(nclean_base) or nclean_base.startswith(cname_base):
+                            if best_score < 90:
+                                best_match = c
+                                best_score = 90
+                        else:
+                            # Word overlap matching
+                            cn_words = set(cname_base.split())
+                            nn_words = set(nclean_base.split())
+                            overlap = len(cn_words & nn_words)
+                            if overlap >= 2 or (overlap >= 1 and min(len(cn_words), len(nn_words)) <= 2):
+                                score = overlap * 30
+                                if score > best_score:
+                                    best_match = c
+                                    best_score = score
+                    
+                    if best_match:
+                        used_ids.add(best_match.get('id', ''))
+                        candidates_lookup.append({
+                            'index': int(rank_str),
+                            'id': best_match.get('id', ''),
+                            'name': best_match.get('name', ''),
+                            'matchScore': best_match.get('matchScore', best_match.get('match_score', 0)),
+                            'location': best_match.get('location', ''),
+                            'jobCategory': best_match.get('jobCategory', best_match.get('job_category', '')),
+                            'experience': best_match.get('experience', 0),
+                            'skills': best_match.get('skills', [])[:10],
+                            'email': best_match.get('email', ''),
+                            'phone': best_match.get('phone', ''),
+                            'status': best_match.get('status', 'New'),
+                        })
+            
+            # Fallback: if parsing found nothing, send top-N from pool
+            if not candidates_lookup:
+                for i, c in enumerate(_selected_candidates[:num_candidates]):
+                    candidates_lookup.append({
+                        'index': i + 1,
+                        'id': c.get('id', ''),
+                        'name': c.get('name', ''),
+                        'matchScore': c.get('matchScore', c.get('match_score', 0)),
+                        'location': c.get('location', ''),
+                        'jobCategory': c.get('jobCategory', c.get('job_category', '')),
+                        'experience': c.get('experience', 0),
+                        'skills': c.get('skills', [])[:10],
+                        'email': c.get('email', ''),
+                        'phone': c.get('phone', ''),
+                        'status': c.get('status', 'New'),
+                    })
+            
             return {
                 'response': text_response,
                 'candidates_lookup': candidates_lookup

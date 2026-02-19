@@ -1060,69 +1060,35 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       let displayCandidates: Candidate[] = []
       
       if (candidatesLookup.length > 0) {
-        // Find all #N. references in the AI text (any number)
-        const refPattern = /\*{0,2}#(\d+)\.\s/g
-        const mentionedIndices = new Set<number>()
-        let match: RegExpExecArray | null
-        while ((match = refPattern.exec(aiText)) !== null) {
-          mentionedIndices.add(parseInt(match[1]))
+        // Backend now returns candidates_lookup in the EXACT order Gemini
+        // mentioned them (parsed by name from AI text). So we just use
+        // them directly — no fragile index matching needed.
+        const makeCandidateFromLookup = (entry: any): Candidate => {
+          const local = candidates.find(c => c.id === entry.id)
+          return local || {
+            id: entry.id,
+            name: entry.name || 'Unknown',
+            matchScore: entry.matchScore || 50,
+            location: entry.location || '',
+            jobCategory: entry.jobCategory || 'General',
+            experience: entry.experience || 0,
+            skills: entry.skills || [],
+            email: entry.email || '',
+            phone: entry.phone || '',
+            status: entry.status || 'New',
+            appliedDate: new Date().toISOString(),
+            summary: '',
+            education: [],
+            workHistory: [],
+            resumeUrl: '',
+            hasResume: false,
+          } as Candidate
         }
-        
-        if (mentionedIndices.size > 0) {
-          for (const idx of mentionedIndices) {
-            const lookupEntry = candidatesLookup.find((c: any) => c.index === idx)
-            if (lookupEntry) {
-              // Prefer full local candidate, but always create one from lookup
-              const localCandidate = candidates.find(c => c.id === lookupEntry.id)
-              displayCandidates.push(localCandidate || {
-                id: lookupEntry.id,
-                name: lookupEntry.name || 'Unknown',
-                matchScore: lookupEntry.matchScore || 50,
-                location: lookupEntry.location || '',
-                jobCategory: lookupEntry.jobCategory || 'General',
-                experience: lookupEntry.experience || 0,
-                skills: lookupEntry.skills || [],
-                email: lookupEntry.email || '',
-                phone: lookupEntry.phone || '',
-                status: lookupEntry.status || 'New',
-                appliedDate: new Date().toISOString(),
-                summary: '',
-                education: [],
-                workHistory: [],
-                resumeUrl: '',
-                hasResume: false,
-              } as Candidate)
-            }
-          }
-          displayCandidates.sort((a, b) => (b.matchScore ?? 0) - (a.matchScore ?? 0))
-          // Limit to requested count
-          displayCandidates = displayCandidates.slice(0, requestedCount)
-        }
-        
-        // If regex didn't match but lookup has entries, include all lookup candidates
-        if (displayCandidates.length === 0) {
-          displayCandidates = candidatesLookup.slice(0, requestedCount).map((entry: any) => {
-            const local = candidates.find(c => c.id === entry.id)
-            return local || {
-              id: entry.id,
-              name: entry.name || 'Unknown',
-              matchScore: entry.matchScore || 50,
-              location: entry.location || '',
-              jobCategory: entry.jobCategory || 'General',
-              experience: entry.experience || 0,
-              skills: entry.skills || [],
-              email: entry.email || '',
-              phone: entry.phone || '',
-              status: entry.status || 'New',
-              appliedDate: new Date().toISOString(),
-              summary: '',
-              education: [],
-              workHistory: [],
-              resumeUrl: '',
-              hasResume: false,
-            } as Candidate
-          })
-        }
+
+        // Use lookup entries in order (already matched to AI text by backend)
+        displayCandidates = candidatesLookup
+          .slice(0, requestedCount)
+          .map(makeCandidateFromLookup)
       }
       
       // If no candidates extracted from AI text, fall back to local parseQuery
@@ -1382,15 +1348,16 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       rawSections.push(content.slice(start, end).trim())
     }
 
-    // Match each section to the correct candidate by name
+    // Match each section to the correct candidate by name (primary) or position (fallback)
     const usedCandidateIds = new Set<string>()
     const sections = rawSections.map((text, sectionIdx) => {
       if (!text) return { text, candidateId: null }
-      // Extract name: "#N. Name | Score..." or "#N. Name\n" or "#N. Name **"
+      
+      // Extract name from section: "#N. Name | Score..." or "#N. Name\n"
       const nameMatch = text.match(/^[\s*]*#\d+\.\s*(.+?)(?:\s*\*{0,2}\s*\||\s*\*{0,2}\s*\n|\s*\*{2,})/)
       if (nameMatch) {
         const sectionName = nameMatch[1].replace(/\*+/g, '').trim().toLowerCase()
-        // Find best matching candidate by name
+        // Try exact/fuzzy name match first
         const nameMatched = candidates.find(c => {
           if (usedCandidateIds.has(c.id)) return false
           const cn = c.name.toLowerCase().trim()
@@ -1407,12 +1374,14 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
           return { text, candidateId: nameMatched.id }
         }
       }
-      // Fallback: assign to candidate by position if available
+      
+      // Positional fallback: since backend now sends candidates_lookup in the
+      // same order as the AI text, section N maps to candidate N
       if (sectionIdx < candidates.length && !usedCandidateIds.has(candidates[sectionIdx].id)) {
         usedCandidateIds.add(candidates[sectionIdx].id)
         return { text, candidateId: candidates[sectionIdx].id }
       }
-      // Last resort: assign to first unused candidate
+      // Last resort: first unused candidate
       const unused = candidates.find(c => !usedCandidateIds.has(c.id))
       if (unused) {
         usedCandidateIds.add(unused.id)
