@@ -86,6 +86,7 @@ export default function CandidateDetail() {
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [isShortlisting, setIsShortlisting] = useState(false)
   const [fullCandidateData, setFullCandidateData] = useState<any>(null)
+  const [fullDataLoading, setFullDataLoading] = useState(true)
   const [showCalendarPicker, setShowCalendarPicker] = useState(false)
   const [interviewDate, setInterviewDate] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 3); return d.toISOString().slice(0, 16)
@@ -96,36 +97,64 @@ export default function CandidateDetail() {
   // Fetch full candidate data (light endpoint omits workHistory/education/summary)
   useEffect(() => {
     if (id) {
+      setFullDataLoading(true)
       authFetch(`${config.endpoints.candidates}/${id}`)
         .then(r => r.ok ? r.json() : null)
         .then(data => { if (data) setFullCandidateData(data) })
-        .catch(() => {})
+        .catch((err) => console.error('Full candidate fetch failed:', err))
+        .finally(() => setFullDataLoading(false))
     }
   }, [id])
 
-  // Merge full data over light store data
-  const candidate = lightCandidate ? {
-    ...lightCandidate,
-    ...(fullCandidateData ? {
-      summary: fullCandidateData.summary || lightCandidate.summary || '',
-      workHistory: (fullCandidateData.workHistory || []).map((job: any) => ({
-        title: job.title || job.position || '',
-        company: job.company || job.organization || '',
-        duration: job.duration || job.period || job.years || '',
-        description: job.description || job.responsibilities || '',
-      })),
-      education: (fullCandidateData.education || []).map((edu: any) => ({
-        degree: edu.degree || edu.title || '',
-        field: edu.field || '',
-        institution: edu.institution || edu.school || '',
-        year: edu.year || edu.graduation_year || '',
-      })),
-      resumeText: fullCandidateData.resume_text || fullCandidateData.resumeText || lightCandidate.resumeText || '',
-      certifications: fullCandidateData.certifications || lightCandidate.certifications || [],
-      languages: fullCandidateData.languages || lightCandidate.languages || [],
-      aiAnalysis: fullCandidateData.ai_analysis || fullCandidateData.aiAnalysis || lightCandidate.aiAnalysis || null,
-    } : {}),
-  } : null
+  // Merge full data over light store data — works even when lightCandidate is null (direct URL nav)
+  const candidate = (() => {
+    const base = lightCandidate || (fullCandidateData ? {
+      id: fullCandidateData.id,
+      name: fullCandidateData.name || 'Unknown',
+      email: fullCandidateData.email || '',
+      phone: fullCandidateData.phone || '',
+      location: fullCandidateData.location || '',
+      skills: fullCandidateData.skills || [],
+      experience: fullCandidateData.experience || 0,
+      matchScore: fullCandidateData.matchScore || 50,
+      status: fullCandidateData.status || 'New',
+      jobCategory: fullCandidateData.jobCategory || fullCandidateData.job_category || 'General',
+      jobSubcategory: fullCandidateData.jobSubcategory || fullCandidateData.job_subcategory || '',
+      appliedDate: fullCandidateData.appliedDate || fullCandidateData.applied_date || '',
+      linkedin: fullCandidateData.linkedin || '',
+      isShortlisted: false,
+      hasResume: fullCandidateData.hasResume || false,
+      summary: '',
+      education: [],
+      workHistory: [],
+      resumeText: '',
+      certifications: [],
+      languages: [],
+    } as any : null)
+    if (!base) return null
+    return {
+      ...base,
+      ...(fullCandidateData ? {
+        summary: fullCandidateData.summary || base.summary || '',
+        workHistory: (fullCandidateData.workHistory || []).map((job: any) => ({
+          title: job.title || job.position || '',
+          company: job.company || job.organization || '',
+          duration: job.duration || job.period || job.years || '',
+          description: job.description || job.responsibilities || '',
+        })),
+        education: (fullCandidateData.education || []).map((edu: any) => ({
+          degree: edu.degree || edu.title || '',
+          field: edu.field || '',
+          institution: edu.institution || edu.school || '',
+          year: edu.year || edu.graduation_year || '',
+        })),
+        resumeText: fullCandidateData.resume_text || fullCandidateData.resumeText || base.resumeText || '',
+        certifications: fullCandidateData.certifications || base.certifications || [],
+        languages: fullCandidateData.languages || base.languages || [],
+        aiAnalysis: fullCandidateData.ai_analysis || fullCandidateData.aiAnalysis || base.aiAnalysis || null,
+      } : {}),
+    }
+  })()
 
   // Auto-load cached AI analysis on page load
   useEffect(() => {
@@ -297,7 +326,7 @@ export default function CandidateDetail() {
     }
   }
 
-  if (!candidate && loading) {
+  if (!candidate && (loading || fullDataLoading)) {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
@@ -624,7 +653,13 @@ export default function CandidateDetail() {
             <Card className="border-0 shadow-sm">
               <CardContent className="p-5">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Professional Summary</h3>
-                {candidate.summary ? (
+                {fullDataLoading && !fullCandidateData ? (
+                  <div className="space-y-2 animate-pulse">
+                    <div className="h-3 bg-gray-200 rounded w-full" />
+                    <div className="h-3 bg-gray-200 rounded w-5/6" />
+                    <div className="h-3 bg-gray-200 rounded w-4/6" />
+                  </div>
+                ) : candidate.summary ? (
                   <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{candidate.summary}</p>
                 ) : (
                   <p className="text-sm text-gray-400 italic">No summary available. Run AI Analysis to generate one.</p>
@@ -657,7 +692,11 @@ export default function CandidateDetail() {
                   <Briefcase className="w-3.5 h-3.5" />Work Experience
                 </h3>
                 <div className="space-y-4">
-                  {candidate.workHistory && candidate.workHistory.length > 0 ? (
+                  {fullDataLoading && !fullCandidateData ? (
+                    <div className="space-y-3 animate-pulse">
+                      {[1,2,3].map(i => <div key={i} className="pl-5"><div className="h-3 bg-gray-200 rounded w-3/4 mb-1.5" /><div className="h-2.5 bg-gray-200 rounded w-1/2" /></div>)}
+                    </div>
+                  ) : candidate.workHistory && candidate.workHistory.length > 0 ? (
                     candidate.workHistory.map((job, index) => (
                       <div key={index} className="relative pl-5 pb-4 last:pb-0 border-l border-gray-200 last:border-l-transparent">
                         <div className="absolute left-0 top-1 w-2 h-2 -translate-x-[5px] rounded-full bg-slate-800 ring-2 ring-white" />
@@ -688,7 +727,11 @@ export default function CandidateDetail() {
                   <GraduationCap className="w-3.5 h-3.5" />Education
                 </h3>
                 <div className="space-y-3">
-                  {candidate.education && candidate.education.length > 0 ? (
+                  {fullDataLoading && !fullCandidateData ? (
+                    <div className="space-y-2 animate-pulse">
+                      {[1,2].map(i => <div key={i}><div className="h-3 bg-gray-200 rounded w-2/3 mb-1" /><div className="h-2.5 bg-gray-200 rounded w-1/2" /></div>)}
+                    </div>
+                  ) : candidate.education && candidate.education.length > 0 ? (
                     candidate.education.map((edu, index) => (
                       <div key={index}>
                         <h4 className="text-sm font-semibold text-gray-900">

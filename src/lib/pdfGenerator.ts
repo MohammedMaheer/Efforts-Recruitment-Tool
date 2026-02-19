@@ -5,6 +5,8 @@
  */
 
 import { jsPDF } from 'jspdf'
+import { useAuthStore } from '@/store/authStore'
+import { config } from '@/config'
 
 // AI Recruiter brand colors
 const BRAND = {
@@ -22,6 +24,7 @@ const BRAND = {
 }
 
 interface CandidateData {
+  id?: string
   name: string
   email: string
   phone?: string
@@ -58,6 +61,7 @@ interface AIAnalysisData {
   salary_range_estimate?: string
   culture_fit_notes?: string
   source?: string
+  isFallback?: boolean
 }
 
 // Cache for logo image data URL + natural dimensions
@@ -139,19 +143,18 @@ function deriveRatingFromScore(score: number): { rating: string; recommendation:
  * Draw compact navy top bar with logo + company name (reduced height)
  */
 async function drawTopBar(doc: jsPDF, pageWidth: number): Promise<number> {
-  const barH = 18
+  const barH = 14
   drawRect(doc, 0, 0, pageWidth, barH, BRAND.primaryDark)
   
   let textStartX = 24
   try {
     const { dataUrl: logoDataUrl, aspect } = await getLogoDataUrl()
-    const logoH = 10
+    const logoH = 8
     // Properly preserve aspect ratio — calculate width from height
     let logoW = logoH * aspect
-    // Cap max width but also recalculate height to preserve ratio
-    if (logoW > 24) {
-      logoW = 24
-      // logoH stays the same since we capped width only
+    // Cap max width to prevent stretching
+    if (logoW > 20) {
+      logoW = 20
     }
     const logoX = 8
     const logoY = (barH - logoH) / 2
@@ -186,7 +189,7 @@ async function drawTopBar(doc: jsPDF, pageWidth: number): Promise<number> {
  * Draw blue gradient candidate header with circular score indicator
  */
 function drawCandidateHeader(doc: jsPDF, candidate: CandidateData, y: number, pageWidth: number): number {
-  const headerH = 34
+  const headerH = 28
   const margin = 14
   
   // Blue gradient background (simulate with overlapping rects)
@@ -199,14 +202,14 @@ function drawCandidateHeader(doc: jsPDF, candidate: CandidateData, y: number, pa
   doc.setFontSize(16)
   doc.setFont('helvetica', 'bold')
   setColor(doc, BRAND.white)
-  doc.text(candidate.name, margin, y + 11)
+  doc.text(candidate.name, margin, y + 9)
   
   // Job title / category
   const titleLine = candidate.jobSubcategory || candidate.jobCategory || 'Professional'
   doc.setFontSize(9)
   doc.setFont('helvetica', 'normal')
   doc.setTextColor(200, 220, 255)
-  doc.text(titleLine, margin, y + 18)
+  doc.text(titleLine, margin, y + 15)
   
   // Contact info row
   doc.setFontSize(7)
@@ -218,23 +221,23 @@ function drawCandidateHeader(doc: jsPDF, candidate: CandidateData, y: number, pa
   if (candidate.email) contactItems.push(candidate.email)
   if (candidate.phone) contactItems.push(candidate.phone)
   if (candidate.experience > 0) contactItems.push(`${candidate.experience} yrs exp`)
-  doc.text(contactItems.join('  |  '), margin, y + 24)
+  doc.text(contactItems.join('  |  '), margin, y + 20)
   
   // Category badge at bottom
   if (candidate.jobCategory) {
     const catText = candidate.jobCategory
     const catW = doc.getTextWidth(catText) + 6
-    drawRect(doc, margin, y + 27, catW, 5, [50, 100, 220] as [number, number, number], 2)
+    drawRect(doc, margin, y + 22, catW, 4.5, [50, 100, 220] as [number, number, number], 2)
     doc.setFontSize(6.5)
     setColor(doc, BRAND.white)
-    doc.text(catText, margin + 3, y + 30.5)
+    doc.text(catText, margin + 3, y + 25.2)
   }
   
   // Score circle on right
   const score = candidate.matchScore ?? 50
-  const circleX = pageWidth - 28
+  const circleX = pageWidth - 26
   const circleY = y + headerH / 2
-  const circleR = 12
+  const circleR = 10
   
   // White circle
   doc.setFillColor(255, 255, 255)
@@ -313,11 +316,19 @@ export async function generateCandidatePDF(
   const contentWidth = pageWidth - margin * 2
   const pageNum = { value: 1 }
   
-  // Normalize AI analysis: if fallback, derive rating/recommendation from matchScore
+  // Normalize AI analysis: if fallback or grossly mismatched, derive rating/recommendation from matchScore
   let normalizedAnalysis = aiAnalysis ? { ...aiAnalysis } : null
   if (normalizedAnalysis) {
-    const isFallback = normalizedAnalysis.source === 'fallback' || 
-                       (normalizedAnalysis.overall_rating === 'C+' && normalizedAnalysis.confidence_score === 40)
+    const score = candidate.matchScore ?? 50
+    const rating = normalizedAnalysis.overall_rating || ''
+    const conf = normalizedAnalysis.confidence_score || 0
+    // Detect fallback: explicit flag, hardcoded fallback values, or score-rating mismatch
+    const isFallback = normalizedAnalysis.source === 'fallback' ||
+      normalizedAnalysis.isFallback === true ||
+      (rating === 'C+' && conf <= 42) ||
+      (score >= 75 && (rating.startsWith('C') || rating === 'B-')) ||
+      (score >= 60 && rating.startsWith('C')) ||
+      (conf > 0 && conf < 45 && score >= 70)
     if (isFallback) {
       const derived = deriveRatingFromScore(candidate.matchScore ?? 50)
       normalizedAnalysis.overall_rating = derived.rating
@@ -740,8 +751,41 @@ export async function generateCandidatePDF(
 }
 
 /**
- * Quick PDF without AI analysis — just candidate profile
+ * Quick PDF without AI analysis — fetches full candidate data first if light version detected
  */
 export async function generateQuickProfilePDF(candidate: CandidateData): Promise<void> {
+  // If candidate has no education/workHistory (light version from list), fetch full data first
+  const isLight = (!candidate.education || candidate.education.length === 0) &&
+                  (!candidate.workHistory || candidate.workHistory.length === 0) &&
+                  !candidate.summary
+  if (isLight && candidate.id) {
+    try {
+      const token = useAuthStore.getState().token
+      const res = await fetch(`${config.endpoints.candidates}/${candidate.id}`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
+      if (res.ok) {
+        const full = await res.json()
+        const enriched: CandidateData = {
+          ...candidate,
+          summary: full.summary || candidate.summary || '',
+          education: full.education || [],
+          workHistory: (full.workHistory || []).map((j: any) => ({
+            title: j.title || j.position || '',
+            company: j.company || j.organization || '',
+            duration: j.duration || j.period || '',
+            description: j.description || j.responsibilities || '',
+          })),
+          resumeText: full.resume_text || full.resumeText || '',
+          certifications: full.certifications || [],
+          languages: full.languages || [],
+          linkedin: full.linkedin || candidate.linkedin || '',
+        }
+        return generateCandidatePDF(enriched, full.ai_analysis || null)
+      }
+    } catch (err) {
+      console.error('Failed to fetch full data for PDF:', err)
+    }
+  }
   return generateCandidatePDF(candidate, null)
 }
