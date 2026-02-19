@@ -1907,24 +1907,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                         </Badge>
                                       )}
                                     </div>
-                                    {/* AI description (if available) */}
-                                    {sectionText && (
-                                      <div 
-                                        className="text-xs leading-relaxed whitespace-pre-wrap ai-response-content px-3 py-2.5 text-gray-700 bg-gray-50/50"
-                                        onClick={(e) => {
-                                          const target = e.target as HTMLElement
-                                          const link = target.closest('a.ai-candidate-link')
-                                          if (link) {
-                                            e.preventDefault()
-                                            const candidateId = link.getAttribute('data-candidate-id')
-                                            if (candidateId) navigate(`/candidates/${candidateId}`)
-                                          }
-                                        }}
-                                        dangerouslySetInnerHTML={{ 
-                                          __html: formatAIContent(sectionText, message.candidates)
-                                        }} 
-                                      />
-                                    )}
+                                    {/* Details shown in preview panel on click */}
                                   </Card>
                                 </motion.div>
                               )})})

@@ -97,7 +97,7 @@ type SortOption = 'score-desc' | 'score-asc' | 'date-newest' | 'date-oldest' | '
 export default function Candidates() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const { candidates, loading, refetch } = useCandidates({ autoFetch: true })
+  const { candidates, loading, refetch, totalCount } = useCandidates({ autoFetch: true })
   // Auto-refresh when email sync detects new candidates
   useEmailSync(refetch, 30000)
   const [searchQuery, setSearchQuery] = useState(searchParams.get('search') || '')
@@ -288,7 +288,11 @@ export default function Candidates() {
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Candidates</h1>
             <p className="text-sm text-gray-500">
-              {loading ? 'Loading...' : `${filteredCandidates.length} candidates in ${Object.keys(groupedCandidates).length} categories`}
+              {loading ? 'Loading...' : (() => {
+                const hasActiveFilters = searchQuery || selectedCategory !== 'all' || filters.minScore > 0 || filters.status !== 'all' || filters.minExperience > 0 || dateRange.start || dateRange.end
+                const displayCount = hasActiveFilters ? filteredCandidates.length : (totalCount || filteredCandidates.length)
+                return `${displayCount} candidates in ${Object.keys(groupedCandidates).length} categories`
+              })()}
             </p>
           </div>
         </div>
@@ -554,7 +558,7 @@ export default function Candidates() {
                             <TableHead className="w-[90px]">Applied</TableHead>
                             <TableHead className="w-[100px]">Contact</TableHead>
                             <TableHead className="w-[80px]">Status</TableHead>
-                            <TableHead className="w-[40px]"></TableHead>
+                            <TableHead className="w-[80px]"></TableHead>
                           </TableRow>
                         </TableHeader>
                         <TableBody>
@@ -683,14 +687,66 @@ export default function Candidates() {
                                   {candidate.status}
                                 </Badge>
                               </TableCell>
-                              <TableCell className="w-[40px]">
-                                <button
-                                  onClick={(e) => { e.stopPropagation(); generateQuickProfilePDF(candidate) }}
-                                  className="p-1.5 rounded-full hover:bg-sky-100 text-sky-600 transition-colors"
-                                  title="Download PDF Report"
-                                >
-                                  <Download className="w-3.5 h-3.5" />
-                                </button>
+                              <TableCell className="w-[80px]">
+                                <div className="flex items-center gap-1">
+                                  <button
+                                    onClick={async (e) => {
+                                      e.stopPropagation()
+                                      if (shortlistingIds.has(candidate.id) || shortlistedIds.has(candidate.id)) return
+                                      try {
+                                        setShortlistingIds(prev => new Set(prev).add(candidate.id))
+                                        const res = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+                                        setShortlistedIds(prev => new Set(prev).add(candidate.id))
+                                        const emailStatus = (res as any)?.data?.email_sent?.status || (res as any)?.email_sent?.status
+                                        if (emailStatus === 'queued') {
+                                          setEmailSentIds(prev => new Set(prev).add(candidate.id))
+                                          showToast(`✅ ${candidate.name} shortlisted — email sent to ${candidate.email || 'candidate'}`, 'success')
+                                        } else {
+                                          showToast(`⭐ ${candidate.name} shortlisted`, 'info')
+                                        }
+                                      } catch (err) {
+                                        console.error('Shortlist failed:', err)
+                                        showToast(`Failed to shortlist ${candidate.name}`, 'error')
+                                      } finally {
+                                        setShortlistingIds(prev => {
+                                          const next = new Set(prev)
+                                          next.delete(candidate.id)
+                                          return next
+                                        })
+                                      }
+                                    }}
+                                    disabled={shortlistingIds.has(candidate.id)}
+                                    className={`p-1 rounded-full transition-colors ${
+                                      candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
+                                        ? 'text-yellow-500 bg-yellow-50'
+                                        : shortlistingIds.has(candidate.id)
+                                          ? 'text-gray-300 opacity-50'
+                                          : 'text-gray-400 hover:text-yellow-500 hover:bg-yellow-50'
+                                    }`}
+                                    title={
+                                      shortlistingIds.has(candidate.id) ? 'Shortlisting & sending email...' :
+                                      candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
+                                        ? (emailSentIds.has(candidate.id) ? 'Shortlisted — Email sent' : 'Shortlisted')
+                                        : 'Shortlist & send email'
+                                    }
+                                  >
+                                    <Star className="w-3.5 h-3.5" fill={
+                                      candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id) ? 'currentColor' : 'none'
+                                    } />
+                                  </button>
+                                  {emailSentIds.has(candidate.id) && (
+                                    <span className="text-green-500" title="Shortlist email sent">
+                                      <Mail className="w-3 h-3" />
+                                    </span>
+                                  )}
+                                  <button
+                                    onClick={(e) => { e.stopPropagation(); generateQuickProfilePDF(candidate) }}
+                                    className="p-1 rounded-full hover:bg-sky-100 text-sky-600 transition-colors"
+                                    title="Download PDF Report"
+                                  >
+                                    <Download className="w-3.5 h-3.5" />
+                                  </button>
+                                </div>
                               </TableCell>
                             </TableRow>
                           )
