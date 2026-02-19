@@ -353,8 +353,81 @@ class DatabaseService:
         finally:
             conn.close()
     
+    # ── Blocked email patterns (Indeed relay, system emails) ──
+    BLOCKED_EMAIL_PATTERNS = [
+        r'@indeedemail\.com$',
+        r'^conversation-.*@',
+        r'^[a-f0-9]{32,}@',           # hash-style relay addresses
+        r'^employer.*noreply@',
+        r'^.+-[a-f0-9]{8,}@indeedemail',
+    ]
+    
+    @staticmethod
+    def is_blocked_email(email_addr: str) -> bool:
+        """Check if an email address matches blocked patterns (Indeed relay, system, etc.)"""
+        if not email_addr:
+            return True
+        email_lower = email_addr.lower().strip()
+        # Fast exact-domain check
+        if email_lower.endswith('@indeedemail.com'):
+            return True
+        # Regex patterns
+        import re
+        for pattern in DatabaseService.BLOCKED_EMAIL_PATTERNS:
+            if re.search(pattern, email_lower):
+                return True
+        return False
+    
+    def purge_indeed_candidates(self) -> dict:
+        """Delete all candidates with Indeed relay emails (@indeedemail.com, conversation-*)"""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            
+            # Count before
+            cursor.execute("SELECT COUNT(*) FROM candidates WHERE email LIKE '%@indeedemail.com'")
+            indeed_count = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM candidates WHERE email LIKE 'conversation-%'")
+            convo_count = cursor.fetchone()[0]
+            
+            # Delete Indeed relay emails
+            cursor.execute("DELETE FROM candidates WHERE email LIKE '%@indeedemail.com'")
+            
+            # Delete conversation-id style emails
+            cursor.execute("DELETE FROM candidates WHERE email LIKE 'conversation-%'")
+            
+            # Delete candidates whose name looks like a conversation ID
+            cursor.execute("DELETE FROM candidates WHERE name LIKE '%conversation-%'")
+            
+            # Delete candidates whose name contains 'indeedemail'
+            cursor.execute("DELETE FROM candidates WHERE name LIKE '%indeedemail%'")
+            
+            # Count after
+            cursor.execute("SELECT COUNT(*) FROM candidates")
+            remaining = cursor.fetchone()[0]
+            
+            conn.commit()
+            
+            total_deleted = indeed_count + convo_count
+            logger.info(f"🗑️ Purged Indeed relay candidates: {total_deleted} deleted, {remaining} remaining")
+            return {
+                'indeed_emails_deleted': indeed_count,
+                'conversation_ids_deleted': convo_count,
+                'total_deleted': total_deleted,
+                'remaining_candidates': remaining
+            }
+        finally:
+            conn.close()
+    
     def insert_candidate(self, candidate: Dict):
-        """Insert new candidate (or update if exists)"""
+        """Insert new candidate (or update if exists). Blocks Indeed relay emails."""
+        # Smart filter: block Indeed relay / garbage emails at DB level
+        candidate_email = candidate.get('email', '')
+        if self.is_blocked_email(candidate_email):
+            logger.info(f"🚫 Blocked insert for Indeed relay email: {candidate_email[:50]}")
+            return
+        
         conn = self.get_connection_raw()
         try:
             cursor = conn.cursor()

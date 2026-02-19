@@ -286,6 +286,20 @@ async def auto_sync_emails():
                                     if not candidate or not candidate.get('email'):
                                         return
                                     
+                                    # Smart filter: block Indeed relay / junk emails
+                                    if db_service.is_blocked_email(candidate['email']):
+                                        logger.debug(f"🚫 Blocked Indeed relay candidate: {candidate['email'][:50]}")
+                                        # Mark email as processed so we don't re-check it every sync
+                                        if msg_id:
+                                            try:
+                                                await asyncio.to_thread(
+                                                    db_service.mark_email_processed,
+                                                    msg_id, '', 'blocked-indeed-relay'
+                                                )
+                                            except Exception:
+                                                pass
+                                        return
+                                    
                                     # Check if candidate already exists in DB
                                     existing = await asyncio.to_thread(db_service.get_candidate_by_email, candidate['email'])
                                     
@@ -1728,6 +1742,27 @@ async def trigger_manual_scrape(process_all: bool = False, current_user: dict = 
         }
     except Exception as e:
         raise HTTPException(500, f"Scraping error: {str(e)}")
+
+
+# ====== PURGE INDEED RELAY / JUNK CANDIDATES ======
+@app.post("/api/candidates/purge-indeed")
+async def purge_indeed_candidates(current_user: dict = Depends(require_auth)):
+    """
+    Delete all candidates with Indeed relay emails (@indeedemail.com, conversation-* IDs).
+    These are system-generated relay addresses, not real candidate emails.
+    """
+    try:
+        response_cache.clear()
+        result = await asyncio.to_thread(db_service.purge_indeed_candidates)
+        logger.info(f"🗑️ Purged Indeed candidates: {result}")
+        return {
+            "status": "success",
+            "message": f"Purged {result['total_deleted']} Indeed relay candidates",
+            **result
+        }
+    except Exception as e:
+        logger.error(f"Purge failed: {e}")
+        raise HTTPException(500, f"Purge error: {str(e)}")
 
 
 @app.post("/api/candidates/reset-and-reparse")

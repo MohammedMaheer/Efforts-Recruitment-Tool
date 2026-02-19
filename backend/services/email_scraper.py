@@ -1121,6 +1121,20 @@ class EmailScraperService:
             # Generate unique candidate ID based on actual candidate email
             candidate_id = hashlib.md5(actual_candidate_email.encode()).hexdigest()
             
+            # ===== SMART FILTER: Block Indeed relay & garbage emails =====
+            _blocked_email_patterns = [
+                r'@indeedemail\.com$',
+                r'^conversation-.*@',
+                r'^[a-f0-9]{32,}@',
+                r'^employer.*noreply@',
+            ]
+            email_to_check = actual_candidate_email.lower().strip()
+            if email_to_check.endswith('@indeedemail.com') or any(
+                re.search(p, email_to_check) for p in _blocked_email_patterns
+            ):
+                logger.info(f"🚫 Smart filter: blocked Indeed relay email: {actual_candidate_email[:60]}")
+                return None
+            
             # Use AI to infer job category/role
             self._last_subcategory = ''
             job_category = await self.infer_job_category(email_data, resume_data)
