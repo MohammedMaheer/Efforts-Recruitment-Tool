@@ -83,7 +83,7 @@ const AnalyticsDashboard: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-600"></div>
       </div>
     );
   }
@@ -94,7 +94,7 @@ const AnalyticsDashboard: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-gray-900 dark:text-white flex items-center gap-2">
-            <Brain className="h-7 w-7 text-blue-600" />
+            <Brain className="h-7 w-7 text-sky-600" />
             AI Analytics Dashboard
           </h1>
           <p className="text-gray-500 dark:text-gray-400 mt-1">
@@ -104,7 +104,7 @@ const AnalyticsDashboard: React.FC = () => {
         <button
           onClick={handleRefresh}
           disabled={refreshing}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+          className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50"
         >
           <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />
           Refresh
@@ -142,7 +142,7 @@ const AnalyticsDashboard: React.FC = () => {
       {/* Campaign Performance */}
       <div className="bg-white dark:bg-gray-800 rounded-xl shadow-sm border border-gray-200 dark:border-gray-700 p-6">
         <h2 className="text-lg font-semibold text-gray-900 dark:text-white mb-4 flex items-center gap-2">
-          <BarChart3 className="h-5 w-5 text-blue-600" />
+          <BarChart3 className="h-5 w-5 text-sky-600" />
           Campaign Performance
         </h2>
         
@@ -211,7 +211,7 @@ const AnalyticsDashboard: React.FC = () => {
       </div>
 
       {/* Quick Actions */}
-      <div className="bg-gradient-to-r from-primary-700 to-primary-600 rounded-xl p-6 text-white">
+      <div className="bg-gradient-to-r from-slate-800 to-slate-700 rounded-xl p-6 text-white">
         <h2 className="text-lg font-semibold mb-4">Quick Actions</h2>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <QuickActionButton
@@ -250,10 +250,10 @@ interface StatCardProps {
 
 const StatCard: React.FC<StatCardProps> = ({ title, value, icon, color }) => {
   const colors = {
-    blue: 'bg-blue-100 text-blue-600 dark:bg-blue-900/30',
+    blue: 'bg-sky-100 text-sky-600 dark:bg-sky-900/30',
     green: 'bg-green-100 text-green-600 dark:bg-green-900/30',
     yellow: 'bg-yellow-100 text-yellow-600 dark:bg-yellow-900/30',
-    purple: 'bg-blue-100 text-blue-600 dark:bg-blue-900/30',
+    purple: 'bg-sky-100 text-sky-600 dark:bg-sky-900/30',
     red: 'bg-red-100 text-red-600 dark:bg-red-900/30',
   };
 
@@ -298,7 +298,7 @@ const CampaignRow: React.FC<CampaignRowProps> = ({ campaignId, stats }) => {
           <p className="text-xs text-gray-500">Completed</p>
         </div>
         <div className="text-center">
-          <p className="text-lg font-semibold text-blue-600">{stats.responded}</p>
+          <p className="text-lg font-semibold text-sky-600">{stats.responded}</p>
           <p className="text-xs text-gray-500">Responded</p>
         </div>
       </div>

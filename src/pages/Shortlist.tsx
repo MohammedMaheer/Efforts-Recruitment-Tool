@@ -203,8 +203,8 @@ export default function Shortlist() {
       {/* Header */}
       <motion.div initial={{ opacity: 0, y: -20 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
-            <Star className="w-5 h-5 text-blue-600" />
+          <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center">
+            <Star className="w-5 h-5 text-sky-300" />
           </div>
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Shortlist</h1>
@@ -225,7 +225,7 @@ export default function Shortlist() {
       {shortlistedCandidates.length > 0 && (
         <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }} className="grid grid-cols-2 sm:grid-cols-4 gap-3">
           {[
-            { icon: Users, label: 'Total', value: shortlistedCandidates.length, color: 'text-blue-600', bg: 'bg-blue-50 border-blue-100' },
+            { icon: Users, label: 'Total', value: shortlistedCandidates.length, color: 'text-sky-600', bg: 'bg-sky-50 border-sky-100' },
             { icon: TrendingUp, label: 'Avg Score', value: `${avgScore}%`, color: 'text-green-600', bg: 'bg-green-50 border-green-100' },
             { icon: Star, label: '90%+ Matches', value: shortlistedCandidates.filter((c) => c.matchScore >= 90).length, color: 'text-yellow-600', bg: 'bg-yellow-50 border-yellow-100' },
             { icon: Briefcase, label: 'Categories', value: topCategories.length, color: 'text-indigo-600', bg: 'bg-indigo-50 border-indigo-100' },
@@ -250,7 +250,7 @@ export default function Shortlist() {
                 placeholder="Search shortlist..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-blue-400"
+                className="w-full pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:border-sky-400"
               />
             </div>
             <div className="flex items-center border border-gray-200 rounded-lg overflow-hidden">
@@ -259,7 +259,7 @@ export default function Shortlist() {
                   key={o.key}
                   onClick={() => { sortKey === o.key ? setSortDir(d => d === 'asc' ? 'desc' : 'asc') : (setSortKey(o.key), setSortDir('desc')) }}
                   className={`px-2.5 py-1.5 text-xs font-medium transition-colors ${
-                    sortKey === o.key ? 'bg-blue-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
+                    sortKey === o.key ? 'bg-slate-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'
                   }`}
                 >
                   {o.label}
@@ -269,9 +269,9 @@ export default function Shortlist() {
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <button onClick={selectAll} className="text-xs text-gray-600 hover:text-blue-600 flex items-center gap-1">
+            <button onClick={selectAll} className="text-xs text-gray-600 hover:text-sky-600 flex items-center gap-1">
               {shortlistedCandidates.every((c) => selectedIds.has(c.id))
-                ? <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
+                ? <CheckSquare className="w-3.5 h-3.5 text-sky-600" />
                 : <Square className="w-3.5 h-3.5" />}
               {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
             </button>
@@ -291,8 +291,8 @@ export default function Shortlist() {
           <Card>
             <CardContent className="py-16">
               <div className="text-center">
-                <div className="w-16 h-16 bg-blue-50 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Star className="w-8 h-8 text-blue-400" />
+                <div className="w-16 h-16 bg-sky-50 rounded-full flex items-center justify-center mx-auto mb-4">
+                  <Star className="w-8 h-8 text-sky-400" />
                 </div>
                 <h3 className="text-lg font-semibold text-gray-900 mb-1">No candidates shortlisted yet</h3>
                 <p className="text-sm text-gray-500 mb-4">Use AI Assistant to search and shortlist top talent</p>
@@ -333,24 +333,24 @@ export default function Shortlist() {
               layout
             >
               <Card className={`hover:shadow-md transition-all border-2 ${
-                selectedIds.has(candidate.id) ? 'border-blue-400 bg-blue-50/20' : 'border-transparent shadow-sm'
+                selectedIds.has(candidate.id) ? 'border-sky-400 bg-sky-50/20' : 'border-transparent shadow-sm'
               }`}>
                 <CardContent className="p-4">
                   <div className="flex items-start gap-3">
                     {/* Checkbox */}
                     <button onClick={() => toggleSelect(candidate.id)} className="mt-1 flex-shrink-0">
                       {selectedIds.has(candidate.id)
-                        ? <CheckSquare className="w-5 h-5 text-blue-600" />
+                        ? <CheckSquare className="w-5 h-5 text-sky-600" />
                         : <Square className="w-5 h-5 text-gray-300 hover:text-gray-500" />}
                     </button>
 
                     {/* Rank */}
-                    <div className="text-lg font-bold text-blue-400 w-6 mt-0.5 flex-shrink-0">
+                    <div className="text-lg font-bold text-sky-400 w-6 mt-0.5 flex-shrink-0">
                       #{index + 1}
                     </div>
 
                     {/* Avatar */}
-                    <Avatar className="w-11 h-11 ring-2 ring-blue-100 flex-shrink-0">
+                    <Avatar className="w-11 h-11 ring-2 ring-sky-100 flex-shrink-0">
                       <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${candidate.name}`} />
                       <AvatarFallback className="text-base">{candidate.name.charAt(0)}</AvatarFallback>
                     </Avatar>

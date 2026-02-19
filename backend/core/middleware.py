@@ -531,7 +531,7 @@ def setup_middleware(app: FastAPI) -> None:
         burst_size=50
     )
     
-    # Compression - wrap the app
-    # Note: This should be added via app = CompressionMiddleware(app)
+    # Compression - enable gzip for large JSON responses
+    app.add_middleware(CompressionMiddleware, minimum_size=1024)
     
     logger.info("✅ Performance middleware stack configured")

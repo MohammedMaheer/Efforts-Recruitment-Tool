@@ -150,7 +150,7 @@ export default function EmailIntegration() {
     switch (status) {
       case 'valid': return 'bg-green-100 text-green-800'
       case 'expired': return 'bg-yellow-100 text-yellow-800'
-      case 'refreshing': return 'bg-blue-100 text-blue-800'
+      case 'refreshing': return 'bg-sky-100 text-sky-800'
       case 'needs_reauth': return 'bg-red-100 text-red-800'
       default: return 'bg-gray-100 text-gray-800'
     }
@@ -159,7 +159,7 @@ export default function EmailIntegration() {
   const getSyncStatusColor = (status: string) => {
     switch (status) {
       case 'success': return 'bg-green-100 text-green-800'
-      case 'syncing': return 'bg-blue-100 text-blue-800'
+      case 'syncing': return 'bg-sky-100 text-sky-800'
       case 'failed': return 'bg-red-100 text-red-800'
       case 'waiting_auth': return 'bg-yellow-100 text-yellow-800'
       default: return 'bg-gray-100 text-gray-800'
@@ -325,11 +325,11 @@ export default function EmailIntegration() {
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.05 }}
         >
-          <Card className={`border-2 ${oauthStatus.auth_status === 'valid' ? 'border-green-200 bg-green-50/30' : oauthStatus.auth_status === 'needs_reauth' ? 'border-red-200 bg-red-50/30' : 'border-blue-200 bg-blue-50/30'}`}>
+          <Card className={`border-2 ${oauthStatus.auth_status === 'valid' ? 'border-green-200 bg-green-50/30' : oauthStatus.auth_status === 'needs_reauth' ? 'border-red-200 bg-red-50/30' : 'border-sky-200 bg-sky-50/30'}`}>
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Shield className="w-5 h-5 text-blue-600" />
+                  <Shield className="w-5 h-5 text-sky-600" />
                   <CardTitle className="text-lg">OAuth2 Automation</CardTitle>
                   {oauthStatus.auth_status === 'valid' && (
                     <Badge className="bg-green-100 text-green-800">Active</Badge>
@@ -372,7 +372,7 @@ export default function EmailIntegration() {
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
                 <div className="text-center p-3 bg-white rounded-lg shadow-sm">
                   <div className="flex items-center justify-center gap-1 mb-1">
-                    <Shield className="w-4 h-4 text-blue-600" />
+                    <Shield className="w-4 h-4 text-sky-600" />
                     <span className="text-xs text-gray-500">Auth Status</span>
                   </div>
                   <Badge className={getAuthStatusColor(oauthStatus.auth_status)}>
@@ -381,7 +381,7 @@ export default function EmailIntegration() {
                 </div>
                 <div className="text-center p-3 bg-white rounded-lg shadow-sm">
                   <div className="flex items-center justify-center gap-1 mb-1">
-                    <RefreshCw className="w-4 h-4 text-blue-600" />
+                    <RefreshCw className="w-4 h-4 text-sky-600" />
                     <span className="text-xs text-gray-500">Sync Status</span>
                   </div>
                   <Badge className={getSyncStatusColor(oauthStatus.sync_status)}>
@@ -411,8 +411,8 @@ export default function EmailIntegration() {
               {/* Stats */}
               {oauthStatus.stats && (
                 <div className="grid grid-cols-3 md:grid-cols-6 gap-2 text-center">
-                  <div className="p-2 bg-blue-50 rounded">
-                    <p className="text-lg font-bold text-blue-600">{oauthStatus.stats.total_syncs}</p>
+                  <div className="p-2 bg-sky-50 rounded">
+                    <p className="text-lg font-bold text-sky-600">{oauthStatus.stats.total_syncs}</p>
                     <p className="text-xs text-gray-500">Total Syncs</p>
                   </div>
                   <div className="p-2 bg-green-50 rounded">
@@ -423,8 +423,8 @@ export default function EmailIntegration() {
                     <p className="text-lg font-bold text-red-600">{oauthStatus.stats.failed_syncs}</p>
                     <p className="text-xs text-gray-500">Failed</p>
                   </div>
-                  <div className="p-2 bg-blue-50 rounded">
-                    <p className="text-lg font-bold text-blue-600">{oauthStatus.stats.token_refreshes}</p>
+                  <div className="p-2 bg-sky-50 rounded">
+                    <p className="text-lg font-bold text-sky-600">{oauthStatus.stats.token_refreshes}</p>
                     <p className="text-xs text-gray-500">Refreshes</p>
                   </div>
                   <div className="p-2 bg-orange-50 rounded">
@@ -490,7 +490,7 @@ export default function EmailIntegration() {
                   className={`
                     p-4 border-2 rounded-lg cursor-pointer transition-all
                     ${selectedProvider === provider.id
-                      ? 'border-primary-600 bg-primary-50'
+                      ? 'border-sky-600 bg-sky-50'
                       : 'border-gray-200 hover:border-gray-300'
                     }
                   `}
@@ -643,8 +643,8 @@ export default function EmailIntegration() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                <div className="text-center p-4 bg-primary-50 rounded-lg">
-                  <p className="text-3xl font-bold text-primary-600">
+                <div className="text-center p-4 bg-sky-50 rounded-lg">
+                  <p className="text-3xl font-bold text-sky-600">
                     {syncResult.candidates_found}
                   </p>
                   <p className="text-sm text-gray-600 mt-1">Candidates Found</p>
@@ -655,8 +655,8 @@ export default function EmailIntegration() {
                   </p>
                   <p className="text-sm text-gray-600 mt-1">New Applications</p>
                 </div>
-                <div className="text-center p-4 bg-blue-50 rounded-lg">
-                  <p className="text-3xl font-bold text-blue-600">
+                <div className="text-center p-4 bg-sky-50 rounded-lg">
+                  <p className="text-3xl font-bold text-sky-600">
                     {syncResult.resumes_parsed}
                   </p>
                   <p className="text-sm text-gray-600 mt-1">Resumes Parsed</p>
@@ -696,8 +696,8 @@ export default function EmailIntegration() {
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="flex items-start gap-3">
-                <div className="w-10 h-10 bg-primary-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                  <CheckCircle className="w-5 h-5 text-primary-600" />
+                <div className="w-10 h-10 bg-sky-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <CheckCircle className="w-5 h-5 text-sky-600" />
                 </div>
                 <div>
                   <h4 className="font-semibold text-gray-900 mb-1">Resume Extraction</h4>
@@ -720,8 +720,8 @@ export default function EmailIntegration() {
               </div>
 
               <div className="flex items-start gap-3">
-                <div className="w-10 h-10 bg-blue-100 rounded-lg flex items-center justify-center flex-shrink-0">
-                  <CheckCircle className="w-5 h-5 text-blue-600" />
+                <div className="w-10 h-10 bg-sky-100 rounded-lg flex items-center justify-center flex-shrink-0">
+                  <CheckCircle className="w-5 h-5 text-sky-600" />
                 </div>
                 <div>
                   <h4 className="font-semibold text-gray-900 mb-1">Smart Detection</h4>

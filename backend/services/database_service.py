@@ -815,6 +815,79 @@ class DatabaseService:
             return candidates, total_count
         finally:
             conn.close()
+
+    def get_candidates_light(self, page: int = 1, limit: int = 500, filters: Dict = None):
+        """Lightweight candidate listing — minimal columns for list/card views.
+        Returns ~1KB per candidate instead of ~10KB."""
+        offset = (page - 1) * limit
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            where_clause = "WHERE is_active = 1"
+            params = []
+            if filters:
+                if filters.get('job_category'):
+                    where_clause += " AND job_category = ?"
+                    params.append(filters['job_category'])
+                if filters.get('job_subcategory'):
+                    where_clause += " AND job_subcategory = ?"
+                    params.append(filters['job_subcategory'])
+                if filters.get('min_score'):
+                    where_clause += " AND match_score >= ?"
+                    params.append(filters['min_score'])
+                if filters.get('min_experience'):
+                    where_clause += " AND experience >= ?"
+                    params.append(filters['min_experience'])
+                if filters.get('search'):
+                    where_clause += " AND (name LIKE ? OR email LIKE ? OR skills LIKE ? OR job_subcategory LIKE ?)"
+                    search_term = f"%{filters['search']}%"
+                    params.extend([search_term, search_term, search_term, search_term])
+
+            cursor.execute(f"SELECT COUNT(*) FROM candidates {where_clause}", params)
+            total_count = cursor.fetchone()[0]
+
+            # Minimal columns — skip education, workHistory, summary, resume_text, ai_analysis
+            cols = ("id, name, email, phone, location, skills, experience, "
+                    "match_score, status, job_category, job_subcategory, applied_date, linkedin")
+            query = f"SELECT {cols} FROM candidates {where_clause}"
+            query += " ORDER BY match_score DESC, last_updated DESC LIMIT ? OFFSET ?"
+            cursor.execute(query, params + [limit, offset])
+            rows = cursor.fetchall()
+
+            candidates = []
+            for row in rows:
+                try:
+                    # Parse skills and take only top 6 to reduce payload
+                    raw_skills = json.loads(row[5]) if row[5] else []
+                    skills = raw_skills[:6] if isinstance(raw_skills, list) else []
+                    candidates.append({
+                        'id': row[0],
+                        'name': row[1] or 'Unknown',
+                        'email': row[2] or '',
+                        'phone': row[3] or '',
+                        'location': row[4] or '',
+                        'skills': skills,
+                        'experience': row[6] or 0,
+                        'matchScore': row[7] if row[7] else 50,
+                        'status': row[8] or 'New',
+                        'job_category': row[9] or 'General',
+                        'jobCategory': row[9] or 'General',
+                        'job_subcategory': row[10] or '',
+                        'jobSubcategory': row[10] or '',
+                        'appliedDate': row[11] or '',
+                        'linkedin': row[12] or '',
+                        'hasResume': False,
+                        'summary': '',
+                        'education': [],
+                        'workHistory': [],
+                        'certifications': [],
+                        'languages': [],
+                    })
+                except Exception as e:
+                    logger.warning(f"Skipping candidate row: {e}")
+            return candidates, total_count
+        finally:
+            conn.close()
     
     def insert_candidates_batch(self, candidates: List[Dict], batch_size: int = 100):
         """

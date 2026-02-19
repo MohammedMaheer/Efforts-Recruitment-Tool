@@ -24,6 +24,12 @@ interface UseCandidatesReturn {
   }
 }
 
+// Session-storage key & TTL for instant restores
+const CACHE_KEY = 'candidates_cache'
+const CACHE_TS_KEY = 'candidates_cache_ts'
+const CACHE_TOTAL_KEY = 'candidates_cache_total'
+const CACHE_TTL = 5 * 60 * 1000 // 5 minutes
+
 // Parse JSON string safely
 const parseJSON = (value: any, fallback: any[] = []): any => {
   if (!value) return fallback
@@ -117,7 +123,7 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
   const [totalCount, setTotalCount] = useState(0)
   const abortControllerRef = useRef<AbortController | null>(null)
 
-  const fetchCandidates = useCallback(async () => {
+  const fetchCandidates = useCallback(async (skipCache = false) => {
     // Cancel any in-flight fetch to prevent race conditions
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -131,13 +137,35 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
     try {
       const token = useAuthStore.getState().token
       
-      // Fetch in pages of 2000 for faster initial load
-      const pageSize = 2000
+      // --- Instant restore from sessionStorage (< 1ms) ---
+      if (!skipCache) {
+        try {
+          const cachedTs = sessionStorage.getItem(CACHE_TS_KEY)
+          if (cachedTs && Date.now() - Number(cachedTs) < CACHE_TTL) {
+            const cached = sessionStorage.getItem(CACHE_KEY)
+            if (cached) {
+              const parsed = JSON.parse(cached) as Candidate[]
+              if (parsed.length > 0) {
+                setCandidates(parsed)
+                const cachedTotal = Number(sessionStorage.getItem(CACHE_TOTAL_KEY)) || parsed.length
+                setTotalCount(cachedTotal)
+                setLoading(false)
+                // Background refresh after instant render
+                setTimeout(() => fetchCandidates(true), 500)
+                return
+              }
+            }
+          }
+        } catch { /* ignore cache errors */ }
+      }
+      
+      // Fetch with fields=light for ~3x smaller payload
+      const pageSize = 500
       let allCandidates: Candidate[] = []
       let totalFromServer = 0
       
       // First page - fast initial render
-      const firstResponse = await fetch(`${config.endpoints.candidates}?limit=${pageSize}&page=1`, {
+      const firstResponse = await fetch(`${config.endpoints.candidates}?limit=${pageSize}&page=1&fields=light`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
         signal: controller.signal,
       })
@@ -163,7 +191,7 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
         const pagePromises = []
         for (let p = 2; p <= totalPages; p++) {
           pagePromises.push(
-            fetch(`${config.endpoints.candidates}?limit=${pageSize}&page=${p}`, {
+            fetch(`${config.endpoints.candidates}?limit=${pageSize}&page=${p}&fields=light`, {
               headers: token ? { Authorization: `Bearer ${token}` } : {},
               signal: controller.signal,
             }).then(r => r.ok ? r.json() : null)
@@ -183,6 +211,12 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
       
       if (!controller.signal.aborted) {
         setTotalCount(totalFromServer)
+        // Persist to sessionStorage for instant next load
+        try {
+          sessionStorage.setItem(CACHE_KEY, JSON.stringify(allCandidates))
+          sessionStorage.setItem(CACHE_TS_KEY, String(Date.now()))
+          sessionStorage.setItem(CACHE_TOTAL_KEY, String(totalFromServer))
+        } catch { /* storage full — ignore */ }
       }
       
     } catch (err) {
@@ -200,6 +234,10 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
   useEffect(() => {
     if (autoFetch && candidates.length === 0) {
       fetchCandidates()
+    }
+    return () => {
+      // Cleanup: abort in-flight requests on unmount
+      if (abortControllerRef.current) abortControllerRef.current.abort()
     }
   }, [autoFetch, fetchCandidates, candidates.length])
 

@@ -290,24 +290,25 @@ export default function Dashboard() {
         transition={{ duration: 0.3 }}
         className="relative overflow-hidden"
       >
-        <div className="absolute inset-0 bg-gradient-to-r from-primary-50 via-blue-50 to-primary-50 rounded-2xl opacity-50" />
-        <div className="relative p-8 rounded-2xl border border-gray-200 bg-white/50 backdrop-blur-sm">
+        <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-800 to-sky-900 rounded-2xl" />
+        <div className="absolute inset-0 bg-dot-pattern opacity-[0.03] rounded-2xl" />
+        <div className="relative p-8 rounded-2xl">
           <div className="flex items-center justify-between">
             <div>
               <div className="flex items-center gap-2 mb-2">
-                <Sparkles className="w-5 h-5 text-primary-600" />
-                <p className="text-sm font-medium text-primary-600">Dashboard Overview</p>
+                <Sparkles className="w-4 h-4 text-sky-300" />
+                <p className="text-sm font-medium text-sky-300">Dashboard Overview</p>
               </div>
-              <h1 className="text-2xl font-bold text-gray-900 mb-1">
+              <h1 className="text-2xl font-bold text-white mb-1">
                 {getCurrentGreeting()}, {user?.firstName || user?.name?.split(' ')[0] || 'Recruiter'}!
               </h1>
-              <p className="text-sm text-gray-500 mb-3">Here's what's happening with your recruitment today.</p>
+              <p className="text-sm text-slate-300 mb-4">Here's what's happening with your recruitment today.</p>
               <div className="flex items-center gap-3">
                 <motion.button
                   onClick={() => navigate('/ai-assistant')}
-                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-primary-600 to-primary-800 text-white rounded-lg hover:shadow-lg transition-all text-sm font-medium"
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-sky-500 hover:bg-sky-400 text-white rounded-xl shadow-lg shadow-sky-500/25 transition-all text-sm font-semibold"
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
                 >
                   <Sparkles className="w-4 h-4" />
                   Try AI Search
@@ -315,9 +316,9 @@ export default function Dashboard() {
                 <motion.button
                   onClick={handleInstantSync}
                   disabled={isSyncing}
-                  className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-green-500 to-emerald-500 text-white rounded-lg hover:shadow-lg transition-all text-sm font-medium disabled:opacity-50"
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
+                  className="flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl shadow-lg shadow-emerald-500/25 transition-all text-sm font-semibold disabled:opacity-50"
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
                 >
                   {isSyncing ? (
                     <Loader2 className="w-4 h-4 animate-spin" />
@@ -328,9 +329,9 @@ export default function Dashboard() {
                 </motion.button>
                 <motion.button
                   onClick={openFileDialog}
-                  className="flex items-center gap-2 px-4 py-2 border-2 border-gray-200 bg-white text-gray-700 rounded-lg hover:border-primary-300 hover:bg-primary-50 transition-all text-sm font-medium"
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
+                  className="flex items-center gap-2 px-4 py-2.5 border border-white/20 bg-white/10 backdrop-blur-sm text-white rounded-xl hover:bg-white/20 transition-all text-sm font-medium"
+                  whileHover={{ scale: 1.03 }}
+                  whileTap={{ scale: 0.97 }}
                 >
                   <Upload className="w-4 h-4" />
                   Upload Resumes
@@ -360,8 +361,8 @@ export default function Dashboard() {
               onClick={() => navigate('/candidates')}
               whileHover={{ scale: 1.1 }}
             >
-              <div className="w-16 h-16 bg-gradient-to-br from-blue-600 to-blue-800 rounded-2xl flex items-center justify-center shadow-lg">
-                <Users className="w-8 h-8 text-white" />
+              <div className="w-16 h-16 bg-white/10 backdrop-blur-sm rounded-2xl flex items-center justify-center shadow-lg ring-1 ring-white/20">
+                <Users className="w-8 h-8 text-sky-300" />
               </div>
             </motion.div>
           </div>
@@ -374,12 +375,12 @@ export default function Dashboard() {
           className="hover:-translate-y-1 transition-transform cursor-pointer"
           onClick={() => navigate('/candidates')}
         >
-          <Card className="hover:shadow-large transition-all border-2 hover:border-primary-200 relative overflow-hidden group">
-            <div className="absolute inset-0 bg-gradient-to-br from-primary-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+          <Card className="hover:shadow-brand transition-all border border-gray-100 hover:border-sky-200 relative overflow-hidden group rounded-xl">
+            <div className="absolute inset-0 bg-gradient-to-br from-sky-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
             <CardContent className="p-6 relative">
               <div className="flex items-center justify-between mb-3">
-                <div className="w-11 h-11 bg-gradient-to-br from-blue-500 to-blue-600 rounded-xl flex items-center justify-center shadow-sm">
-                  <Users className="w-5 h-5 text-white" />
+                <div className="w-11 h-11 bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl flex items-center justify-center shadow-sm ring-1 ring-white/10">
+                  <Users className="w-5 h-5 text-sky-300" />
                 </div>
                 <div className="flex items-center gap-1">
                   {liveStats && <Activity className="w-3 h-3 text-green-500 animate-pulse" />}
@@ -408,12 +409,12 @@ export default function Dashboard() {
           className="hover:-translate-y-1 transition-transform cursor-pointer"
           onClick={() => navigate('/ai-assistant')}
         >
-          <Card className="hover:shadow-large transition-all border-2 hover:border-primary-200 relative overflow-hidden group">
-            <div className="absolute inset-0 bg-gradient-to-br from-primary-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+          <Card className="hover:shadow-brand transition-all border border-gray-100 hover:border-sky-200 relative overflow-hidden group rounded-xl">
+            <div className="absolute inset-0 bg-gradient-to-br from-sky-500/5 to-indigo-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
             <CardContent className="p-6 relative">
               <div className="flex items-center justify-between mb-3">
-                <div className="w-11 h-11 bg-gradient-to-br from-blue-500 to-blue-700 rounded-xl flex items-center justify-center shadow-sm">
-                  <TrendingUp className="w-5 h-5 text-white" />
+                <div className="w-11 h-11 bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl flex items-center justify-center shadow-sm ring-1 ring-white/10">
+                  <TrendingUp className="w-5 h-5 text-emerald-300" />
                 </div>
                 <Target className="w-4 h-4 text-blue-600" />
               </div>
@@ -440,12 +441,12 @@ export default function Dashboard() {
           className="hover:-translate-y-1 transition-transform cursor-pointer"
           onClick={() => navigate('/candidates')}
         >
-          <Card className="hover:shadow-large transition-all border-2 hover:border-warning/30 relative overflow-hidden group">
-            <div className="absolute inset-0 bg-gradient-to-br from-warning/5 to-orange-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
+          <Card className="hover:shadow-brand transition-all border border-gray-100 hover:border-amber-200 relative overflow-hidden group rounded-xl">
+            <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 to-orange-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
             <CardContent className="p-6 relative">
               <div className="flex items-center justify-between mb-3">
-                <div className="w-11 h-11 bg-gradient-to-br from-amber-500 to-orange-600 rounded-xl flex items-center justify-center shadow-sm">
-                  <Clock className="w-5 h-5 text-white" />
+                <div className="w-11 h-11 bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl flex items-center justify-center shadow-sm ring-1 ring-white/10">
+                  <Clock className="w-5 h-5 text-amber-300" />
                 </div>
                 {uploadTrend !== 0 && (
                   uploadTrend > 0 ? (
@@ -481,15 +482,15 @@ export default function Dashboard() {
       {/* Quick Actions */}
       <div>
         <div className="flex items-center gap-2 mb-4">
-          <Zap className="w-5 h-5 text-primary-600" />
+          <Zap className="w-5 h-5 text-sky-500" />
           <h2 className="text-xl font-semibold text-gray-900">Quick Actions</h2>
-          <span className="text-sm text-gray-500 ml-2">Click to navigate</span>
+          <span className="text-xs text-gray-400 ml-2">Click to navigate</span>
         </div>
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {quickActions.map((action, index) => {
             const Icon = action.icon
             const actionColorMap: Record<string, { bg: string; text: string }> = {
-              primary: { bg: 'bg-primary-100', text: 'text-primary-600' },
+              primary: { bg: 'bg-sky-100', text: 'text-sky-600' },
               blue:    { bg: 'bg-blue-100',    text: 'text-blue-600' },
               success: { bg: 'bg-emerald-100',  text: 'text-emerald-600' },
               warning: { bg: 'bg-amber-100',    text: 'text-amber-600' },
@@ -498,7 +499,7 @@ export default function Dashboard() {
             return (
               <div key={index}>
                 <Card 
-                  className="cursor-pointer hover:shadow-medium transition-all border-2 hover:border-primary-200 group"
+                  className="cursor-pointer hover:shadow-brand transition-all border border-gray-100 hover:border-sky-200 group rounded-xl"
                   onClick={action.action}
                 >
                   <CardContent className="p-6">
@@ -510,7 +511,7 @@ export default function Dashboard() {
                         <h3 className="font-semibold text-gray-900 mb-0.5">{action.title}</h3>
                         <p className="text-sm text-gray-600">{action.description}</p>
                       </div>
-                      <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-primary-600 group-hover:translate-x-1 group-hover:-translate-y-1 transition-all" />
+                      <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-sky-600 group-hover:translate-x-1 group-hover:-translate-y-1 transition-all" />
                     </div>
                   </CardContent>
                 </Card>
@@ -524,9 +525,9 @@ export default function Dashboard() {
       {Object.keys(categoryStats).length > 0 && (
         <div>
           <div className="flex items-center gap-2 mb-4">
-            <Briefcase className="w-5 h-5 text-primary-600" />
+            <Briefcase className="w-5 h-5 text-sky-500" />
             <h2 className="text-xl font-semibold text-gray-900">Candidates by Category</h2>
-            <span className="text-sm text-gray-500 ml-2">{Object.keys(categoryStats).length} categories</span>
+            <span className="text-xs text-gray-400 ml-2">{Object.keys(categoryStats).length} categories</span>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
             {Object.entries(categoryStats)
@@ -596,12 +597,12 @@ export default function Dashboard() {
 
       {/* Recent Candidates - Enhanced */}
       <div>
-        <Card className="border-2">
-          <CardHeader className="border-b border-gray-200 bg-gradient-to-r from-gray-50 to-white">
+        <Card className="border border-gray-100 rounded-xl">
+          <CardHeader className="border-b border-gray-100 bg-gradient-to-r from-gray-50/50 to-white">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-primary-100 rounded-xl flex items-center justify-center">
-                  <Users className="w-5 h-5 text-primary-600" />
+                <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center">
+                  <Users className="w-5 h-5 text-sky-300" />
                 </div>
                 <div>
                   <CardTitle>Recent Candidates</CardTitle>
@@ -610,7 +611,7 @@ export default function Dashboard() {
               </div>
               <button
                 onClick={() => navigate('/candidates')}
-                className="flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors text-sm font-medium hover:scale-105 active:scale-95"
+                className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-xl hover:bg-slate-700 transition-colors text-sm font-medium hover:scale-105 active:scale-95"
               >
                 View all
                 <ArrowUpRight className="w-4 h-4" />
@@ -627,7 +628,7 @@ export default function Dashboard() {
                 <p className="text-gray-600 mb-4">Start by uploading resumes or connecting your email</p>
                 <button
                   onClick={openFileDialog}
-                  className="px-6 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 transition-colors text-sm font-medium hover:scale-105 active:scale-95"
+                  className="px-6 py-2 bg-slate-800 text-white rounded-xl hover:bg-slate-700 transition-colors text-sm font-medium hover:scale-105 active:scale-95"
                 >
                   Upload Resumes
                 </button>
@@ -651,7 +652,7 @@ export default function Dashboard() {
                           </Avatar>
                         </div>
                         <div className="flex-1">
-                          <h4 className="font-semibold text-gray-900 text-sm group-hover:text-blue-600 transition-colors">
+                          <h4 className="font-semibold text-gray-900 text-sm group-hover:text-sky-600 transition-colors">
                             {candidate.name}
                           </h4>
                           <div className="flex items-center gap-2 mt-1">
@@ -681,7 +682,7 @@ export default function Dashboard() {
                         >
                           {candidate.status}
                         </Badge>
-                        <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-primary-600 group-hover:translate-x-1 group-hover:-translate-y-1 transition-all" />
+                        <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-sky-600 group-hover:translate-x-1 group-hover:-translate-y-1 transition-all" />
                       </div>
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1.5">
@@ -689,7 +690,7 @@ export default function Dashboard() {
                         <Badge 
                           key={skill} 
                           variant="outline" 
-                          className="text-[11px] px-1.5 py-0 hover:bg-blue-50 hover:border-blue-300 transition-colors cursor-pointer"
+                          className="text-[11px] px-1.5 py-0 hover:bg-sky-50 hover:border-sky-300 transition-colors cursor-pointer"
                           onClick={(e) => {
                             e.stopPropagation()
                             navigate(`/candidates?search=${skill}`)
@@ -729,8 +730,8 @@ export default function Dashboard() {
             {/* Modal Header */}
             <div className="flex items-center justify-between p-6 border-b border-gray-200">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-primary-100 rounded-xl flex items-center justify-center">
-                  <Upload className="w-5 h-5 text-primary-600" />
+                <div className="w-10 h-10 bg-sky-100 rounded-xl flex items-center justify-center">
+                  <Upload className="w-5 h-5 text-sky-600" />
                 </div>
                 <div>
                   <h2 className="text-xl font-bold text-gray-900">Upload Resumes</h2>
@@ -752,7 +753,7 @@ export default function Dashboard() {
             <div className="p-6">
               {isUploading ? (
                 <div className="flex flex-col items-center justify-center py-12">
-                  <Loader2 className="w-12 h-12 text-primary-600 animate-spin mb-4" />
+                  <Loader2 className="w-12 h-12 text-sky-500 animate-spin mb-4" />
                   <p className="text-lg font-medium text-gray-900">Processing resumes...</p>
                   <p className="text-sm text-gray-500">AI is analyzing the candidates</p>
                 </div>
@@ -837,13 +838,13 @@ export default function Dashboard() {
                   className={`
                     border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all
                     ${dragActive 
-                      ? 'border-primary-500 bg-primary-50' 
-                      : 'border-gray-300 hover:border-primary-400 hover:bg-gray-50'
+                      ? 'border-sky-500 bg-sky-50' 
+                      : 'border-gray-300 hover:border-sky-400 hover:bg-gray-50'
                     }
                   `}
                 >
-                  <div className="w-16 h-16 bg-primary-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <FileText className="w-8 h-8 text-primary-600" />
+                  <div className="w-16 h-16 bg-sky-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <FileText className="w-8 h-8 text-sky-600" />
                   </div>
                   <p className="text-lg font-medium text-gray-900 mb-2">
                     {dragActive ? 'Drop files here' : 'Drag & drop resumes here'}

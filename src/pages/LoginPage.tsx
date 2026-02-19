@@ -95,9 +95,9 @@ export default function LoginPage() {
   }, [features.length])
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-primary-50 via-white to-blue-50 flex">
+    <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-sky-50 flex">
       {/* Left Side - Features & Branding */}
-      <div className="hidden lg:flex lg:w-[45%] xl:w-1/2 bg-gradient-to-br from-primary-700 via-primary-800 to-primary-900 p-12 flex-col justify-between relative overflow-hidden">
+      <div className="hidden lg:flex lg:w-[45%] xl:w-1/2 brand-gradient p-12 flex-col justify-between relative overflow-hidden">
         {/* Animated background elements */}
         <motion.div
           animate={{
@@ -105,7 +105,7 @@ export default function LoginPage() {
             rotate: [0, 90, 0],
           }}
           transition={{ duration: 20, repeat: Infinity, ease: "linear" }}
-          className="absolute top-0 right-0 w-96 h-96 bg-white/5 rounded-full blur-3xl"
+          className="absolute top-0 right-0 w-96 h-96 bg-sky-500/10 rounded-full blur-3xl"
         />
         <motion.div
           animate={{
@@ -113,7 +113,7 @@ export default function LoginPage() {
             rotate: [90, 0, 90],
           }}
           transition={{ duration: 15, repeat: Infinity, ease: "linear" }}
-          className="absolute bottom-0 left-0 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl"
+          className="absolute bottom-0 left-0 w-96 h-96 bg-indigo-500/10 rounded-full blur-3xl"
         />
 
         <div className="relative z-10">
@@ -123,12 +123,12 @@ export default function LoginPage() {
             animate={{ opacity: 1, y: 0 }}
             className="flex items-center gap-3 mb-12"
           >
-            <div className="w-12 h-12 bg-white/20 backdrop-blur-sm rounded-xl flex items-center justify-center p-1">
+            <div className="w-12 h-12 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center p-1 ring-1 ring-white/20">
               <img src="/effortz-logo.png" alt="Efforts Solutions" className="w-10 h-10 object-contain" />
             </div>
             <div>
               <h1 className="text-2xl font-bold text-white">Efforts Solutions</h1>
-              <p className="text-primary-100 text-sm">Smart Hiring Platform</p>
+              <p className="text-sky-300 text-sm">Smart Hiring Platform</p>
             </div>
           </motion.div>
 
@@ -142,9 +142,9 @@ export default function LoginPage() {
             <h2 className="text-5xl font-bold text-white mb-4 leading-tight">
               Find Your Perfect
               <br />
-              <span className="text-primary-200">Candidate Match</span>
+              <span className="text-sky-300">Candidate Match</span>
             </h2>
-            <p className="text-primary-100 text-lg">
+            <p className="text-slate-300 text-lg">
               Leverage AI to transform your recruitment process and hire top talent faster
             </p>
           </motion.div>
@@ -158,7 +158,7 @@ export default function LoginPage() {
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: 20 }}
                 transition={{ duration: 0.5 }}
-                className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/20"
+                className="bg-white/10 backdrop-blur-md rounded-2xl p-6 border border-white/10"
               >
                 <div className="flex items-start gap-4">
                   <div className="w-12 h-12 bg-white/20 rounded-xl flex items-center justify-center flex-shrink-0">
@@ -171,7 +171,7 @@ export default function LoginPage() {
                     <h3 className="text-xl font-semibold text-white mb-2">
                       {features[activeFeature].title}
                     </h3>
-                    <p className="text-primary-100">
+                    <p className="text-slate-300">
                       {features[activeFeature].description}
                     </p>
                   </div>
@@ -203,7 +203,7 @@ export default function LoginPage() {
                   transition={{ delay: 0.4 + index * 0.1 }}
                   className="flex items-center gap-3"
                 >
-                  <CheckCircle className="w-5 h-5 text-primary-200 flex-shrink-0" />
+                  <CheckCircle className="w-5 h-5 text-sky-300 flex-shrink-0" />
                   <span className="text-white text-sm">{feature.title}</span>
                 </motion.div>
               )
@@ -216,12 +216,12 @@ export default function LoginPage() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.6 }}
-          className="relative z-10 grid grid-cols-3 gap-8 pt-8 border-t border-white/20"
+          className="relative z-10 grid grid-cols-3 gap-8 pt-8 border-t border-white/10"
         >
           {stats.map((stat, index) => (
             <div key={index} className="text-center">
               <div className="text-3xl font-bold text-white mb-1">{stat.value}</div>
-              <div className="text-primary-100 text-sm">{stat.label}</div>
+              <div className="text-slate-300 text-sm">{stat.label}</div>
             </div>
           ))}
         </motion.div>
@@ -258,10 +258,10 @@ export default function LoginPage() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.3, duration: 0.5 }}
-            className="bg-white rounded-2xl shadow-large p-8 sm:p-10 border border-gray-200"
+            className="bg-white rounded-2xl shadow-brand p-8 sm:p-10 border border-gray-100"
           >
             <div className="flex items-center gap-2 mb-2">
-              <Sparkles className="w-5 h-5 text-primary-600" />
+              <Sparkles className="w-5 h-5 text-sky-500" />
               <h2 className="text-2xl font-semibold text-gray-900">
                 {isRegistering ? 'Create Account' : 'Welcome Back'}
               </h2>
@@ -391,7 +391,7 @@ export default function LoginPage() {
                 <label className="flex items-center">
                   <input
                     type="checkbox"
-                    className="w-4 h-4 text-primary-600 border-gray-300 rounded focus:ring-primary-500"
+                    className="w-4 h-4 text-sky-600 border-gray-300 rounded focus:ring-sky-500"
                   />
                   <span className="ml-2 text-sm text-gray-600">Remember me</span>
                 </label>
@@ -437,7 +437,7 @@ export default function LoginPage() {
                     setUsername('')
                     setName('')
                   }}
-                  className="font-medium text-primary-600 hover:text-primary-700"
+                  className="font-semibold text-sky-600 hover:text-sky-700"
                 >
                   {isRegistering ? 'Sign in' : 'Create account'}
                 </button>
@@ -450,9 +450,9 @@ export default function LoginPage() {
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             transition={{ delay: 0.5 }}
-            className="text-center text-sm text-gray-500 mt-6"
+            className="text-center text-sm text-gray-400 mt-6"
           >
-            © {new Date().getFullYear()} Efforts Solutions. All rights reserved.
+            © {new Date().getFullYear()} Efforts Solutions · Powered by <a href="https://effortz.com" target="_blank" rel="noopener noreferrer" className="text-sky-500 hover:text-sky-600 font-medium">effortz.com</a>
           </motion.p>
         </motion.div>
       </div>

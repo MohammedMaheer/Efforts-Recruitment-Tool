@@ -28,7 +28,13 @@ import {
   Upload,
   Square,
   CheckSquare,
-  Eye
+  Eye,
+  History,
+  Plus,
+  Trash2,
+  PanelLeftClose,
+  PanelLeft,
+  MessageCircle
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card, CardContent } from '@/components/ui/Card'
@@ -75,15 +81,15 @@ const suggestedPrompts = [
   {
     icon: Brain,
     text: 'Rank candidates using ML for software engineer',
-    color: 'text-primary-600',
-    bgColor: 'bg-primary-50 hover:bg-primary-100',
+    color: 'text-sky-600',
+    bgColor: 'bg-sky-50 hover:bg-sky-100',
     category: 'ml'
   },
   {
     icon: Target,
     text: 'Find best matches for our open positions',
-    color: 'text-blue-600',
-    bgColor: 'bg-blue-50 hover:bg-blue-100',
+    color: 'text-sky-600',
+    bgColor: 'bg-sky-50 hover:bg-sky-100',
     category: 'matching'
   },
   {
@@ -117,8 +123,8 @@ const suggestedPrompts = [
   {
     icon: Mail,
     text: 'Draft outreach email for top candidates',
-    color: 'text-blue-600',
-    bgColor: 'bg-blue-50 hover:bg-blue-100',
+    color: 'text-sky-600',
+    bgColor: 'bg-sky-50 hover:bg-sky-100',
     category: 'email'
   },
   {
@@ -387,12 +393,98 @@ We are looking for a Senior Software Engineer with 5+ years of experience in Rea
   )
 }
 
+// Restore chat history from sessionStorage so navigation doesn't lose it
+const restoreChatHistory = (): Message[] => {
+  try {
+    const raw = sessionStorage.getItem('ai_chat_history')
+    if (!raw) return []
+    const parsed = JSON.parse(raw) as any[]
+    return parsed.map(m => ({
+      ...m,
+      timestamp: new Date(m.timestamp),
+      // Re-hydrate action functions (they can't be serialized)
+      actions: undefined,
+      // Insights contain React component refs (icon) — not serializable
+      insights: undefined,
+      // Candidates are stored as data, not references
+      candidates: m.candidates || undefined,
+    }))
+  } catch { return [] }
+}
+
+const saveChatHistory = (msgs: Message[]) => {
+  try {
+    // Save last 50 messages to keep storage reasonable
+    const toSave = msgs.slice(-50).map(m => ({
+      id: m.id,
+      type: m.type,
+      content: m.content,
+      timestamp: m.timestamp.toISOString(),
+      candidates: m.candidates,
+      intent: m.intent,
+      // Skip actions/insights/loading — contain non-serializable React component refs
+    }))
+    sessionStorage.setItem('ai_chat_history', JSON.stringify(toSave))
+  } catch { /* storage full — ignore */ }
+}
+
+// ── Chat Session Management (persisted to localStorage) ──
+interface ChatSession {
+  id: string
+  title: string
+  preview: string
+  messages: any[]  // serialized messages
+  createdAt: string
+  updatedAt: string
+}
+
+const SESSIONS_KEY = 'ai_chat_sessions'
+const ACTIVE_SESSION_KEY = 'ai_active_session_id'
+
+const loadChatSessions = (): ChatSession[] => {
+  try {
+    const raw = localStorage.getItem(SESSIONS_KEY)
+    return raw ? JSON.parse(raw) : []
+  } catch { return [] }
+}
+
+const persistChatSessions = (sessions: ChatSession[]) => {
+  try {
+    // Keep max 50 sessions
+    localStorage.setItem(SESSIONS_KEY, JSON.stringify(sessions.slice(0, 50)))
+  } catch { /* storage full */ }
+}
+
+const getSessionTitle = (msgs: Message[]): string => {
+  const firstUser = msgs.find(m => m.type === 'user')
+  if (firstUser) {
+    const text = firstUser.content.replace(/\*+/g, '').trim()
+    return text.length > 50 ? text.slice(0, 50) + '...' : text
+  }
+  return 'New Chat'
+}
+
+const getSessionPreview = (msgs: Message[]): string => {
+  const lastAi = [...msgs].reverse().find(m => m.type === 'ai' && !m.loading)
+  if (lastAi) {
+    const text = lastAi.content.replace(/\*+/g, '').replace(/<[^>]+>/g, '').trim()
+    return text.length > 80 ? text.slice(0, 80) + '...' : text
+  }
+  return 'No messages yet'
+}
+
 export default function AIAssistant() {
-  const [messages, setMessages] = useState<Message[]>([])
+  const [messages, setMessages] = useState<Message[]>(() => restoreChatHistory())
   const [input, setInput] = useState('')
   const [isTyping, setIsTyping] = useState(false)
   const [showJobMatchModal, setShowJobMatchModal] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
+  const [showHistory, setShowHistory] = useState(false)
+  const [chatSessions, setChatSessions] = useState<ChatSession[]>(() => loadChatSessions())
+  const [activeSessionId, setActiveSessionId] = useState<string>(() => {
+    return localStorage.getItem(ACTIVE_SESSION_KEY) || Date.now().toString()
+  })
+  const [newChatTrigger, setNewChatTrigger] = useState(0)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { candidates, totalCount } = useCandidates({ autoFetch: true })
@@ -432,12 +524,95 @@ export default function AIAssistant() {
     setMessages(prev => [...prev, confirmMsg])
   }
 
+  // ── Chat Session Persistence ──
+  // Save current session to localStorage whenever messages change
+  useEffect(() => {
+    if (messages.length <= 1) return // Don't save if only welcome msg
+    const hasUserMsg = messages.some(m => m.type === 'user')
+    if (!hasUserMsg) return
+
+    const serialized = messages.slice(-50).map(m => ({
+      id: m.id,
+      type: m.type,
+      content: m.content,
+      timestamp: m.timestamp instanceof Date ? m.timestamp.toISOString() : m.timestamp,
+      candidates: m.candidates,
+      intent: m.intent,
+      // Skip insights — they contain non-serializable React component refs (icon)
+    }))
+
+    setChatSessions(prev => {
+      const existing = prev.find(s => s.id === activeSessionId)
+      const session: ChatSession = {
+        id: activeSessionId,
+        title: getSessionTitle(messages),
+        preview: getSessionPreview(messages),
+        messages: serialized,
+        createdAt: existing?.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      const updated = [session, ...prev.filter(s => s.id !== activeSessionId)]
+      persistChatSessions(updated)
+      return updated
+    })
+  }, [messages, activeSessionId])
+
+  const startNewChat = () => {
+    const newId = Date.now().toString()
+    setActiveSessionId(newId)
+    localStorage.setItem(ACTIVE_SESSION_KEY, newId)
+    sessionStorage.removeItem('ai_chat_history')
+    setSelectedIds(new Set())
+    setShowHistory(false)
+    welcomeGenerated.current = false
+    setMessages([])
+    setNewChatTrigger(t => t + 1) // Force welcome useEffect re-run
+  }
+
+  const loadSession = (session: ChatSession) => {
+    setActiveSessionId(session.id)
+    localStorage.setItem(ACTIVE_SESSION_KEY, session.id)
+    try {
+      const restored = session.messages.map((m: any) => ({
+        ...m,
+        timestamp: new Date(m.timestamp),
+        actions: undefined,
+        insights: undefined,
+        candidates: m.candidates || undefined,
+      }))
+      setMessages(restored)
+      saveChatHistory(restored)
+      welcomeGenerated.current = true
+    } catch {
+      setMessages([])
+    }
+    setSelectedIds(new Set())
+    setShowHistory(false)
+  }
+
+  const deleteSession = (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation()
+    setChatSessions(prev => {
+      const updated = prev.filter(s => s.id !== sessionId)
+      persistChatSessions(updated)
+      return updated
+    })
+    if (sessionId === activeSessionId) {
+      startNewChat()
+    }
+  }
+
+  // Persist messages to sessionStorage whenever they change
+  useEffect(() => {
+    if (messages.length > 0) saveChatHistory(messages)
+  }, [messages])
+
   // Track whether welcome has been generated to prevent re-rendering on each page load
-  const welcomeGenerated = useRef(false)
+  const welcomeGenerated = useRef(messages.length > 0)
   
   useEffect(() => {
     // Only generate welcome message once when we have data
-    // Use totalCount (server-side accurate count) to avoid the 500→1000→5000 flicker
+    // Skip if we restored chat history from session
     if (welcomeGenerated.current) return
     if (candidates.length === 0) return
     welcomeGenerated.current = true
@@ -491,7 +666,7 @@ Try a suggestion below or ask anything!`,
       ] : undefined
     }
     setMessages([welcomeMessage])
-  }, [candidates.length, totalCount])
+  }, [candidates.length, totalCount, newChatTrigger])
 
   useEffect(() => {
     scrollToBottom()
@@ -502,6 +677,20 @@ Try a suggestion below or ask anything!`,
   }
 
   // Enhanced query parser with advanced features
+  // Extract requested number of candidates from query (e.g. "show me 15 candidates", "top 20", "give me 5")
+  const extractRequestedCount = (query: string): number => {
+    const patterns = [
+      /(?:show|give|list|find|get|display|return|fetch|bring)\s+(?:me\s+)?(?:the\s+)?(?:top\s+)?(\d+)/i,
+      /(?:top|best|first)\s+(\d+)/i,
+      /(\d+)\s+(?:candidates|results|people|profiles|matches|applicants)/i,
+    ]
+    for (const p of patterns) {
+      const m = query.match(p)
+      if (m) return Math.min(Math.max(parseInt(m[1]), 1), 100)
+    }
+    return 10 // default
+  }
+
   const parseQuery = async (query: string): Promise<{ 
     candidates: Candidate[], 
     response: string, 
@@ -510,6 +699,7 @@ Try a suggestion below or ask anything!`,
     insights?: InsightCard[]
   }> => {
     const lowerQuery = query.toLowerCase()
+    const requestedCount = extractRequestedCount(query)
     let filteredCandidates = [...candidates]
     let response = ''
     let intent = 'search'
@@ -520,8 +710,8 @@ Try a suggestion below or ask anything!`,
     if (lowerQuery.includes('rank') || lowerQuery.includes('ml rank') || lowerQuery.includes('machine learning')) {
       intent = 'ml_ranking'
       try {
-        const candidateIds = candidates.slice(0, 20).map(c => c.id)
-        const result = await advancedApi.ml.rankCandidates(candidateIds, undefined, 10) as { data?: { rankings?: Array<{ candidate_id: string; score: number }> } }
+        const candidateIds = candidates.slice(0, Math.max(20, requestedCount * 2)).map(c => c.id)
+        const result = await advancedApi.ml.rankCandidates(candidateIds, undefined, requestedCount) as { data?: { rankings?: Array<{ candidate_id: string; score: number }> } }
         
         if (result.data?.rankings) {
           const rankings = result.data.rankings
@@ -541,8 +731,8 @@ Try a suggestion below or ask anything!`,
       } catch (error) {
         console.error('ML ranking error:', error)
         // Fallback to score-based ranking
-        filteredCandidates = filteredCandidates.sort((a, b) => b.matchScore - a.matchScore).slice(0, 10)
-        response = `Here are the top candidates ranked by match score (ML service unavailable):`
+        filteredCandidates = filteredCandidates.sort((a, b) => b.matchScore - a.matchScore).slice(0, requestedCount)
+        response = `Here are the top **${requestedCount}** candidates ranked by match score (ML service unavailable):`
       }
       
       actions = [
@@ -555,7 +745,7 @@ Try a suggestion below or ask anything!`,
     else if (lowerQuery.includes('predict') || lowerQuery.includes('analytics') || lowerQuery.includes('forecast')) {
       intent = 'predictive_analytics'
       try {
-        const topCandidates = [...candidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, 5)
+        const topCandidates = [...candidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, requestedCount)
         const predictions = await Promise.all(
           topCandidates.map(c => advancedApi.analytics.predict(c.id).catch(() => null))
         )
@@ -624,7 +814,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     // EMAIL TEMPLATES
     else if (lowerQuery.includes('email') || lowerQuery.includes('template') || lowerQuery.includes('outreach') || lowerQuery.includes('draft')) {
       intent = 'email_templates'
-      filteredCandidates = candidates.filter(c => c.status === 'Strong' || c.matchScore >= 70).slice(0, 5)
+      filteredCandidates = candidates.filter(c => c.status === 'Strong' || c.matchScore >= 70).slice(0, requestedCount)
       
       response = `**Email Outreach Ready**\n\nI've identified **${filteredCandidates.length} candidates** perfect for outreach. You can use our pre-built templates or create custom ones:`
       
@@ -642,7 +832,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     // CALENDAR / SCHEDULING
     else if (lowerQuery.includes('schedule') || lowerQuery.includes('interview') || lowerQuery.includes('calendar') || lowerQuery.includes('meeting')) {
       intent = 'calendar'
-      filteredCandidates = candidates.filter(c => c.status === 'Strong' || c.isShortlisted).slice(0, 5)
+      filteredCandidates = candidates.filter(c => c.status === 'Strong' || c.isShortlisted).slice(0, requestedCount)
       
       response = `**Interview Scheduling**\n\nI found **${filteredCandidates.length} candidates** ready for interviews. You can schedule through our calendar integration:`
       
@@ -655,7 +845,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     // SMS / NOTIFICATIONS  
     else if (lowerQuery.includes('sms') || lowerQuery.includes('text') || lowerQuery.includes('notify') || lowerQuery.includes('message')) {
       intent = 'sms'
-      filteredCandidates = candidates.filter(c => c.phone).slice(0, 5)
+      filteredCandidates = candidates.filter(c => c.phone).slice(0, requestedCount)
       
       response = `**SMS Notifications**\n\n**${filteredCandidates.length} candidates** have phone numbers available for SMS outreach:`
       
@@ -668,13 +858,13 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     // RESUME QUALITY
     else if (lowerQuery.includes('quality') || lowerQuery.includes('resume quality') || lowerQuery.includes('analyze resume')) {
       intent = 'resume_quality'
-      filteredCandidates = [...candidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, 10)
+      filteredCandidates = [...candidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, requestedCount)
       
       const highQuality = filteredCandidates.filter(c => c.matchScore >= 70).length
       const mediumQuality = filteredCandidates.filter(c => c.matchScore >= 50 && c.matchScore < 70).length
       const lowQuality = filteredCandidates.filter(c => c.matchScore < 50).length
       
-      response = `**Resume Quality Analysis**\n\nHere's a breakdown of your candidate pool quality:`
+      response = `**Resume Quality Analysis** (Top ${requestedCount})\n\nHere's a breakdown of your candidate pool quality:`
       
       insights = [
         { title: 'High Quality (70%+)', value: highQuality, icon: Star, color: 'green' },
@@ -690,8 +880,8 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     // JOB MATCHING
     else if (lowerQuery.includes('match') || lowerQuery.includes('job') || lowerQuery.includes('position') || lowerQuery.includes('fit')) {
       intent = 'job_matching'
-      filteredCandidates = [...candidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, 10)
-      response = `**Job Matching Results**\n\nTop candidates matched to your open positions:`
+      filteredCandidates = [...candidates].sort((a, b) => b.matchScore - a.matchScore).slice(0, requestedCount)
+      response = `**Job Matching Results** (Top ${requestedCount})\n\nTop candidates matched to your open positions:`
       
       actions = [
         { label: 'View Candidates', icon: Target, action: () => navigate('/candidates'), variant: 'primary' },
@@ -733,7 +923,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     else if (lowerQuery.includes('recent') || lowerQuery.includes('new') || lowerQuery.includes('latest') || lowerQuery.includes('today')) {
       filteredCandidates = filteredCandidates
         .sort((a, b) => new Date(b.appliedDate).getTime() - new Date(a.appliedDate).getTime())
-        .slice(0, 10)
+        .slice(0, requestedCount)
       intent = 'recent'
       response = `Here are the **${filteredCandidates.length} most recent** applicants:`
     }
@@ -797,9 +987,9 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         intent = 'general_search'
         response = `Found **${filteredCandidates.length} result${filteredCandidates.length !== 1 ? 's' : ''}** for "${query}":`
       } else {
-        filteredCandidates = filteredCandidates.slice(0, 10)
+        filteredCandidates = filteredCandidates.slice(0, requestedCount)
         intent = 'show_all'
-        response = `Here are the first **${filteredCandidates.length} candidates** in your pipeline:`
+        response = `Here are the top **${filteredCandidates.length} candidates** in your pipeline:`
       }
     }
 
@@ -814,7 +1004,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       ]
     }
 
-    return { candidates: filteredCandidates.slice(0, 8), response, intent, actions, insights }
+    return { candidates: filteredCandidates.slice(0, requestedCount), response, intent, actions, insights }
   }
 
   const handleSend = async () => {
@@ -852,62 +1042,86 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
           content: m.content.substring(0, 500)
         }))
       
+      // Determine how many candidate cards to show
+      const requestedCount = extractRequestedCount(userInput)
+      
       // Use AI chat (3-tier: Gemini → LLM → OpenAI → rule-based)
       // The backend now returns candidates_lookup alongside the text response
-      const chatResult = await aiApi.chat(userInput, true, conversationHistory)
+      const chatResult = await aiApi.chat(userInput, true, conversationHistory, requestedCount)
       
       // Remove loading message
       setMessages(prev => prev.filter(m => m.id !== loadingId))
       
       const aiText = chatResult.data?.response || 'AI service unavailable. Please try again.'
       const sourceInfo = chatResult.data?.source || ''
-      const candidatesLookup = chatResult.data?.candidates_lookup || []
+      const candidatesLookup: any[] = chatResult.data?.candidates_lookup || []
       
-      // Extract candidate references from AI text (e.g. "#6." or "#25." or "**#6.")
-      // and match them to the candidates_lookup by index
+      // Build candidate cards from lookup data — don't depend on local store
       let displayCandidates: Candidate[] = []
       
       if (candidatesLookup.length > 0) {
-        // Find all #N. references in the AI text
-        const refPattern = /[#*]*#(\d+)\.\s/g
+        // Find all #N. references in the AI text (any number)
+        const refPattern = /\*{0,2}#(\d+)\.\s/g
         const mentionedIndices = new Set<number>()
-        let match
+        let match: RegExpExecArray | null
         while ((match = refPattern.exec(aiText)) !== null) {
           mentionedIndices.add(parseInt(match[1]))
         }
         
         if (mentionedIndices.size > 0) {
-          // Map mentioned indices to candidates from lookup
           for (const idx of mentionedIndices) {
-            const lookupEntry = candidatesLookup.find(c => c.index === idx)
+            const lookupEntry = candidatesLookup.find((c: any) => c.index === idx)
             if (lookupEntry) {
-              // Try to find the full candidate in local data first
+              // Prefer full local candidate, but always create one from lookup
               const localCandidate = candidates.find(c => c.id === lookupEntry.id)
-              if (localCandidate) {
-                displayCandidates.push(localCandidate)
-              } else {
-                // Use lookup data as a lightweight candidate
-                displayCandidates.push({
-                  id: lookupEntry.id,
-                  name: lookupEntry.name,
-                  matchScore: lookupEntry.matchScore,
-                  location: lookupEntry.location,
-                  jobCategory: lookupEntry.jobCategory,
-                  experience: lookupEntry.experience,
-                  skills: lookupEntry.skills,
-                  email: lookupEntry.email,
-                  phone: lookupEntry.phone,
-                  status: lookupEntry.status,
-                  // Fill defaults for required Candidate fields
-                  appliedDate: new Date().toISOString(),
-                  summary: '',
-                  isShortlisted: lookupEntry.status === 'Shortlisted',
-                } as Candidate)
-              }
+              displayCandidates.push(localCandidate || {
+                id: lookupEntry.id,
+                name: lookupEntry.name || 'Unknown',
+                matchScore: lookupEntry.matchScore || 50,
+                location: lookupEntry.location || '',
+                jobCategory: lookupEntry.jobCategory || 'General',
+                experience: lookupEntry.experience || 0,
+                skills: lookupEntry.skills || [],
+                email: lookupEntry.email || '',
+                phone: lookupEntry.phone || '',
+                status: lookupEntry.status || 'New',
+                appliedDate: new Date().toISOString(),
+                summary: '',
+                education: [],
+                workHistory: [],
+                resumeUrl: '',
+                hasResume: false,
+              } as Candidate)
             }
           }
-          // Sort by match score descending
           displayCandidates.sort((a, b) => (b.matchScore ?? 0) - (a.matchScore ?? 0))
+          // Limit to requested count
+          displayCandidates = displayCandidates.slice(0, requestedCount)
+        }
+        
+        // If regex didn't match but lookup has entries, include all lookup candidates
+        if (displayCandidates.length === 0) {
+          displayCandidates = candidatesLookup.slice(0, requestedCount).map((entry: any) => {
+            const local = candidates.find(c => c.id === entry.id)
+            return local || {
+              id: entry.id,
+              name: entry.name || 'Unknown',
+              matchScore: entry.matchScore || 50,
+              location: entry.location || '',
+              jobCategory: entry.jobCategory || 'General',
+              experience: entry.experience || 0,
+              skills: entry.skills || [],
+              email: entry.email || '',
+              phone: entry.phone || '',
+              status: entry.status || 'New',
+              appliedDate: new Date().toISOString(),
+              summary: '',
+              education: [],
+              workHistory: [],
+              resumeUrl: '',
+              hasResume: false,
+            } as Candidate
+          })
         }
       }
       
@@ -1142,29 +1356,71 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
   /**
    * Split AI response into header + per-candidate sections.
    * E.g. "#1. Name | Score..." blocks get separated so each can render above its card.
+   * Returns sections with extracted candidate names for matching.
    */
-  const splitContentByCandidates = (content: string, count: number): { header: string; sections: string[] } => {
-    // Match "#N." patterns at start of line (with optional bold **)
-    const first = content.search(/(?:^|\n)\s*\*{0,2}#1\./)
-    if (first === -1 || count === 0) {
-      return { header: content, sections: [] }
+  const splitContentByCandidates = (content: string, candidates: Candidate[]): { header: string; sections: { text: string; candidateId: string | null }[] } => {
+    if (!candidates.length) return { header: content, sections: [] }
+
+    // Find ALL "#N." patterns (any number, not just sequential from 1)
+    const sectionPattern = /(?:^|\n)\s*\*{0,2}#\d+\./g
+    const matches: { index: number }[] = []
+    let m: RegExpExecArray | null
+    while ((m = sectionPattern.exec(content)) !== null) {
+      matches.push({ index: m.index })
     }
-    const header = content.slice(0, first).trim()
-    const body = content.slice(first)
-    
-    const sections: string[] = []
-    for (let i = 1; i <= count; i++) {
-      const current = new RegExp(`(?:^|\\n)\\s*\\*{0,2}#${i}\\.`)
-      const next = i < count ? new RegExp(`(?:^|\\n)\\s*\\*{0,2}#${i + 1}\\.`) : null
-      const startMatch = body.search(current)
-      if (startMatch === -1) { sections.push(''); continue }
-      const endMatch = next ? body.slice(startMatch + 1).search(next) : -1
-      if (endMatch === -1) {
-        sections.push(body.slice(startMatch).trim())
-      } else {
-        sections.push(body.slice(startMatch, startMatch + 1 + endMatch).trim())
+    if (matches.length === 0) return { header: content, sections: [] }
+
+    // Header is everything before the first #N.
+    const firstIdx = matches[0].index
+    const header = content.slice(0, firstIdx).trim()
+
+    // Split into raw sections between each #N. boundary
+    const rawSections: string[] = []
+    for (let i = 0; i < matches.length; i++) {
+      const start = matches[i].index
+      const end = i + 1 < matches.length ? matches[i + 1].index : content.length
+      rawSections.push(content.slice(start, end).trim())
+    }
+
+    // Match each section to the correct candidate by name
+    const usedCandidateIds = new Set<string>()
+    const sections = rawSections.map((text, sectionIdx) => {
+      if (!text) return { text, candidateId: null }
+      // Extract name: "#N. Name | Score..." or "#N. Name\n" or "#N. Name **"
+      const nameMatch = text.match(/^[\s*]*#\d+\.\s*(.+?)(?:\s*\*{0,2}\s*\||\s*\*{0,2}\s*\n|\s*\*{2,})/)
+      if (nameMatch) {
+        const sectionName = nameMatch[1].replace(/\*+/g, '').trim().toLowerCase()
+        // Find best matching candidate by name
+        const nameMatched = candidates.find(c => {
+          if (usedCandidateIds.has(c.id)) return false
+          const cn = c.name.toLowerCase().trim()
+          const cnBase = cn.split(/[–\-—]/)[0].trim()
+          const snBase = sectionName.split(/[–\-—]/)[0].trim()
+          if (cn === sectionName || cnBase === snBase || cn.includes(snBase) || snBase.includes(cnBase)) return true
+          const cnWords = cnBase.split(/\s+/).filter(w => w.length > 1)
+          const snWords = snBase.split(/\s+/).filter(w => w.length > 1)
+          const overlap = cnWords.filter(w => snWords.includes(w)).length
+          return overlap >= 2 || (overlap >= 1 && (cnWords.length <= 2 || snWords.length <= 2))
+        })
+        if (nameMatched) {
+          usedCandidateIds.add(nameMatched.id)
+          return { text, candidateId: nameMatched.id }
+        }
       }
-    }
+      // Fallback: assign to candidate by position if available
+      if (sectionIdx < candidates.length && !usedCandidateIds.has(candidates[sectionIdx].id)) {
+        usedCandidateIds.add(candidates[sectionIdx].id)
+        return { text, candidateId: candidates[sectionIdx].id }
+      }
+      // Last resort: assign to first unused candidate
+      const unused = candidates.find(c => !usedCandidateIds.has(c.id))
+      if (unused) {
+        usedCandidateIds.add(unused.id)
+        return { text, candidateId: unused.id }
+      }
+      return { text, candidateId: null }
+    })
+
     return { header, sections }
   }
 
@@ -1203,7 +1459,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     html = html.replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, '<em class="text-gray-500">$1</em>')
     
     // Bullet points (- item)
-    html = html.replace(/^(\s*)[-•]\s+(.+)$/gm, '$1<span class="flex gap-2"><span class="text-primary-400">•</span><span>$2</span></span>')
+    html = html.replace(/^(\s*)[-•]\s+(.+)$/gm, '$1<span class="flex gap-2"><span class="text-sky-400">•</span><span>$2</span></span>')
     
     // Newlines
     html = html.replace(/\n/g, '<br/>')
@@ -1212,7 +1468,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
   }
 
   return (
-    <div className="h-full flex flex-col bg-gradient-to-br from-primary-50/30 via-white to-primary-50/20">
+    <div className="h-full flex flex-col bg-gradient-to-br from-sky-50/30 via-white to-sky-50/20">
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
@@ -1231,7 +1487,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                 repeat: Infinity,
                 repeatDelay: 3
               }}
-              className="w-12 h-12 bg-gradient-to-br from-primary-600 to-primary-800 rounded-2xl flex items-center justify-center shadow-lg"
+              className="w-12 h-12 bg-gradient-to-br from-slate-800 to-slate-700 rounded-2xl flex items-center justify-center shadow-lg"
             >
               <Brain className="w-6 h-6 text-white" />
             </motion.div>
@@ -1247,11 +1503,40 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
             </div>
           </div>
           <div className="flex items-center gap-2">
-            <Badge variant="outline" className="flex items-center gap-1 bg-primary-50 text-primary-700 border-primary-200">
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={startNewChat}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-xs font-medium shadow-sm"
+              title="Start new chat"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              New Chat
+            </motion.button>
+            <motion.button
+              whileHover={{ scale: 1.05 }}
+              whileTap={{ scale: 0.95 }}
+              onClick={() => setShowHistory(!showHistory)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium shadow-sm border transition-colors ${
+                showHistory
+                  ? 'bg-sky-100 text-sky-700 border-sky-300'
+                  : 'bg-white text-gray-700 border-gray-200 hover:bg-gray-50'
+              }`}
+              title="Chat history"
+            >
+              <History className="w-3.5 h-3.5" />
+              History
+              {chatSessions.length > 0 && (
+                <span className="ml-1 bg-slate-800 text-white text-[10px] rounded-full w-4 h-4 flex items-center justify-center">
+                  {chatSessions.length > 9 ? '9+' : chatSessions.length}
+                </span>
+              )}
+            </motion.button>
+            <Badge variant="outline" className="flex items-center gap-1 bg-sky-50 text-sky-700 border-sky-200">
               <Brain className="w-3 h-3" />
               ML Ranking
             </Badge>
-            <Badge variant="outline" className="flex items-center gap-1 bg-blue-50 text-blue-700 border-blue-200">
+            <Badge variant="outline" className="flex items-center gap-1 bg-sky-50 text-sky-700 border-sky-200">
               <Target className="w-3 h-3" />
               Job Matching
             </Badge>
@@ -1275,6 +1560,133 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         </div>
       </motion.div>
 
+      {/* Main Content Area — Sidebar + Chat */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Chat History Sidebar */}
+        <AnimatePresence>
+          {showHistory && (
+            <motion.div
+              initial={{ width: 0, opacity: 0 }}
+              animate={{ width: 320, opacity: 1 }}
+              exit={{ width: 0, opacity: 0 }}
+              transition={{ duration: 0.25, ease: 'easeInOut' }}
+              className="flex-shrink-0 bg-white border-r border-gray-200 overflow-hidden"
+            >
+              <div className="w-80 h-full flex flex-col">
+                {/* Sidebar Header */}
+                <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-gray-50/50">
+                  <div className="flex items-center gap-2">
+                    <MessageCircle className="w-4 h-4 text-sky-600" />
+                    <h3 className="text-sm font-semibold text-gray-900">Chat History</h3>
+                  </div>
+                  <motion.button
+                    whileHover={{ scale: 1.1 }}
+                    whileTap={{ scale: 0.9 }}
+                    onClick={() => setShowHistory(false)}
+                    className="p-1 hover:bg-gray-200 rounded-md transition-colors"
+                  >
+                    <PanelLeftClose className="w-4 h-4 text-gray-500" />
+                  </motion.button>
+                </div>
+
+                {/* New Chat Button in sidebar */}
+                <div className="px-3 py-2 border-b border-gray-100">
+                  <motion.button
+                    whileHover={{ scale: 1.02 }}
+                    whileTap={{ scale: 0.98 }}
+                    onClick={startNewChat}
+                    className="w-full flex items-center gap-2 px-3 py-2 bg-sky-50 hover:bg-sky-100 text-sky-700 rounded-lg text-sm font-medium transition-colors border border-sky-200"
+                  >
+                    <Plus className="w-4 h-4" />
+                    New Chat
+                  </motion.button>
+                </div>
+
+                {/* Sessions List */}
+                <div className="flex-1 overflow-y-auto">
+                  {chatSessions.length === 0 ? (
+                    <div className="flex flex-col items-center justify-center h-full text-gray-400 px-4">
+                      <History className="w-10 h-10 mb-2 opacity-50" />
+                      <p className="text-sm text-center">No chat history yet</p>
+                      <p className="text-xs text-center mt-1">Start a conversation and it will appear here</p>
+                    </div>
+                  ) : (
+                    <div className="py-1">
+                      {chatSessions.map((session) => {
+                        const isActive = session.id === activeSessionId
+                        const date = new Date(session.updatedAt)
+                        const now = new Date()
+                        const diffMs = now.getTime() - date.getTime()
+                        const diffMins = Math.floor(diffMs / 60000)
+                        const diffHrs = Math.floor(diffMs / 3600000)
+                        const diffDays = Math.floor(diffMs / 86400000)
+                        let timeLabel = ''
+                        if (diffMins < 1) timeLabel = 'Just now'
+                        else if (diffMins < 60) timeLabel = `${diffMins}m ago`
+                        else if (diffHrs < 24) timeLabel = `${diffHrs}h ago`
+                        else if (diffDays < 7) timeLabel = `${diffDays}d ago`
+                        else timeLabel = date.toLocaleDateString()
+
+                        return (
+                          <motion.button
+                            key={session.id}
+                            whileHover={{ x: 2 }}
+                            onClick={() => loadSession(session)}
+                            className={`w-full text-left px-3 py-2.5 mx-1 my-0.5 rounded-lg transition-all group ${
+                              isActive
+                                ? 'bg-sky-50 border border-sky-200'
+                                : 'hover:bg-gray-50 border border-transparent'
+                            }`}
+                            style={{ width: 'calc(100% - 8px)' }}
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5">
+                                  <MessageSquare className={`w-3.5 h-3.5 flex-shrink-0 ${isActive ? 'text-sky-600' : 'text-gray-400'}`} />
+                                  <p className={`text-sm font-medium truncate ${isActive ? 'text-sky-700' : 'text-gray-800'}`}>
+                                    {session.title}
+                                  </p>
+                                </div>
+                                <p className="text-xs text-gray-500 truncate mt-0.5 pl-5">
+                                  {session.preview}
+                                </p>
+                              </div>
+                              <div className="flex items-center gap-1 flex-shrink-0">
+                                <span className="text-[10px] text-gray-400 whitespace-nowrap">{timeLabel}</span>
+                                <motion.button
+                                  whileHover={{ scale: 1.2 }}
+                                  whileTap={{ scale: 0.9 }}
+                                  onClick={(e) => deleteSession(session.id, e)}
+                                  className="p-0.5 rounded hover:bg-red-100 opacity-0 group-hover:opacity-100 transition-opacity"
+                                  title="Delete chat"
+                                >
+                                  <Trash2 className="w-3 h-3 text-gray-400 hover:text-red-500" />
+                                </motion.button>
+                              </div>
+                            </div>
+                          </motion.button>
+                        )
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Sidebar Footer */}
+                {chatSessions.length > 0 && (
+                  <div className="px-3 py-2 border-t border-gray-100 bg-gray-50/50">
+                    <p className="text-[10px] text-gray-400 text-center">
+                      {chatSessions.length} conversation{chatSessions.length !== 1 ? 's' : ''} saved
+                    </p>
+                  </div>
+                )}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Chat Column (messages + input) */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+
       {/* Messages Container */}
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
         <AnimatePresence>
@@ -1293,7 +1705,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                 className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center ${
                   message.type === 'user'
                     ? 'bg-gradient-to-br from-gray-600 to-gray-700'
-                    : 'bg-gradient-to-br from-primary-600 to-primary-800'
+                    : 'bg-gradient-to-br from-slate-800 to-slate-700'
                 } shadow-md`}
               >
                 {message.type === 'user' ? (
@@ -1309,7 +1721,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                   whileHover={{ scale: 1.01 }}
                   className={`rounded-2xl px-4 py-3 ${
                     message.type === 'user'
-                      ? 'bg-gradient-to-br from-primary-600 to-primary-700 text-white'
+                      ? 'bg-gradient-to-br from-slate-800 to-slate-700 text-white'
                       : 'bg-white border border-gray-200 shadow-sm'
                   }`}
                 >
@@ -1322,7 +1734,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                     (() => {
                       const hasCandidates = message.candidates && message.candidates.length > 0
                       const split = hasCandidates
-                        ? splitContentByCandidates(message.content, message.candidates!.length)
+                        ? splitContentByCandidates(message.content, message.candidates!)
                         : null
 
                       return (
@@ -1364,10 +1776,10 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                       return allSelected ? new Set() : new Set(all)
                                     })
                                   }}
-                                  className="text-xs text-gray-600 hover:text-blue-600 flex items-center gap-1"
+                                  className="text-xs text-gray-600 hover:text-sky-600 flex items-center gap-1"
                                 >
                                   {message.candidates!.every(c => selectedIds.has(c.id))
-                                    ? <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
+                                    ? <CheckSquare className="w-3.5 h-3.5 text-sky-600" />
                                     : <Square className="w-3.5 h-3.5" />}
                                   {selectedIds.size > 0 ? `${[...selectedIds].filter(id => message.candidates!.some(c => c.id === id)).length} selected` : 'Select all'}
                                 </button>
@@ -1386,136 +1798,119 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                 )}
                               </div>
 
-                              {message.candidates!.map((candidate, idx) => (
+                              {message.candidates!.map((candidate, idx) => {
+                                const matchedSection = split!.sections.find(s => s.candidateId === candidate.id)
+                                const sectionText = matchedSection?.text || ''
+                                return (
                                 <motion.div
                                   key={candidate.id}
                                   initial={{ opacity: 0, x: -20 }}
                                   animate={{ opacity: 1, x: 0 }}
                                   transition={{ delay: 0.4 + idx * 0.05 }}
                                 >
-                                  {/* Per-candidate AI detail section */}
-                                  {split.sections[idx] && (
-                                    <div 
-                                      className="text-xs leading-relaxed whitespace-pre-wrap ai-response-content bg-gray-50 border border-gray-100 rounded-t-xl px-3 py-2 text-gray-700"
-                                      onClick={(e) => {
-                                        const target = e.target as HTMLElement
-                                        const link = target.closest('a.ai-candidate-link')
-                                        if (link) {
-                                          e.preventDefault()
-                                          const candidateId = link.getAttribute('data-candidate-id')
-                                          if (candidateId) navigate(`/candidates/${candidateId}`)
-                                        }
-                                      }}
-                                      dangerouslySetInnerHTML={{ 
-                                        __html: formatAIContent(split.sections[idx], message.candidates)
-                                      }} 
-                                    />
+                                  {/* Separator line between candidates */}
+                                  {idx > 0 && (
+                                    <div className="my-3 border-t-2 border-dashed border-gray-200" />
                                   )}
-                                  {/* Candidate card */}
+                                  {/* Unified candidate card */}
                                   <Card 
-                                    className={`hover:shadow-md transition-all border-2 overflow-hidden ${split.sections[idx] ? 'rounded-t-none border-t-0' : ''} ${
-                                      selectedIds.has(candidate.id) ? 'border-blue-400 bg-blue-50/30' : 'hover:border-primary-200'
+                                    className={`overflow-hidden border-2 hover:shadow-md transition-all ${
+                                      selectedIds.has(candidate.id) ? 'border-sky-400 bg-sky-50/30' : 'hover:border-sky-200'
                                     }`}
                                   >
-                                    <CardContent className="p-3">
-                                      {/* Row 1: Checkbox + Rank + Avatar + Name ... Score + Status */}
-                                      <div className="flex items-center gap-2">
-                                        <button
-                                          onClick={(e) => { e.stopPropagation(); toggleSelect(candidate.id) }}
-                                          className="flex-shrink-0"
-                                        >
-                                          {selectedIds.has(candidate.id)
-                                            ? <CheckSquare className="w-4.5 h-4.5 text-blue-600" />
-                                            : <Square className="w-4.5 h-4.5 text-gray-400 hover:text-gray-600" />}
-                                        </button>
-                                        <div className="w-7 h-7 flex-shrink-0 rounded-full bg-gradient-to-br from-primary-100 to-primary-200 flex items-center justify-center text-primary-700 font-bold text-xs">
-                                          {idx + 1}
-                                        </div>
-                                        <Avatar className="w-8 h-8 flex-shrink-0 border-2 border-white shadow">
-                                          <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-primary-100 to-primary-200 text-primary-700">
-                                            {candidate.name.charAt(0)}
-                                          </AvatarFallback>
-                                        </Avatar>
-                                        <div className="min-w-0 flex-1 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
-                                          <h4 className="font-semibold text-gray-900 text-sm truncate hover:text-blue-600">{candidate.name}</h4>
-                                          <p className="text-xs text-gray-500 flex items-center gap-1 truncate">
-                                            <MapPin className="w-3 h-3 flex-shrink-0" />
-                                            <span className="truncate">{candidate.location || 'N/A'}</span>
-                                          </p>
-                                        </div>
-                                        <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-                                          <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
-                                            {(candidate.matchScore ?? 50).toFixed(0)}%
-                                          </p>
-                                          <Badge
-                                            className={`text-xs whitespace-nowrap ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}
-                                          >
-                                            {candidate.status}
-                                          </Badge>
-                                        </div>
+                                    {/* Header: Checkbox + Rank + Avatar + Name + Score + Actions */}
+                                    <div className="flex items-center gap-2 px-3 py-2.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100">
+                                      <button
+                                        onClick={(e) => { e.stopPropagation(); toggleSelect(candidate.id) }}
+                                        className="flex-shrink-0"
+                                      >
+                                        {selectedIds.has(candidate.id)
+                                          ? <CheckSquare className="w-4.5 h-4.5 text-sky-600" />
+                                          : <Square className="w-4.5 h-4.5 text-gray-400 hover:text-gray-600" />}
+                                      </button>
+                                      <div className="w-7 h-7 flex-shrink-0 rounded-full bg-gradient-to-br from-sky-100 to-sky-200 flex items-center justify-center text-sky-700 font-bold text-xs">
+                                        {idx + 1}
                                       </div>
-                                      {/* Row 2: Skills ... Action buttons */}
-                                      <div className="flex items-center justify-between mt-2 pl-[4.5rem]">
-                                        <div className="flex items-center gap-1 flex-wrap min-w-0 overflow-hidden max-w-[60%]">
-                                          {candidate.skills.slice(0, 3).map((skill: string) => (
-                                            <Badge key={skill} variant="outline" className="text-[10px] px-1.5 py-0 whitespace-nowrap">
-                                              {skill.length > 12 ? skill.slice(0, 12) + '..' : skill}
-                                            </Badge>
-                                          ))}
-                                          {(candidate as any).jobCategory && (candidate as any).jobCategory !== 'General' && (
-                                            <Badge className="text-[10px] px-1.5 py-0 bg-blue-50 text-blue-700 border border-blue-200 whitespace-nowrap">
-                                              {((candidate as any).jobCategory || '').length > 16 ? ((candidate as any).jobCategory || '').slice(0, 16) + '..' : (candidate as any).jobCategory}
-                                            </Badge>
-                                          )}
-                                        </div>
-                                        <div className="flex items-center gap-1.5 flex-shrink-0">
+                                      <Avatar className="w-8 h-8 flex-shrink-0 border-2 border-white shadow">
+                                        <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700">
+                                          {candidate.name.charAt(0)}
+                                        </AvatarFallback>
+                                      </Avatar>
+                                      <div className="min-w-0 flex-1 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
+                                        <h4 className="font-semibold text-gray-900 text-sm truncate hover:text-sky-600">{candidate.name}</h4>
+                                        <p className="text-xs text-gray-500 flex items-center gap-1 truncate">
+                                          <MapPin className="w-3 h-3 flex-shrink-0" />
+                                          <span className="truncate">{candidate.location || 'N/A'}</span>
+                                        </p>
+                                      </div>
+                                      <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
+                                        <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
+                                          {(candidate.matchScore ?? 50).toFixed(0)}%
+                                        </p>
+                                        <Badge className={`text-xs whitespace-nowrap ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}>
+                                          {candidate.status}
+                                        </Badge>
+                                        <motion.button
+                                          whileHover={{ scale: 1.1 }}
+                                          whileTap={{ scale: 0.9 }}
+                                          onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }}
+                                          className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"
+                                        >
+                                          <Eye className="w-3 h-3" />View
+                                        </motion.button>
+                                        {candidate.status !== 'Shortlisted' ? (
                                           <motion.button
                                             whileHover={{ scale: 1.1 }}
                                             whileTap={{ scale: 0.9 }}
-                                            onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }}
-                                            className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"
-                                            title="View profile"
+                                            onClick={async (e) => {
+                                              e.stopPropagation()
+                                              try {
+                                                await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+                                                if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id)
+                                                setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${candidate.name}** has been shortlisted. Notification email queued.`, timestamp: new Date(), intent: 'shortlist_single' }])
+                                              } catch (err) { console.error('Shortlist error:', err) }
+                                            }}
+                                            className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"
                                           >
-                                            <Eye className="w-3 h-3" />
-                                            View
+                                            <CheckCircle2 className="w-3 h-3" />Shortlist
                                           </motion.button>
-                                          {candidate.status !== 'Shortlisted' && (
-                                            <motion.button
-                                              whileHover={{ scale: 1.1 }}
-                                              whileTap={{ scale: 0.9 }}
-                                              onClick={async (e) => {
-                                                e.stopPropagation()
-                                                try {
-                                                  await candidateApi.updateStatus(candidate.id, 'Shortlisted')
-                                                  if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id)
-                                                  const confirmMsg: Message = {
-                                                    id: Date.now().toString(),
-                                                    type: 'ai',
-                                                    content: `**${candidate.name}** has been shortlisted.`,
-                                                    timestamp: new Date(),
-                                                    intent: 'shortlist_single',
-                                                  }
-                                                  setMessages(prev => [...prev, confirmMsg])
-                                                } catch (err) {
-                                                  console.error('Shortlist error:', err)
-                                                }
-                                              }}
-                                              className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"
-                                              title="Shortlist this candidate"
-                                            >
-                                              <CheckCircle2 className="w-3 h-3" />
-                                              Shortlist
-                                            </motion.button>
-                                          )}
-                                          {candidate.status === 'Shortlisted' && (
-                                            <Badge className="bg-green-100 text-green-700 text-xs whitespace-nowrap">Shortlisted</Badge>
-                                          )}
-                                        </div>
+                                        ) : <Badge className="bg-green-100 text-green-700 text-xs whitespace-nowrap">Shortlisted ✓</Badge>}
                                       </div>
-                                    </CardContent>
+                                    </div>
+                                    {/* Skills row */}
+                                    <div className="flex items-center gap-1 flex-wrap px-3 py-1.5 bg-white border-b border-gray-100">
+                                      {candidate.skills.slice(0, 4).map((skill: string) => (
+                                        <Badge key={skill} variant="outline" className="text-[10px] px-1.5 py-0 whitespace-nowrap">
+                                          {skill.length > 14 ? skill.slice(0, 14) + '..' : skill}
+                                        </Badge>
+                                      ))}
+                                      {(candidate as any).jobCategory && (candidate as any).jobCategory !== 'General' && (
+                                        <Badge className="text-[10px] px-1.5 py-0 bg-sky-50 text-sky-700 border border-sky-200 whitespace-nowrap">
+                                          {((candidate as any).jobCategory || '').length > 16 ? ((candidate as any).jobCategory || '').slice(0, 16) + '..' : (candidate as any).jobCategory}
+                                        </Badge>
+                                      )}
+                                    </div>
+                                    {/* AI description (if available) */}
+                                    {sectionText && (
+                                      <div 
+                                        className="text-xs leading-relaxed whitespace-pre-wrap ai-response-content px-3 py-2.5 text-gray-700 bg-gray-50/50"
+                                        onClick={(e) => {
+                                          const target = e.target as HTMLElement
+                                          const link = target.closest('a.ai-candidate-link')
+                                          if (link) {
+                                            e.preventDefault()
+                                            const candidateId = link.getAttribute('data-candidate-id')
+                                            if (candidateId) navigate(`/candidates/${candidateId}`)
+                                          }
+                                        }}
+                                        dangerouslySetInnerHTML={{ 
+                                          __html: formatAIContent(sectionText, message.candidates)
+                                        }} 
+                                      />
+                                    )}
                                   </Card>
                                 </motion.div>
-                              ))}
+                              )})})
                             </motion.div>
                           )}
                         </>
@@ -1534,11 +1929,11 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                       {message.insights.map((insight, idx) => {
                         const Icon = insight.icon
                         const colorClasses: Record<string, string> = {
-                          blue: 'bg-blue-50 text-blue-700 border-blue-200',
+                          blue: 'bg-sky-50 text-sky-700 border-sky-200',
                           green: 'bg-green-50 text-green-700 border-green-200',
                           yellow: 'bg-yellow-50 text-yellow-700 border-yellow-200',
-                          purple: 'bg-primary-50 text-primary-700 border-primary-200',
-                          indigo: 'bg-primary-50 text-primary-700 border-primary-200',
+                          purple: 'bg-sky-50 text-sky-700 border-sky-200',
+                          indigo: 'bg-sky-50 text-sky-700 border-sky-200',
                           orange: 'bg-orange-50 text-orange-700 border-orange-200',
                           red: 'bg-red-50 text-red-700 border-red-200',
                         }
@@ -1563,7 +1958,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                   
                   {/* Candidate Results (non-split fallback: when AI text has no per-candidate sections) */}
                   {message.candidates && message.candidates.length > 0 && (() => {
-                    const split = splitContentByCandidates(message.content, message.candidates!.length)
+                    const split = splitContentByCandidates(message.content, message.candidates!)
                     // Only render old-style list if we didn't already render interleaved above
                     return split.sections.length > 0 ? null : (
                     <motion.div
@@ -1581,10 +1976,10 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                               return allSelected ? new Set() : new Set(all)
                             })
                           }}
-                          className="text-xs text-gray-600 hover:text-blue-600 flex items-center gap-1"
+                          className="text-xs text-gray-600 hover:text-sky-600 flex items-center gap-1"
                         >
                           {message.candidates!.every(c => selectedIds.has(c.id))
-                            ? <CheckSquare className="w-3.5 h-3.5 text-blue-600" />
+                            ? <CheckSquare className="w-3.5 h-3.5 text-sky-600" />
                             : <Square className="w-3.5 h-3.5" />}
                           {selectedIds.size > 0 ? `${[...selectedIds].filter(id => message.candidates!.some(c => c.id === id)).length} selected` : 'Select all'}
                         </button>
@@ -1610,43 +2005,48 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                           animate={{ opacity: 1, x: 0 }}
                           transition={{ delay: 0.4 + idx * 0.05 }}
                         >
+                          {/* Separator line between candidates */}
+                          {idx > 0 && (
+                            <div className="my-3 border-t-2 border-dashed border-gray-200" />
+                          )}
                           <Card 
                             className={`hover:shadow-md transition-all border-2 overflow-hidden ${
-                              selectedIds.has(candidate.id) ? 'border-blue-400 bg-blue-50/30' : 'hover:border-primary-200'
+                              selectedIds.has(candidate.id) ? 'border-sky-400 bg-sky-50/30' : 'hover:border-sky-200'
                             }`}
                           >
-                            <CardContent className="p-3">
-                              <div className="flex items-center gap-2">
-                                <button onClick={(e) => { e.stopPropagation(); toggleSelect(candidate.id) }} className="flex-shrink-0">
-                                  {selectedIds.has(candidate.id) ? <CheckSquare className="w-4.5 h-4.5 text-blue-600" /> : <Square className="w-4.5 h-4.5 text-gray-400 hover:text-gray-600" />}
-                                </button>
-                                <div className="w-7 h-7 flex-shrink-0 rounded-full bg-gradient-to-br from-primary-100 to-primary-200 flex items-center justify-center text-primary-700 font-bold text-xs">{idx + 1}</div>
-                                <Avatar className="w-8 h-8 flex-shrink-0 border-2 border-white shadow">
-                                  <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-primary-100 to-primary-200 text-primary-700">{candidate.name.charAt(0)}</AvatarFallback>
-                                </Avatar>
-                                <div className="min-w-0 flex-1 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
-                                  <h4 className="font-semibold text-gray-900 text-sm truncate hover:text-blue-600">{candidate.name}</h4>
-                                  <p className="text-xs text-gray-500 flex items-center gap-1 truncate"><MapPin className="w-3 h-3 flex-shrink-0" /><span className="truncate">{candidate.location || 'N/A'}</span></p>
-                                </div>
-                                <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-                                  <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</p>
-                                  <Badge className={`text-xs whitespace-nowrap ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}>{candidate.status}</Badge>
-                                </div>
+                            {/* Header: Checkbox + Rank + Avatar + Name + Score + Actions */}
+                            <div className="flex items-center gap-2 px-3 py-2.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100">
+                              <button onClick={(e) => { e.stopPropagation(); toggleSelect(candidate.id) }} className="flex-shrink-0">
+                                {selectedIds.has(candidate.id) ? <CheckSquare className="w-4 h-4 text-sky-600" /> : <Square className="w-4 h-4 text-gray-400 hover:text-gray-600" />}
+                              </button>
+                              <div className="w-7 h-7 flex-shrink-0 rounded-full bg-gradient-to-br from-sky-100 to-sky-200 flex items-center justify-center text-sky-700 font-bold text-xs">{idx + 1}</div>
+                              <Avatar className="w-8 h-8 flex-shrink-0 border-2 border-white shadow">
+                                <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700">{candidate.name.charAt(0)}</AvatarFallback>
+                              </Avatar>
+                              <div className="min-w-0 flex-1 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
+                                <h4 className="text-sm font-semibold text-gray-900 truncate hover:text-sky-600">{candidate.name}</h4>
+                                <p className="text-xs text-gray-500 flex items-center gap-1 truncate"><MapPin className="w-3 h-3 flex-shrink-0" /><span className="truncate">{candidate.location || 'N/A'}</span></p>
                               </div>
-                              <div className="flex items-center justify-between mt-2 pl-[4.5rem]">
-                                <div className="flex items-center gap-1 flex-wrap min-w-0 overflow-hidden max-w-[60%]">
-                                  {candidate.skills.slice(0, 3).map((skill: string) => (
-                                    <Badge key={skill} variant="outline" className="text-[10px] px-1.5 py-0 whitespace-nowrap">{skill.length > 12 ? skill.slice(0, 12) + '..' : skill}</Badge>
-                                  ))}
-                                </div>
-                                <div className="flex items-center gap-1.5 flex-shrink-0">
-                                  <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }} className="px-2 py-1 bg-blue-100 hover:bg-blue-200 text-blue-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><Eye className="w-3 h-3" />View</motion.button>
-                                  {candidate.status !== 'Shortlisted' ? (
-                                    <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={async (e) => { e.stopPropagation(); try { await candidateApi.updateStatus(candidate.id, 'Shortlisted'); if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id); setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${candidate.name}** has been shortlisted.`, timestamp: new Date(), intent: 'shortlist_single' }]) } catch (err) { console.error('Shortlist error:', err) } }} className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><CheckCircle2 className="w-3 h-3" />Shortlist</motion.button>
-                                  ) : <Badge className="bg-green-100 text-green-700 text-xs whitespace-nowrap">Shortlisted</Badge>}
-                                </div>
+                              <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
+                                <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</p>
+                                <Badge className={`text-xs whitespace-nowrap ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}>{candidate.status}</Badge>
+                                <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }} className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><Eye className="w-3 h-3" />View</motion.button>
+                                {candidate.status !== 'Shortlisted' ? (
+                                  <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={async (e) => { e.stopPropagation(); try { await candidateApi.updateStatus(candidate.id, 'Shortlisted'); if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id); setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${candidate.name}** has been shortlisted. Notification email queued.`, timestamp: new Date(), intent: 'shortlist_single' }]) } catch (err) { console.error('Shortlist error:', err) } }} className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><CheckCircle2 className="w-3 h-3" />Shortlist</motion.button>
+                                ) : <Badge className="bg-green-100 text-green-700 text-xs whitespace-nowrap">Shortlisted ✓</Badge>}
                               </div>
-                            </CardContent>
+                            </div>
+                            {/* Skills row */}
+                            <div className="flex items-center gap-1 flex-wrap px-3 py-1.5 bg-white">
+                              {candidate.skills.slice(0, 4).map((skill: string) => (
+                                <Badge key={skill} variant="outline" className="text-[10px] px-1.5 py-0 whitespace-nowrap">{skill.length > 14 ? skill.slice(0, 14) + '..' : skill}</Badge>
+                              ))}
+                              {(candidate as any).jobCategory && (candidate as any).jobCategory !== 'General' && (
+                                <Badge className="text-[10px] px-1.5 py-0 bg-sky-50 text-sky-700 border border-sky-200 whitespace-nowrap">
+                                  {((candidate as any).jobCategory || '').length > 16 ? ((candidate as any).jobCategory || '').slice(0, 16) + '..' : (candidate as any).jobCategory}
+                                </Badge>
+                              )}
+                            </div>
                           </Card>
                         </motion.div>
                       ))}
@@ -1665,7 +2065,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                       {message.actions.map((action, idx) => {
                         const Icon = action.icon
                         const variants: Record<string, string> = {
-                          primary: 'bg-primary-600 hover:bg-primary-700 text-white',
+                          primary: 'bg-slate-800 hover:bg-slate-700 text-white',
                           secondary: 'bg-gray-100 hover:bg-gray-200 text-gray-700',
                           success: 'bg-green-600 hover:bg-green-700 text-white',
                           warning: 'bg-orange-500 hover:bg-orange-600 text-white'
@@ -1703,7 +2103,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
             exit={{ opacity: 0 }}
             className="flex gap-3"
           >
-            <div className="w-10 h-10 bg-gradient-to-br from-primary-600 to-primary-800 rounded-full flex items-center justify-center shadow-md">
+            <div className="w-10 h-10 bg-gradient-to-br from-slate-800 to-slate-700 rounded-full flex items-center justify-center shadow-md">
               <Bot className="w-5 h-5 text-white" />
             </div>
             <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3 shadow-sm">
@@ -1781,7 +2181,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={handleKeyPress}
                 placeholder="Ask about ML ranking, duplicates, analytics, templates, scheduling..."
-                className="w-full px-4 py-3 pr-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-primary-400 transition-colors text-sm"
+                className="w-full px-4 py-3 pr-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-sky-400 transition-colors text-sm"
                 disabled={isTyping}
               />
               <div className="absolute right-3 top-1/2 -translate-y-1/2">
@@ -1811,6 +2211,9 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
           </p>
         </div>
       </motion.div>
+
+      </div>{/* /Chat Column */}
+      </div>{/* /Main Content Area */}
 
       {/* Job Description Matching Modal */}
       <JobMatchModal

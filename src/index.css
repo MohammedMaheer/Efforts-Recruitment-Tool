@@ -59,22 +59,22 @@
   }
 }
 
-/* Custom scrollbar */
+/* Custom scrollbar — branded */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  @apply bg-gray-100;
+  @apply bg-transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  @apply bg-gray-300 rounded-full;
+  @apply bg-gray-300/60 rounded-full;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  @apply bg-gray-400;
+  @apply bg-gray-400/80;
 }
 
 /* Smooth transitions */
@@ -90,6 +90,41 @@
 /* Premium card effect */
 .premium-card {
   @apply bg-white rounded-xl shadow-soft hover:shadow-medium transition-all duration-300;
+}
+
+/* Brand gradient utilities */
+.brand-gradient {
+  background: linear-gradient(135deg, #0f172a 0%, #1e3a5f 50%, #0c4a6e 100%);
+}
+
+.brand-gradient-light {
+  background: linear-gradient(135deg, #f0f9ff 0%, #e0f2fe 50%, #eff6ff 100%);
+}
+
+.brand-text-gradient {
+  background: linear-gradient(135deg, #0f172a, #0369a1);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* Subtle dot pattern for backgrounds */
+.bg-dot-pattern {
+  background-image: radial-gradient(circle, #e2e8f0 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+/* Brand accent line */
+.brand-accent-line {
+  height: 3px;
+  background: linear-gradient(90deg, #38bdf8, #818cf8, #38bdf8);
+  background-size: 200% 100%;
+  animation: shimmer 3s ease-in-out infinite;
+}
+
+@keyframes shimmer {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
 }
 
 /* Table cell overflow prevention utilities */

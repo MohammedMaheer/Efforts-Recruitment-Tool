@@ -276,8 +276,8 @@ export default function Candidates() {
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 bg-blue-100 rounded-xl flex items-center justify-center">
-            <Users className="w-5 h-5 text-blue-600" />
+          <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center">
+            <Users className="w-5 h-5 text-sky-300" />
           </div>
           <div>
             <h1 className="text-2xl font-bold text-gray-900">Candidates</h1>
@@ -330,7 +330,7 @@ export default function Candidates() {
             <select
               value={sortBy}
               onChange={(e) => setSortBy(e.target.value as SortOption)}
-              className="h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white text-sm"
+              className="h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white text-sm"
             >
               <option value="score-desc">Highest Score</option>
               <option value="score-asc">Lowest Score</option>
@@ -344,7 +344,7 @@ export default function Candidates() {
           <select
             value={selectedCategory}
             onChange={(e) => setSelectedCategory(e.target.value)}
-            className="h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent bg-white"
+            className="h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent bg-white"
           >
             {categories.map((cat) => (
               <option key={cat} value={cat}>
@@ -373,7 +373,7 @@ export default function Candidates() {
                 type="date"
                 value={dateRange.start}
                 onChange={(e) => setDateRange(prev => ({ ...prev, start: e.target.value }))}
-                className="w-full h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
               />
             </div>
             <div>
@@ -386,7 +386,7 @@ export default function Candidates() {
                   type="date"
                   value={dateRange.end}
                   onChange={(e) => setDateRange(prev => ({ ...prev, end: e.target.value }))}
-                  className="flex-1 h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                  className="flex-1 h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
                 />
                 {(dateRange.start || dateRange.end) && (
                   <Button variant="ghost" size="sm" onClick={clearDateRange} className="px-2">
@@ -417,7 +417,7 @@ export default function Candidates() {
               <select
                 value={filters.status}
                 onChange={(e) => setFilters({ ...filters, status: e.target.value })}
-                className="w-full h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-transparent"
+                className="w-full h-10 px-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-sky-500 focus:border-transparent"
               >
                 <option value="all">All Statuses</option>
                 <option value="Strong">Strong Match (70%+)</option>
@@ -637,7 +637,7 @@ export default function Candidates() {
                                   {candidate.email && (
                                     <button
                                       onClick={(e) => openContact(e, 'email', candidate)}
-                                      className="p-1 rounded-full hover:bg-blue-100 text-blue-600 transition-colors"
+                                      className="p-1 rounded-full hover:bg-sky-100 text-sky-600 transition-colors"
                                       title="Send Email"
                                     >
                                       <Mail className="w-3.5 h-3.5" />
@@ -664,7 +664,7 @@ export default function Candidates() {
                                   {isValidPhone(candidate.phone) && (
                                     <button
                                       onClick={(e) => openContact(e, 'phone', candidate)}
-                                      className="p-1 rounded-full hover:bg-blue-100 text-blue-600 transition-colors"
+                                      className="p-1 rounded-full hover:bg-sky-100 text-sky-600 transition-colors"
                                       title="Call"
                                     >
                                       <Phone className="w-3.5 h-3.5" />
@@ -680,7 +680,7 @@ export default function Candidates() {
                               <TableCell className="w-[40px]">
                                 <button
                                   onClick={(e) => { e.stopPropagation(); generateQuickProfilePDF(candidate) }}
-                                  className="p-1.5 rounded-full hover:bg-primary-100 text-primary-600 transition-colors"
+                                  className="p-1.5 rounded-full hover:bg-sky-100 text-sky-600 transition-colors"
                                   title="Download PDF Report"
                                 >
                                   <Download className="w-3.5 h-3.5" />
@@ -875,7 +875,7 @@ export default function Candidates() {
                         )}
                         <button
                           onClick={(e) => { e.stopPropagation(); generateQuickProfilePDF(candidate) }}
-                          className="p-1 rounded-full hover:bg-primary-100 text-primary-600 transition-colors"
+                          className="p-1 rounded-full hover:bg-sky-100 text-sky-600 transition-colors"
                           title="Download PDF Report"
                         >
                           <Download className="w-3.5 h-3.5" />
@@ -914,7 +914,7 @@ export default function Candidates() {
         <div className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg border transition-all duration-300 max-w-md ${
           toast.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
           toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' :
-          'bg-blue-50 border-blue-200 text-blue-800'
+          'bg-sky-50 border-sky-200 text-sky-800'
         }`}>
           {toast.type === 'success' ? <CheckCircle className="w-4 h-4 flex-shrink-0" /> :
            toast.type === 'error' ? <XCircle className="w-4 h-4 flex-shrink-0" /> :

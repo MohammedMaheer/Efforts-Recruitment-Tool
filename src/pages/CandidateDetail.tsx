@@ -250,7 +250,7 @@ export default function CandidateDetail() {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-sky-500 mx-auto mb-4"></div>
           <p className="text-gray-500">Loading candidate...</p>
         </div>
       </div>
@@ -282,7 +282,7 @@ export default function CandidateDetail() {
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
         <button
           onClick={() => navigate('/candidates')}
-          className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-blue-600 transition-colors font-medium"
+          className="inline-flex items-center gap-1.5 text-sm text-gray-500 hover:text-sky-600 transition-colors font-medium"
         >
           <ArrowLeft className="w-3.5 h-3.5" />
           Back to Candidates
@@ -304,7 +304,7 @@ export default function CandidateDetail() {
               <div className="flex items-start gap-4 flex-1 min-w-0">
                 <Avatar className="w-16 h-16 ring-2 ring-gray-100 flex-shrink-0">
                   <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${candidate.name}&backgroundColor=1e40af&textColor=ffffff`} />
-                  <AvatarFallback className="text-xl bg-blue-700 text-white font-semibold">{candidate.name.charAt(0)}</AvatarFallback>
+                  <AvatarFallback className="text-xl bg-slate-800 text-white font-semibold">{candidate.name.charAt(0)}</AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap mb-1.5">
@@ -344,7 +344,7 @@ export default function CandidateDetail() {
                   {/* Quick Contact Row */}
                   <div className="flex items-center gap-1.5 mt-3 flex-wrap">
                     {candidate.email && (
-                      <button onClick={() => window.location.href = `mailto:${candidate.email}?subject=Regarding Your Application&body=Hi ${candidate.name},%0A%0A`} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md border border-blue-200 text-blue-600 bg-blue-50/50 hover:bg-blue-100 transition-colors">
+                      <button onClick={() => window.location.href = `mailto:${candidate.email}?subject=Regarding Your Application&body=Hi ${candidate.name},%0A%0A`} className="inline-flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded-md border border-sky-200 text-sky-600 bg-sky-50/50 hover:bg-sky-100 transition-colors">
                         <Mail className="w-3 h-3" />Email
                       </button>
                     )}
@@ -381,7 +381,7 @@ export default function CandidateDetail() {
                     size="sm"
                     onClick={handleAIAnalysis}
                     disabled={isAnalyzing}
-                    className="bg-gradient-to-r from-blue-600 to-blue-700 text-white hover:from-blue-700 hover:to-blue-800 shadow-sm text-xs h-8"
+                    className="bg-gradient-to-r from-slate-800 to-slate-700 text-white hover:from-slate-700 hover:to-slate-600 shadow-sm text-xs h-8"
                   >
                     {isAnalyzing ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1" />}
                     {isAnalyzing ? 'Analyzing...' : aiAnalysis ? 'Refresh' : 'AI Analysis'}
@@ -414,12 +414,12 @@ export default function CandidateDetail() {
       {/* AI Analysis — Compact Assessment Card */}
       {aiAnalysis && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          <Card className="border border-blue-100 bg-white overflow-hidden">
-            <div className="h-0.5 bg-gradient-to-r from-blue-500 to-indigo-500" />
+          <Card className="border border-sky-100 bg-white overflow-hidden">
+            <div className="h-0.5 bg-gradient-to-r from-sky-500 to-indigo-500" />
             <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-blue-600" />
+                  <Sparkles className="w-4 h-4 text-sky-500" />
                   <CardTitle className="text-sm font-semibold text-gray-900">AI Assessment</CardTitle>
                   {aiAnalysis.isFallback && <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Basic</span>}
                   {aiAnalysis.from_cache && <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Cached</span>}
@@ -514,7 +514,7 @@ export default function CandidateDetail() {
                   {aiAnalysis.ideal_roles?.length > 0 && (
                     <div>
                       <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Ideal Roles</h4>
-                      <div className="flex flex-wrap gap-1">{aiAnalysis.ideal_roles.map((r: string, i: number) => <span key={i} className="text-xs bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full border border-blue-100">{r}</span>)}</div>
+                      <div className="flex flex-wrap gap-1">{aiAnalysis.ideal_roles.map((r: string, i: number) => <span key={i} className="text-xs bg-sky-50 text-sky-700 px-2 py-0.5 rounded-full border border-sky-100">{r}</span>)}</div>
                       {aiAnalysis.salary_range_estimate && <p className="text-[11px] text-gray-400 mt-1.5">Est. Salary: {aiAnalysis.salary_range_estimate}</p>}
                     </div>
                   )}
@@ -523,7 +523,7 @@ export default function CandidateDetail() {
 
               {/* Recommendation + Confidence */}
               {aiAnalysis.hiring_recommendation_rationale && (
-                <div className="bg-blue-50/60 rounded-lg p-3 border border-blue-100">
+                <div className="bg-sky-50/60 rounded-lg p-3 border border-sky-100">
                   <p className="text-sm text-gray-800 leading-relaxed">{aiAnalysis.hiring_recommendation_rationale}</p>
                   {aiAnalysis.culture_fit_notes && <p className="text-xs text-gray-500 mt-2">Culture: {aiAnalysis.culture_fit_notes}</p>}
                 </div>
@@ -576,7 +576,7 @@ export default function CandidateDetail() {
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Skills & Expertise</h3>
                 <div className="flex flex-wrap gap-1.5">
                   {candidate.skills.map((skill) => (
-                    <span key={skill} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-blue-50 text-blue-700 border border-blue-100">
+                    <span key={skill} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-sky-50 text-sky-700 border border-sky-100">
                       {skill}
                     </span>
                   ))}
@@ -596,7 +596,7 @@ export default function CandidateDetail() {
                   {candidate.workHistory && candidate.workHistory.length > 0 ? (
                     candidate.workHistory.map((job, index) => (
                       <div key={index} className="relative pl-5 pb-4 last:pb-0 border-l border-gray-200 last:border-l-transparent">
-                        <div className="absolute left-0 top-1 w-2 h-2 -translate-x-[5px] rounded-full bg-blue-600 ring-2 ring-white" />
+                        <div className="absolute left-0 top-1 w-2 h-2 -translate-x-[5px] rounded-full bg-slate-800 ring-2 ring-white" />
                         <h4 className="text-sm font-semibold text-gray-900">{job.title}</h4>
                         {(job.company || job.duration) && (
                           <p className="text-xs text-gray-500 mt-0.5">
@@ -672,7 +672,7 @@ export default function CandidateDetail() {
                       </h3>
                       <div className="flex flex-wrap gap-1.5">
                         {candidate.languages.map((lang, i) => (
-                          <span key={i} className="text-xs px-2 py-0.5 rounded-full border border-blue-100 bg-blue-50/50 text-blue-700">{lang}</span>
+                          <span key={i} className="text-xs px-2 py-0.5 rounded-full border border-sky-100 bg-sky-50/50 text-sky-700">{lang}</span>
                         ))}
                       </div>
                     </CardContent>
@@ -688,7 +688,7 @@ export default function CandidateDetail() {
           {/* Match Score — compact */}
           <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.05 }}>
             <Card className="border-0 shadow-sm overflow-hidden">
-              <div className="h-1 bg-gradient-to-r from-blue-500 to-blue-600" />
+              <div className="h-1 bg-gradient-to-r from-sky-500 to-sky-600" />
               <CardContent className="p-4 text-center">
                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Match Score</p>
                 <div className={`text-4xl font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
@@ -741,7 +741,7 @@ export default function CandidateDetail() {
           {candidate.evaluation && (
             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.15 }}>
               <Card className="border-0 shadow-sm overflow-hidden">
-                <div className="h-0.5 bg-blue-500" />
+                <div className="h-0.5 bg-sky-500" />
                 <CardContent className="p-4 space-y-3">
                   <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">AI Evaluation</p>
 

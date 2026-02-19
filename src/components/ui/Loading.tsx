@@ -24,7 +24,7 @@ export function Spinner({ size = 'md', className }: SpinnerProps) {
   return (
     <Loader2
       className={cn(
-        'animate-spin text-primary-600',
+        'animate-spin text-sky-600',
         sizeClasses[size],
         className
       )}

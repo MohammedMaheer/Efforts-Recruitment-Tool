@@ -765,6 +765,7 @@ Return JSON:
         conversation_history: Optional[List[Dict]] = None,
         candidates_data: Optional[List[Dict]] = None,
         return_candidates: bool = False,
+        num_candidates: int = 10,
     ) -> Union[str, Dict]:
         """AI chat assistant with intelligent 2-stage database search.
         
@@ -1033,29 +1034,32 @@ CONVERSATION HISTORY:{history_text}
 
 USER QUERY: {message}
 
+REQUESTED NUMBER OF CANDIDATES: {num_candidates} (The user wants exactly {num_candidates} candidates in the response. Always return this many candidates, sorted by match score descending. If fewer candidates match the criteria, return all matching candidates.)
+
 RESPONSE RULES:
 1. ALWAYS use REAL candidate data from the database above — names, scores, skills, locations, work history, education. NEVER fabricate or hallucinate candidates.
-2. When listing candidates, use this format for EACH candidate:
+2. Return EXACTLY {num_candidates} candidates (or all matching if fewer exist), sorted by match score from highest to lowest.
+3. When listing candidates, use this format for EACH candidate:
    **#N. Candidate Name** | Score: X% | Category | Experience: Xyrs | Location
    - Skills: list key skills
    - Work History: relevant roles
    - Education: degrees
    - Match Reasoning: why they fit the query
    - Contact: email, phone if available
-3. For search/find queries: thoroughly check ALL {relevant_count} candidates listed above, rank by relevance to the query, show ALL matches (not just top 3-5)
-4. Location matching: UAE includes Dubai, Abu Dhabi, Sharjah, Ajman, RAK, etc. Match flexibly (city, country, region).
-5. Skill matching: consider synonyms (e.g., "RPA" = "Robotic Process Automation" = "UiPath" = "Automation Anywhere" = "Blue Prism")
-6. For "how many" / statistics queries: count accurately from the data provided
-7. For comparison queries: side-by-side analysis with strengths and weaknesses
-8. ALWAYS provide actionable next steps: "Shortlist this candidate", "Schedule interview", "Review full profile"
-9. If results are limited, suggest adjusting criteria (e.g., "Try expanding location to all UAE" or "Consider candidates with 5+ years instead of 10+")
-10. Use rich markdown: **bold** names/scores, bullet points, horizontal rules between candidates
-11. Be comprehensive — do not truncate results. If 15 candidates match, show all 15.
-12. For any query you don't understand, ask a clarifying question rather than giving a generic answer.
-13. If asked about shortlisted candidates, filter by status=Shortlisted.
-14. Include the candidate's current status (New, Strong, Shortlisted, etc.) in results."""
+4. For search/find queries: thoroughly check ALL {relevant_count} candidates listed above, rank by relevance to the query, show the top {num_candidates} matches
+5. Location matching: UAE includes Dubai, Abu Dhabi, Sharjah, Ajman, RAK, etc. Match flexibly (city, country, region).
+6. Skill matching: consider synonyms (e.g., "RPA" = "Robotic Process Automation" = "UiPath" = "Automation Anywhere" = "Blue Prism")
+7. For "how many" / statistics queries: count accurately from the data provided
+8. For comparison queries: side-by-side analysis with strengths and weaknesses
+9. ALWAYS provide actionable next steps: "Shortlist this candidate", "Schedule interview", "Review full profile"
+10. If results are limited, suggest adjusting criteria (e.g., "Try expanding location to all UAE" or "Consider candidates with 5+ years instead of 10+")
+11. Use rich markdown: **bold** names/scores, bullet points, horizontal rules between candidates
+12. Return exactly {num_candidates} candidates unless fewer match. Sort by match score descending (highest first).
+13. For any query you don't understand, ask a clarifying question rather than giving a generic answer.
+14. If asked about shortlisted candidates, filter by status=Shortlisted.
+15. Include the candidate's current status (New, Strong, Shortlisted, etc.) in results."""
 
-        result = await self._agenerate(prompt, temperature=0.3, max_tokens=3500)
+        result = await self._agenerate(prompt, temperature=0.3, max_tokens=6000)
 
         text_response = result or f"I'm here to help! We have **{total} candidates** in the database. What would you like to know?"
         

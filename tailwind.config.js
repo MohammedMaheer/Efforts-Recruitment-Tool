@@ -73,6 +73,19 @@ export default {
           light: '#fee2e2',
           dark: '#991b1b',
         },
+        brand: {
+          50: '#f0f9ff',
+          100: '#e0f2fe',
+          200: '#bae6fd',
+          300: '#7dd3fc',
+          400: '#38bdf8',
+          500: '#0ea5e9',
+          600: '#0284c7',
+          700: '#0369a1',
+          800: '#075985',
+          900: '#0c4a6e',
+          950: '#0f172a',
+        },
       },
       borderRadius: {
         lg: "var(--radius)",
@@ -81,11 +94,14 @@ export default {
       },
       fontFamily: {
         sans: ['Inter', 'system-ui', 'sans-serif'],
+        display: ['Inter', 'system-ui', 'sans-serif'],
       },
       boxShadow: {
         'soft': '0 2px 8px rgba(0, 0, 0, 0.04)',
         'medium': '0 4px 16px rgba(0, 0, 0, 0.08)',
         'large': '0 8px 32px rgba(0, 0, 0, 0.12)',
+        'brand': '0 4px 24px rgba(15, 23, 42, 0.15)',
+        'glow': '0 0 20px rgba(56, 189, 248, 0.15)',
       },
       keyframes: {
         "accordion-down": {

@@ -351,7 +351,7 @@ export default function SetupWizard() {
   const getSyncColor = (s: string) => {
     switch (s) {
       case 'success': return 'bg-green-100 text-green-800'
-      case 'syncing': return 'bg-blue-100 text-blue-800'
+      case 'syncing': return 'bg-sky-100 text-sky-800'
       case 'failed': return 'bg-red-100 text-red-800'
       default: return 'bg-gray-100 text-gray-800'
     }
@@ -385,7 +385,7 @@ export default function SetupWizard() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader className="w-8 h-8 animate-spin text-blue-600" />
+        <Loader className="w-8 h-8 animate-spin text-sky-600" />
         <span className="ml-3 text-gray-500">Loading configuration…</span>
       </div>
     )
@@ -401,7 +401,7 @@ export default function SetupWizard() {
       <motion.div initial={{ opacity: 0, y: -12 }} animate={{ opacity: 1, y: 0 }}>
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center">
+            <div className="w-10 h-10 rounded-xl bg-slate-800 flex items-center justify-center">
               <Wrench className="w-5 h-5 text-white" />
             </div>
             <div>
@@ -443,7 +443,7 @@ export default function SetupWizard() {
                 key={tab.id}
                 onClick={() => setActiveTab(tab.id)}
                 className={`flex items-center gap-2 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors ${
-                  active ? 'border-blue-600 text-blue-700' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
+                  active ? 'border-sky-600 text-sky-700' : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
                 }`}
               >
                 <Icon className="w-4 h-4" />
@@ -477,19 +477,19 @@ export default function SetupWizard() {
     return (
       <div className="space-y-4">
         {/* Platform Intelligence */}
-        <Card className="border-blue-200 bg-gradient-to-r from-blue-50/60 to-white">
+        <Card className="border-sky-200 bg-gradient-to-r from-sky-50/60 to-white">
           <CardHeader className="pb-2">
             <div className="flex items-center gap-2">
-              <Brain className="w-5 h-5 text-blue-600" />
+              <Brain className="w-5 h-5 text-sky-600" />
               <CardTitle className="text-base">Platform Intelligence</CardTitle>
-              <Badge className="bg-blue-100 text-blue-700 text-[10px]">v18</Badge>
+              <Badge className="bg-sky-100 text-sky-700 text-[10px]">v18</Badge>
             </div>
             <CardDescription className="text-xs">AI engine status, database health & sync pipeline</CardDescription>
           </CardHeader>
           <CardContent>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
               <div className="text-center p-3 bg-white rounded-lg shadow-sm border">
-                <Database className="w-5 h-5 text-blue-600 mx-auto mb-1" />
+                <Database className="w-5 h-5 text-sky-600 mx-auto mb-1" />
                 <p className="text-xl font-bold text-gray-900">{platformStats?.total_candidates?.toLocaleString() || '—'}</p>
                 <p className="text-[10px] text-gray-500">Total Candidates</p>
               </div>
@@ -511,7 +511,7 @@ export default function SetupWizard() {
             </div>
             <div className="mt-3 grid grid-cols-3 gap-2">
               {[
-                { l: 'AI Chat Tokens', v: '3,500', c: 'text-blue-600' },
+                { l: 'AI Chat Tokens', v: '3,500', c: 'text-sky-600' },
                 { l: 'Sync Interval', v: `${oauthStatus?.sync_interval_minutes || 60} min`, c: 'text-green-600' },
                 { l: 'Strong Matches', v: platformStats?.strong_matches?.toLocaleString() || '—', c: 'text-amber-600' },
               ].map((s, i) => (
@@ -568,7 +568,7 @@ export default function SetupWizard() {
                       <p className="font-medium text-gray-900 text-[13px]">{check.name}</p>
                       <p className="text-[11px] text-gray-500 truncate">{check.message}</p>
                       {check.instructions && check.status !== 'configured' && (
-                        <p className="text-[11px] text-blue-600 mt-0.5 truncate">{check.instructions}</p>
+                        <p className="text-[11px] text-sky-600 mt-0.5 truncate">{check.instructions}</p>
                       )}
                     </div>
                   </div>
@@ -596,12 +596,12 @@ export default function SetupWizard() {
         {oauthStatus?.is_configured && (
           <Card className={`border-2 ${
             oauthStatus.auth_status === 'valid' ? 'border-green-200 bg-green-50/30' :
-            oauthStatus.auth_status === 'needs_reauth' ? 'border-red-200 bg-red-50/30' : 'border-blue-200 bg-blue-50/30'
+            oauthStatus.auth_status === 'needs_reauth' ? 'border-red-200 bg-red-50/30' : 'border-sky-200 bg-sky-50/30'
           }`}>
             <CardHeader className="pb-2">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
-                  <Shield className="w-5 h-5 text-blue-600" />
+                  <Shield className="w-5 h-5 text-sky-600" />
                   <CardTitle className="text-base">OAuth2 Automation</CardTitle>
                   {oauthStatus.auth_status === 'valid' && <Badge className="bg-green-100 text-green-800 text-[11px]">Active</Badge>}
                 </div>
@@ -628,7 +628,7 @@ export default function SetupWizard() {
                 ].map((item, i) => (
                   <div key={i} className="text-center p-2.5 bg-white rounded-lg shadow-sm">
                     <div className="flex items-center justify-center gap-1 mb-1">
-                      <item.icon className="w-3.5 h-3.5 text-blue-600" />
+                      <item.icon className="w-3.5 h-3.5 text-sky-600" />
                       <span className="text-[11px] text-gray-500">{item.label}</span>
                     </div>
                     {item.badge ? (
@@ -643,10 +643,10 @@ export default function SetupWizard() {
               {oauthStatus.stats && (
                 <div className="grid grid-cols-3 md:grid-cols-6 gap-2 text-center">
                   {[
-                    { v: oauthStatus.stats.total_syncs, l: 'Total', c: 'text-blue-600 bg-blue-50' },
+                    { v: oauthStatus.stats.total_syncs, l: 'Total', c: 'text-sky-600 bg-sky-50' },
                     { v: oauthStatus.stats.successful_syncs, l: 'Success', c: 'text-green-600 bg-green-50' },
                     { v: oauthStatus.stats.failed_syncs, l: 'Failed', c: 'text-red-600 bg-red-50' },
-                    { v: oauthStatus.stats.token_refreshes, l: 'Refreshes', c: 'text-blue-600 bg-blue-50' },
+                    { v: oauthStatus.stats.token_refreshes, l: 'Refreshes', c: 'text-sky-600 bg-sky-50' },
                     { v: oauthStatus.stats.emails_processed, l: 'Emails', c: 'text-orange-600 bg-orange-50' },
                     { v: oauthStatus.stats.candidates_added, l: 'Candidates', c: 'text-teal-600 bg-teal-50' },
                   ].map((s, i) => (
@@ -682,11 +682,11 @@ export default function SetupWizard() {
 
         {/* Not connected */}
         {(!oauthStatus || !oauthStatus.is_configured) && (
-          <div className="p-4 bg-blue-50 border border-blue-200 rounded-lg flex items-start gap-3">
-            <Mail className="w-5 h-5 text-blue-600 mt-0.5" />
+          <div className="p-4 bg-sky-50 border border-sky-200 rounded-lg flex items-start gap-3">
+            <Mail className="w-5 h-5 text-sky-600 mt-0.5" />
             <div>
-              <h4 className="font-medium text-blue-900 text-sm">Email Not Connected</h4>
-              <p className="text-xs text-blue-700 mt-0.5">Connect your email below to enable automatic candidate import.</p>
+              <h4 className="font-medium text-sky-900 text-sm">Email Not Connected</h4>
+              <p className="text-xs text-sky-700 mt-0.5">Connect your email below to enable automatic candidate import.</p>
             </div>
           </div>
         )}
@@ -701,11 +701,11 @@ export default function SetupWizard() {
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
               {providers.map((p) => (
                 <div key={p.id} onClick={() => setSelectedProvider(p.id)} className={`p-3 border-2 rounded-lg cursor-pointer transition-all ${
-                  selectedProvider === p.id ? 'border-blue-500 bg-blue-50/50 ring-1 ring-blue-200' : 'border-gray-200 hover:border-gray-300'
+                  selectedProvider === p.id ? 'border-sky-500 bg-sky-50/50 ring-1 ring-sky-200' : 'border-gray-200 hover:border-gray-300'
                 }`}>
                   <div className="flex items-start justify-between mb-1.5">
                     <h4 className="font-semibold text-gray-900 text-sm">{p.name}</h4>
-                    {p.enterprise_ready && <Badge className="bg-blue-100 text-blue-700 text-[10px]">Enterprise</Badge>}
+                    {p.enterprise_ready && <Badge className="bg-sky-100 text-sky-700 text-[10px]">Enterprise</Badge>}
                   </div>
                   <p className="text-[11px] text-gray-500 mb-2">{p.instructions}</p>
                   <div className="flex gap-1">
@@ -777,9 +777,9 @@ export default function SetupWizard() {
             <CardContent>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
                 {[
-                  { v: syncResult.candidates_found, l: 'Candidates Found', c: 'text-blue-600 bg-blue-50' },
+                  { v: syncResult.candidates_found, l: 'Candidates Found', c: 'text-sky-600 bg-sky-50' },
                   { v: syncResult.new_applications, l: 'New Applications', c: 'text-green-600 bg-green-50' },
-                  { v: syncResult.resumes_parsed, l: 'Resumes Parsed', c: 'text-blue-600 bg-blue-50' },
+                  { v: syncResult.resumes_parsed, l: 'Resumes Parsed', c: 'text-sky-600 bg-sky-50' },
                   { v: syncResult.updated_profiles, l: 'Profiles Updated', c: 'text-yellow-600 bg-yellow-50' },
                 ].map((s, i) => (
                   <div key={i} className={`text-center p-3 rounded-lg ${s.c.split(' ')[1]}`}>
@@ -806,9 +806,9 @@ export default function SetupWizard() {
           <CardContent>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               {[
-                { title: 'Resume Extraction', desc: 'Auto-detects and parses PDF, DOCX attachments', color: 'bg-blue-100 text-blue-600' },
+                { title: 'Resume Extraction', desc: 'Auto-detects and parses PDF, DOCX attachments', color: 'bg-sky-100 text-sky-600' },
                 { title: 'Email Content Parsing', desc: 'Extracts phone, skills, experience from email body', color: 'bg-green-100 text-green-600' },
-                { title: 'Smart Detection', desc: 'Identifies job applications from subject lines & keywords', color: 'bg-primary-100 text-primary-600' },
+                { title: 'Smart Detection', desc: 'Identifies job applications from subject lines & keywords', color: 'bg-sky-100 text-sky-600' },
                 { title: 'Auto-Sync', desc: 'Continuously monitors inbox for new applications', color: 'bg-orange-100 text-orange-600' },
               ].map((f, i) => (
                 <div key={i} className="flex items-start gap-2.5">
@@ -846,7 +846,7 @@ export default function SetupWizard() {
               <div key={section.id} className="border rounded-lg overflow-hidden">
                 <button onClick={() => toggleSection(section.id)} className="w-full flex items-center justify-between p-3 bg-gray-50 hover:bg-gray-100 transition-colors">
                   <div className="flex items-center gap-2.5">
-                    <div className={`p-1.5 rounded-lg ${section.required ? 'bg-blue-100 text-blue-600' : 'bg-gray-100 text-gray-500'}`}>
+                    <div className={`p-1.5 rounded-lg ${section.required ? 'bg-sky-100 text-sky-600' : 'bg-gray-100 text-gray-500'}`}>
                       {getSectionIcon(section.id)}
                     </div>
                     <div className="text-left">
@@ -855,7 +855,7 @@ export default function SetupWizard() {
                     </div>
                   </div>
                   <div className="flex items-center gap-2">
-                    {section.required && <Badge className="bg-blue-100 text-blue-800 text-[10px]">Required</Badge>}
+                    {section.required && <Badge className="bg-sky-100 text-sky-800 text-[10px]">Required</Badge>}
                     {expandedSections.has(section.id) ? <ChevronDown className="w-4 h-4 text-gray-400" /> : <ChevronRight className="w-4 h-4 text-gray-400" />}
                   </div>
                 </button>
@@ -865,7 +865,7 @@ export default function SetupWizard() {
                     <ol className="space-y-1.5">
                       {section.steps.map((step, i) => (
                         <li key={i} className="flex items-start gap-2 text-sm text-gray-600">
-                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center text-[11px] font-medium">{i + 1}</span>
+                          <span className="flex-shrink-0 w-5 h-5 rounded-full bg-sky-100 text-sky-600 flex items-center justify-center text-[11px] font-medium">{i + 1}</span>
                           <span className="text-xs">{step.replace(/^\d+\.\s*/, '')}</span>
                         </li>
                       ))}
@@ -887,7 +887,7 @@ export default function SetupWizard() {
                     )}
 
                     {section.docs_url && (
-                      <a href={section.docs_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800">
+                      <a href={section.docs_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-xs text-sky-600 hover:text-sky-800">
                         <ExternalLink className="w-3.5 h-3.5" />View documentation
                       </a>
                     )}

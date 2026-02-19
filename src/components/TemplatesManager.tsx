@@ -167,7 +167,7 @@ const TemplatesManager: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-600"></div>
       </div>
     );
   }
@@ -178,7 +178,7 @@ const TemplatesManager: React.FC = () => {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-xl font-semibold text-gray-900 dark:text-white flex items-center gap-2">
-            <Mail className="h-5 w-5 text-blue-600" />
+            <Mail className="h-5 w-5 text-sky-600" />
             Email Templates
           </h2>
           <p className="text-sm text-gray-500 dark:text-gray-400 mt-1">
@@ -187,7 +187,7 @@ const TemplatesManager: React.FC = () => {
         </div>
         <button
           onClick={startCreate}
-          className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+          className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700"
         >
           <Plus className="h-4 w-4" />
           New Template
@@ -210,7 +210,7 @@ const TemplatesManager: React.FC = () => {
                 </span>
               </div>
               {template.is_default && (
-                <span className="px-2 py-0.5 bg-blue-100 text-blue-700 text-xs rounded-full">
+                <span className="px-2 py-0.5 bg-sky-100 text-sky-700 text-xs rounded-full">
                   Default
                 </span>
               )}
@@ -230,7 +230,7 @@ const TemplatesManager: React.FC = () => {
               </button>
               <button
                 onClick={() => startEdit(template)}
-                className="flex items-center justify-center gap-1 px-3 py-1.5 text-sm text-blue-700 bg-blue-100 rounded-lg hover:bg-blue-200"
+                className="flex items-center justify-center gap-1 px-3 py-1.5 text-sm text-sky-700 bg-sky-100 rounded-lg hover:bg-sky-200"
               >
                 <Edit2 className="h-3.5 w-3.5" />
               </button>
@@ -340,10 +340,10 @@ const TemplatesManager: React.FC = () => {
                 />
               </div>
 
-              <div className="bg-blue-50 dark:bg-blue-900/20 p-3 rounded-lg">
+              <div className="bg-sky-50 dark:bg-sky-900/20 p-3 rounded-lg">
                 <div className="flex items-start gap-2">
-                  <AlertCircle className="h-4 w-4 text-blue-600 mt-0.5" />
-                  <div className="text-sm text-blue-800 dark:text-blue-300">
+                  <AlertCircle className="h-4 w-4 text-sky-600 mt-0.5" />
+                  <div className="text-sm text-sky-800 dark:text-sky-300">
                     <strong>Variables:</strong> Use {"{{variable_name}}"} for dynamic content.
                     <br />
                     Common: candidate_name, first_name, job_title, company_name, interview_date
@@ -365,7 +365,7 @@ const TemplatesManager: React.FC = () => {
               </button>
               <button
                 onClick={isCreating ? handleCreate : handleUpdate}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700"
               >
                 <Save className="h-4 w-4" />
                 {isCreating ? 'Create' : 'Save Changes'}

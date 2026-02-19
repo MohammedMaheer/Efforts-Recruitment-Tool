@@ -832,7 +832,7 @@ export const aiApi = {
   /**
    * AI chat with database context
    */
-  async chat(message: string, includeCandidates = true, conversationHistory?: Array<{ role: string; content: string }>): Promise<ApiResponse<{
+  async chat(message: string, includeCandidates = true, conversationHistory?: Array<{ role: string; content: string }>, numCandidates = 10): Promise<ApiResponse<{
     response: string;
     ai_powered: boolean;
     context_included: boolean;
@@ -851,7 +851,7 @@ export const aiApi = {
       status: string;
     }>;
   }>> {
-    return client.post('/api/ai/chat', { message, include_candidates: includeCandidates, conversation_history: conversationHistory });
+    return client.post('/api/ai/chat', { message, include_candidates: includeCandidates, conversation_history: conversationHistory, num_candidates: numCandidates });
   },
 
   /**

@@ -309,21 +309,21 @@ export default function Settings() {
                 <p className="font-medium text-gray-900">Email Notifications</p>
                 <p className="text-sm text-gray-600">Receive email updates about new candidates</p>
               </div>
-              <input type="checkbox" className="w-5 h-5 text-primary-600 rounded" checked={emailNotifications} onChange={(e) => setEmailNotifications(e.target.checked)} />
+              <input type="checkbox" className="w-5 h-5 text-sky-600 rounded" checked={emailNotifications} onChange={(e) => setEmailNotifications(e.target.checked)} />
             </div>
             <div className="flex items-center justify-between">
               <div>
                 <p className="font-medium text-gray-900">Match Alerts</p>
                 <p className="text-sm text-gray-600">Get notified about high-match candidates</p>
               </div>
-              <input type="checkbox" className="w-5 h-5 text-primary-600 rounded" checked={matchAlerts} onChange={(e) => setMatchAlerts(e.target.checked)} />
+              <input type="checkbox" className="w-5 h-5 text-sky-600 rounded" checked={matchAlerts} onChange={(e) => setMatchAlerts(e.target.checked)} />
             </div>
             <div className="flex items-center justify-between">
               <div>
                 <p className="font-medium text-gray-900">Weekly Summary</p>
                 <p className="text-sm text-gray-600">Weekly recruitment metrics summary</p>
               </div>
-              <input type="checkbox" className="w-5 h-5 text-primary-600 rounded" checked={weeklySummary} onChange={(e) => setWeeklySummary(e.target.checked)} />
+              <input type="checkbox" className="w-5 h-5 text-sky-600 rounded" checked={weeklySummary} onChange={(e) => setWeeklySummary(e.target.checked)} />
             </div>
           </CardContent>
         </Card>

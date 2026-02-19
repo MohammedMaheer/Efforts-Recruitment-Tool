@@ -52,7 +52,7 @@ export default function TopBar() {
       case 'success': return 'bg-success/10 text-success'
       case 'warning': return 'bg-warning/10 text-warning'
       case 'error': return 'bg-danger/10 text-danger'
-      default: return 'bg-primary-100 text-primary-600'
+      default: return 'bg-sky-100 text-sky-600'
     }
   }
 
@@ -64,16 +64,16 @@ export default function TopBar() {
   }
 
   return (
-    <header className="h-16 bg-white border-b border-gray-200 flex items-center justify-between px-6">
+    <header className="h-16 bg-white/80 backdrop-blur-md border-b border-gray-200/60 flex items-center justify-between px-6 sticky top-0 z-30">
       {/* Search */}
       <div className="flex-1 max-w-2xl">
         <form onSubmit={handleSearch}>
           <div className="relative">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input
               type="search"
               placeholder="Search candidates, jobs, or skills..."
-              className="pl-10 bg-gray-50 border-gray-200"
+              className="pl-10 bg-gray-50/80 border-gray-200 focus:bg-white focus:ring-2 focus:ring-sky-500/20 focus:border-sky-400 rounded-xl text-sm"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
             />
@@ -82,16 +82,16 @@ export default function TopBar() {
       </div>
 
       {/* Right Section */}
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-3">
         {/* Notifications */}
         <div className="relative" ref={notificationRef}>
           <button 
             onClick={() => setShowNotifications(!showNotifications)}
-            className="relative p-2 text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"
+            className="relative p-2.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-all"
           >
             <Bell className="w-5 h-5" />
             {unreadCount > 0 && (
-              <span className="absolute top-1 right-1 w-5 h-5 bg-danger text-white text-xs rounded-full flex items-center justify-center font-semibold">
+              <span className="absolute top-1.5 right-1.5 w-4 h-4 bg-red-500 text-white text-[10px] rounded-full flex items-center justify-center font-bold ring-2 ring-white">
                 {unreadCount > 9 ? '9+' : unreadCount}
               </span>
             )}
@@ -109,7 +109,7 @@ export default function TopBar() {
                 {notifications.length > 0 && (
                   <button
                     onClick={markAllAsRead}
-                    className="text-xs text-primary-600 hover:text-primary-700 font-medium flex items-center gap-1"
+                    className="text-xs text-sky-600 hover:text-sky-700 font-medium flex items-center gap-1"
                   >
                     <CheckCheck className="w-3 h-3" />
                     Mark all read
@@ -130,7 +130,7 @@ export default function TopBar() {
                     <div
                       key={notification.id}
                       className={`p-4 border-b border-gray-100 hover:bg-gray-50 cursor-pointer transition-colors ${
-                        !notification.read ? 'bg-primary-50/30' : ''
+                        !notification.read ? 'bg-sky-50/30' : ''
                       }`}
                       onClick={() => handleNotificationClick(notification)}
                     >
@@ -185,25 +185,25 @@ function UserMenu({ user, logout, navigate }: { user: any; logout: () => void; n
   }, [])
 
   return (
-    <div className="relative flex items-center gap-3 pl-4 border-l border-gray-200" ref={menuRef}>
-      <Avatar className="w-9 h-9">
+    <div className="relative flex items-center gap-3 pl-3 ml-1 border-l border-gray-200/60" ref={menuRef}>
+      <Avatar className="w-9 h-9 ring-2 ring-gray-100">
         <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${user?.name}`} />
-        <AvatarFallback>{user?.name?.charAt(0) || 'U'}</AvatarFallback>
+        <AvatarFallback className="bg-slate-800 text-white text-sm font-bold">{user?.name?.charAt(0) || 'U'}</AvatarFallback>
       </Avatar>
-      <div className="text-sm">
-        <p className="font-medium text-gray-900">{user?.name || 'User'}</p>
-        <p className="text-xs text-gray-500">{user?.role || 'Recruiter'}</p>
+      <div className="text-sm hidden sm:block">
+        <p className="font-semibold text-gray-900 text-[13px]">{user?.name || 'User'}</p>
+        <p className="text-[11px] text-gray-500">{user?.role || 'Recruiter'}</p>
       </div>
-      <button onClick={() => setOpen(!open)} className="p-1 hover:bg-gray-100 rounded transition-colors">
-        <ChevronDown className={`w-4 h-4 text-gray-500 transition-transform ${open ? 'rotate-180' : ''}`} />
+      <button onClick={() => setOpen(!open)} className="p-1 hover:bg-gray-100 rounded-lg transition-all">
+        <ChevronDown className={`w-4 h-4 text-gray-400 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
-        <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-lg shadow-lg border border-gray-200 py-1 z-50">
-          <button onClick={() => { navigate('/settings'); setOpen(false) }} className="flex items-center gap-2 w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-50">
-            <Settings className="w-4 h-4" /> Settings
+        <div className="absolute right-0 top-full mt-2 w-48 bg-white rounded-xl shadow-brand border border-gray-100 py-1.5 z-50">
+          <button onClick={() => { navigate('/settings'); setOpen(false) }} className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-gray-700 hover:bg-gray-50 rounded-lg mx-0 transition-colors">
+            <Settings className="w-4 h-4 text-gray-400" /> Settings
           </button>
-          <div className="border-t border-gray-100 my-1" />
-          <button onClick={() => { if (window.confirm('Are you sure you want to log out?')) logout() }} className="flex items-center gap-2 w-full px-4 py-2 text-sm text-red-600 hover:bg-red-50">
+          <div className="border-t border-gray-100 my-1.5 mx-3" />
+          <button onClick={() => { if (window.confirm('Are you sure you want to log out?')) logout() }} className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 rounded-lg mx-0 transition-colors">
             <LogOut className="w-4 h-4" /> Log Out
           </button>
         </div>

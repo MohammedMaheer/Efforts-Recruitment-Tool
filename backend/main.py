@@ -2892,6 +2892,7 @@ async def ai_chat(
     message: str = Body(..., embed=True),
     include_candidates: bool = Body(True, embed=True),
     conversation_history: list = Body([], embed=True),
+    num_candidates: int = Body(10, embed=True),
     current_user: dict = Depends(require_auth)
 ):
     """
@@ -2924,7 +2925,7 @@ async def ai_chat(
             gemini_svc = get_gemini_service()
             if gemini_svc and gemini_svc.available:
                 gemini_result = await asyncio.wait_for(
-                    gemini_svc.chat(message, context, conversation_history=conversation_history, candidates_data=candidates_data, return_candidates=True),
+                    gemini_svc.chat(message, context, conversation_history=conversation_history, candidates_data=candidates_data, return_candidates=True, num_candidates=num_candidates),
                     timeout=AI_TIMEOUT
                 )
                 if gemini_result:

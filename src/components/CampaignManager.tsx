@@ -174,7 +174,7 @@ const CampaignManager: React.FC = () => {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
+        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-sky-600"></div>
       </div>
     );
   }
@@ -202,7 +202,7 @@ const CampaignManager: React.FC = () => {
           </button>
           <button
             onClick={() => setIsCreating(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700"
           >
             <Plus className="h-4 w-4" />
             New Campaign
@@ -227,8 +227,8 @@ const CampaignManager: React.FC = () => {
                 onClick={() => setExpandedCampaign(isExpanded ? null : campaign.campaign_id)}
               >
                 <div className="flex items-center gap-4">
-                  <div className="p-2 bg-blue-100 dark:bg-blue-900/30 rounded-lg">
-                    <Mail className="h-5 w-5 text-blue-600" />
+                  <div className="p-2 bg-sky-100 dark:bg-sky-900/30 rounded-lg">
+                    <Mail className="h-5 w-5 text-sky-600" />
                   </div>
                   <div>
                     <h3 className="font-medium text-gray-900 dark:text-white">{campaign.name}</h3>
@@ -241,7 +241,7 @@ const CampaignManager: React.FC = () => {
                 <div className="flex items-center gap-4">
                   {stats && (
                     <div className="flex items-center gap-3 text-sm">
-                      <span className="flex items-center gap-1 text-blue-600">
+                      <span className="flex items-center gap-1 text-sky-600">
                         <Users className="h-4 w-4" />
                         {stats.total_enrolled}
                       </span>
@@ -280,13 +280,13 @@ const CampaignManager: React.FC = () => {
                         key={index}
                         className="flex items-center gap-3 p-3 bg-white dark:bg-gray-800 rounded-lg"
                       >
-                        <div className="flex items-center justify-center w-8 h-8 bg-blue-100 dark:bg-blue-900/30 rounded-full text-sm font-medium text-blue-600">
+                        <div className="flex items-center justify-center w-8 h-8 bg-sky-100 dark:bg-sky-900/30 rounded-full text-sm font-medium text-sky-600">
                           {index + 1}
                         </div>
                         <div className="flex-1">
                           <div className="flex items-center gap-2">
                             {step.type === 'email' ? (
-                              <Mail className="h-4 w-4 text-blue-500" />
+                              <Mail className="h-4 w-4 text-sky-500" />
                             ) : step.type === 'sms' ? (
                               <MessageSquare className="h-4 w-4 text-green-500" />
                             ) : (
@@ -436,7 +436,7 @@ const CampaignManager: React.FC = () => {
                   </label>
                   <button
                     onClick={addStep}
-                    className="flex items-center gap-1 px-2 py-1 text-sm text-blue-600 hover:bg-blue-50 dark:hover:bg-blue-900/20 rounded"
+                    className="flex items-center gap-1 px-2 py-1 text-sm text-sky-600 hover:bg-sky-50 dark:hover:bg-sky-900/20 rounded"
                   >
                     <Plus className="h-4 w-4" />
                     Add Step
@@ -554,7 +554,7 @@ const CampaignManager: React.FC = () => {
               <button
                 onClick={handleCreate}
                 disabled={!formData.campaign_id || !formData.name || formData.steps.length === 0}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+                className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-lg hover:bg-slate-700 disabled:opacity-50"
               >
                 <Plus className="h-4 w-4" />
                 Create Campaign
