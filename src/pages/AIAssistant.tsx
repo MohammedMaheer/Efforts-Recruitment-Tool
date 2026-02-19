@@ -34,7 +34,12 @@ import {
   Trash2,
   PanelLeftClose,
   PanelLeft,
-  MessageCircle
+  MessageCircle,
+  GraduationCap,
+  CheckCircle,
+  AlertCircle,
+  Phone,
+  ExternalLink,
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
 import { Card, CardContent } from '@/components/ui/Card'
@@ -487,6 +492,9 @@ export default function AIAssistant() {
     return localStorage.getItem(ACTIVE_SESSION_KEY) || Date.now().toString()
   })
   const [newChatTrigger, setNewChatTrigger] = useState(0)
+  const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null)
+  const [previewAnalysis, setPreviewAnalysis] = useState<any>(null)
+  const [previewLoading, setPreviewLoading] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const { candidates, totalCount } = useCandidates({ autoFetch: true })
@@ -494,6 +502,48 @@ export default function AIAssistant() {
   const isShortlisted = useCandidateStore((s) => s.isShortlisted)
   const navigate = useNavigate()
   const aiStatus = useAIStatus()
+
+  // ── Candidate Preview Panel Logic ──
+  const handlePreviewCandidate = async (candidate: Candidate) => {
+    setPreviewCandidate(candidate)
+    setPreviewAnalysis(null)
+    setPreviewLoading(true)
+    try {
+      // Fetch full candidate data
+      const fullRes = await authFetch(`${config.endpoints.candidates}/${candidate.id}`)
+      if (fullRes.ok) {
+        const fullData = await fullRes.json()
+        // Merge full data with the summary card data
+        const merged: Candidate = {
+          ...candidate,
+          summary: fullData.summary || candidate.summary || '',
+          workHistory: (fullData.workHistory || []).map((job: any) => ({
+            title: job.title || job.position || '',
+            company: job.company || job.organization || '',
+            duration: job.duration || job.period || job.years || '',
+            description: job.description || job.responsibilities || '',
+          })),
+          education: (fullData.education || []).map((edu: any) => ({
+            degree: edu.degree || edu.title || '',
+            field: edu.field || '',
+            institution: edu.institution || edu.school || '',
+            year: edu.year || edu.graduation_year || '',
+          })),
+          resumeText: fullData.resume_text || fullData.resumeText || '',
+          certifications: fullData.certifications || [],
+          languages: fullData.languages || [],
+        }
+        setPreviewCandidate(merged)
+      }
+      // Fetch AI analysis
+      const analysisRes = await authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis`)
+      if (analysisRes.ok) {
+        const analysis = await analysisRes.json()
+        if (analysis?.executive_summary) setPreviewAnalysis(analysis)
+      }
+    } catch { /* ignore */ }
+    setPreviewLoading(false)
+  }
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
@@ -1069,9 +1119,16 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         }
 
         // Use lookup entries in order (already matched to AI text by backend)
+        // Deduplicate by candidate ID — keep first occurrence only
+        const seenIds = new Set<string>()
         displayCandidates = candidatesLookup
           .slice(0, requestedCount)
           .map(makeCandidateFromLookup)
+          .filter(c => {
+            if (seenIds.has(c.id)) return false
+            seenIds.add(c.id)
+            return true
+          })
       }
       
       // If no candidates extracted from AI text, fall back to local parseQuery
@@ -1788,7 +1845,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                           {candidate.name.charAt(0)}
                                         </AvatarFallback>
                                       </Avatar>
-                                      <div className="min-w-0 flex-1 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
+                                      <div className="min-w-0 flex-1 cursor-pointer" onClick={() => handlePreviewCandidate(candidate)}>
                                         <h4 className="font-semibold text-gray-900 text-sm truncate hover:text-sky-600">{candidate.name}</h4>
                                         <p className="text-xs text-gray-500 flex items-center gap-1 truncate">
                                           <MapPin className="w-3 h-3 flex-shrink-0" />
@@ -1805,10 +1862,18 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                         <motion.button
                                           whileHover={{ scale: 1.1 }}
                                           whileTap={{ scale: 0.9 }}
-                                          onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }}
+                                          onClick={(e) => { e.stopPropagation(); handlePreviewCandidate(candidate) }}
                                           className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"
                                         >
-                                          <Eye className="w-3 h-3" />View
+                                          <Eye className="w-3 h-3" />Preview
+                                        </motion.button>
+                                        <motion.button
+                                          whileHover={{ scale: 1.1 }}
+                                          whileTap={{ scale: 0.9 }}
+                                          onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }}
+                                          className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"
+                                        >
+                                          <ExternalLink className="w-3 h-3" />Open
                                         </motion.button>
                                         {candidate.status !== 'Shortlisted' ? (
                                           <motion.button
@@ -1975,14 +2040,15 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                               <Avatar className="w-8 h-8 flex-shrink-0 border-2 border-white shadow">
                                 <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700">{candidate.name.charAt(0)}</AvatarFallback>
                               </Avatar>
-                              <div className="min-w-0 flex-1 cursor-pointer" onClick={() => navigate(`/candidates/${candidate.id}`)}>
+                              <div className="min-w-0 flex-1 cursor-pointer" onClick={() => handlePreviewCandidate(candidate)}>
                                 <h4 className="text-sm font-semibold text-gray-900 truncate hover:text-sky-600">{candidate.name}</h4>
                                 <p className="text-xs text-gray-500 flex items-center gap-1 truncate"><MapPin className="w-3 h-3 flex-shrink-0" /><span className="truncate">{candidate.location || 'N/A'}</span></p>
                               </div>
                               <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
                                 <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</p>
                                 <Badge className={`text-xs whitespace-nowrap ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}>{candidate.status}</Badge>
-                                <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }} className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><Eye className="w-3 h-3" />View</motion.button>
+                                <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); handlePreviewCandidate(candidate) }} className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><Eye className="w-3 h-3" />Preview</motion.button>
+                                <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }} className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><ExternalLink className="w-3 h-3" />Open</motion.button>
                                 {candidate.status !== 'Shortlisted' ? (
                                   <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={async (e) => { e.stopPropagation(); try { await candidateApi.updateStatus(candidate.id, 'Shortlisted'); if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id); setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${candidate.name}** has been shortlisted. Notification email queued.`, timestamp: new Date(), intent: 'shortlist_single' }]) } catch (err) { console.error('Shortlist error:', err) } }} className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><CheckCircle2 className="w-3 h-3" />Shortlist</motion.button>
                                 ) : <Badge className="bg-green-100 text-green-700 text-xs whitespace-nowrap">Shortlisted ✓</Badge>}
@@ -2165,6 +2231,242 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       </motion.div>
 
       </div>{/* /Chat Column */}
+
+      {/* ── Candidate Preview Panel (right side) ── */}
+      <AnimatePresence>
+        {previewCandidate && (
+          <motion.div
+            initial={{ width: 0, opacity: 0 }}
+            animate={{ width: 420, opacity: 1 }}
+            exit={{ width: 0, opacity: 0 }}
+            transition={{ duration: 0.25, ease: 'easeInOut' }}
+            className="flex-shrink-0 bg-white border-l border-gray-200 overflow-hidden"
+          >
+            <div className="w-[420px] h-full flex flex-col overflow-y-auto">
+              {/* Panel Header */}
+              <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-white/95 backdrop-blur-sm">
+                <div className="flex items-center gap-2 min-w-0">
+                  <Avatar className="w-8 h-8 flex-shrink-0">
+                    <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700">
+                      {previewCandidate.name.charAt(0)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-semibold text-gray-900 truncate">{previewCandidate.name}</h3>
+                    <p className="text-xs text-gray-500 truncate">
+                      {previewCandidate.jobCategory !== 'General' ? previewCandidate.jobCategory : ''} 
+                      {previewCandidate.experience > 0 ? ` · ${previewCandidate.experience} yrs exp` : ''}
+                    </p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <span className={`text-lg font-bold ${getMatchScoreColor(previewCandidate.matchScore)}`}>
+                    {(previewCandidate.matchScore ?? 50).toFixed(0)}%
+                  </span>
+                  <button
+                    onClick={() => { setPreviewCandidate(null); setPreviewAnalysis(null) }}
+                    className="p-1 hover:bg-gray-100 rounded-md transition-colors"
+                  >
+                    <X className="w-4 h-4 text-gray-500" />
+                  </button>
+                </div>
+              </div>
+
+              {previewLoading && (
+                <div className="flex items-center justify-center py-8">
+                  <Loader2 className="w-5 h-5 animate-spin text-sky-500" />
+                  <span className="text-xs text-gray-500 ml-2">Loading details...</span>
+                </div>
+              )}
+
+              <div className="p-4 space-y-4">
+                {/* Contact Info */}
+                <div className="flex items-center gap-3 flex-wrap text-xs text-gray-500">
+                  {previewCandidate.email && (
+                    <span className="inline-flex items-center gap-1"><Mail className="w-3 h-3" />{previewCandidate.email}</span>
+                  )}
+                  {previewCandidate.phone && (
+                    <span className="inline-flex items-center gap-1"><Phone className="w-3 h-3" />{previewCandidate.phone}</span>
+                  )}
+                  {previewCandidate.location && (
+                    <span className="inline-flex items-center gap-1"><MapPin className="w-3 h-3" />{previewCandidate.location}</span>
+                  )}
+                </div>
+
+                {/* Quick Actions */}
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => navigate(`/candidates/${previewCandidate.id}`)}
+                    className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs font-medium transition-colors"
+                  >
+                    <Eye className="w-3 h-3" />Full Profile
+                  </button>
+                  {previewCandidate.status !== 'Shortlisted' ? (
+                    <button
+                      onClick={async () => {
+                        try {
+                          await candidateApi.updateStatus(previewCandidate.id, 'Shortlisted')
+                          if (!isShortlisted(previewCandidate.id)) toggleShortlist(previewCandidate.id)
+                          setPreviewCandidate({ ...previewCandidate, status: 'Shortlisted' } as Candidate)
+                        } catch (err) { console.error('Shortlist error:', err) }
+                      }}
+                      className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors"
+                    >
+                      <CheckCircle2 className="w-3 h-3" />Shortlist
+                    </button>
+                  ) : (
+                    <span className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-green-50 text-green-700 rounded-lg text-xs font-medium border border-green-200">
+                      <CheckCircle2 className="w-3 h-3" />Shortlisted
+                    </span>
+                  )}
+                </div>
+
+                {/* Skills */}
+                {previewCandidate.skills.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Skills</h4>
+                    <div className="flex flex-wrap gap-1">
+                      {previewCandidate.skills.slice(0, 10).map((skill: string) => (
+                        <span key={skill} className="text-[10px] px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 border border-sky-100 font-medium">
+                          {skill}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Professional Summary */}
+                {previewCandidate.summary && (
+                  <div>
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1.5">Professional Summary</h4>
+                    <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-line">{previewCandidate.summary}</p>
+                  </div>
+                )}
+
+                {/* AI Analysis */}
+                {previewAnalysis && (
+                  <div className="rounded-lg border border-sky-100 overflow-hidden">
+                    <div className="bg-gradient-to-r from-sky-50 to-indigo-50 px-3 py-2 flex items-center justify-between">
+                      <div className="flex items-center gap-1.5">
+                        <Sparkles className="w-3.5 h-3.5 text-sky-500" />
+                        <span className="text-xs font-semibold text-gray-800">AI Analysis</span>
+                      </div>
+                      <div className="flex items-center gap-1.5">
+                        {previewAnalysis.overall_rating && (
+                          <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${
+                            previewAnalysis.overall_rating?.startsWith('A') ? 'bg-emerald-100 text-emerald-700' :
+                            previewAnalysis.overall_rating?.startsWith('B') ? 'bg-blue-100 text-blue-700' :
+                            'bg-amber-100 text-amber-700'
+                          }`}>{previewAnalysis.overall_rating}</span>
+                        )}
+                        {previewAnalysis.hiring_recommendation && (
+                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
+                            previewAnalysis.hiring_recommendation === 'STRONGLY_RECOMMEND' ? 'bg-emerald-600 text-white' :
+                            previewAnalysis.hiring_recommendation === 'RECOMMEND' ? 'bg-emerald-500 text-white' :
+                            previewAnalysis.hiring_recommendation === 'CONSIDER' ? 'bg-amber-500 text-white' :
+                            'bg-red-500 text-white'
+                          }`}>{previewAnalysis.hiring_recommendation.replace('_', ' ')}</span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="p-3 space-y-2.5">
+                      {previewAnalysis.executive_summary && (
+                        <p className="text-xs text-gray-700 leading-relaxed">{previewAnalysis.executive_summary}</p>
+                      )}
+                      {previewAnalysis.pros?.length > 0 && (
+                        <div>
+                          <h5 className="text-[10px] font-semibold text-emerald-700 uppercase mb-1 flex items-center gap-1">
+                            <CheckCircle className="w-3 h-3" />Strengths
+                          </h5>
+                          <ul className="space-y-0.5">
+                            {previewAnalysis.pros.slice(0, 4).map((pro: string, i: number) => (
+                              <li key={i} className="text-[11px] text-gray-600 flex items-start gap-1">
+                                <span className="text-emerald-500 mt-px font-bold">+</span>{pro}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {previewAnalysis.cons?.length > 0 && (
+                        <div>
+                          <h5 className="text-[10px] font-semibold text-red-600 uppercase mb-1 flex items-center gap-1">
+                            <AlertCircle className="w-3 h-3" />Areas to Explore
+                          </h5>
+                          <ul className="space-y-0.5">
+                            {previewAnalysis.cons.slice(0, 3).map((con: string, i: number) => (
+                              <li key={i} className="text-[11px] text-gray-600 flex items-start gap-1">
+                                <span className="text-red-400 mt-px font-bold">-</span>{con}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {previewAnalysis.confidence_score && (
+                        <div className="text-[10px] text-gray-400 pt-1 border-t border-gray-100">
+                          Confidence: {previewAnalysis.confidence_score}%
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Resume Highlights / Work Experience */}
+                {previewCandidate.workHistory && previewCandidate.workHistory.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1">
+                      <Briefcase className="w-3 h-3" />Work Experience
+                    </h4>
+                    <div className="space-y-2">
+                      {previewCandidate.workHistory.slice(0, 3).map((job, i) => (
+                        <div key={i} className="pl-3 border-l-2 border-gray-200">
+                          <h5 className="text-xs font-semibold text-gray-900">{job.title}</h5>
+                          <p className="text-[10px] text-gray-500">
+                            {job.company}{job.company && job.duration ? ' · ' : ''}{job.duration}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Education */}
+                {previewCandidate.education && previewCandidate.education.length > 0 && (
+                  <div>
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1">
+                      <GraduationCap className="w-3 h-3" />Education
+                    </h4>
+                    <div className="space-y-1.5">
+                      {previewCandidate.education.slice(0, 2).map((edu, i) => (
+                        <div key={i}>
+                          <h5 className="text-xs font-semibold text-gray-900">
+                            {edu.degree}{edu.field ? ` in ${edu.field}` : ''}
+                          </h5>
+                          <p className="text-[10px] text-gray-500">
+                            {edu.institution || 'Institution not specified'}{edu.year ? ` · ${edu.year}` : ''}
+                          </p>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Resume Text Snippet */}
+                {previewCandidate.resumeText && (
+                  <div>
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1.5 flex items-center gap-1">
+                      <FileText className="w-3 h-3" />Resume Highlights
+                    </h4>
+                    <p className="text-[11px] text-gray-600 leading-relaxed bg-gray-50 rounded-lg p-2.5 max-h-32 overflow-y-auto whitespace-pre-line">
+                      {previewCandidate.resumeText.substring(0, 600)}{previewCandidate.resumeText.length > 600 ? '...' : ''}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       </div>{/* /Main Content Area */}
 
       {/* Job Description Matching Modal */}

@@ -22,10 +22,13 @@ import {
   MessageCircle,
   Award,
   Globe,
+  Calendar,
+  XOctagon,
 } from 'lucide-react'
 import { useCandidates } from '@/hooks/useCandidates'
 import { useCandidateStore } from '@/store/candidateStore'
 import { useNotificationStore } from '@/store/notificationStore'
+import { useAuthStore } from '@/store/authStore'
 import { candidateApi } from '@/services/api'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -82,8 +85,47 @@ export default function CandidateDetail() {
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [isShortlisting, setIsShortlisting] = useState(false)
+  const [fullCandidateData, setFullCandidateData] = useState<any>(null)
+  const [showCalendarPicker, setShowCalendarPicker] = useState(false)
+  const [interviewDate, setInterviewDate] = useState(() => {
+    const d = new Date(); d.setDate(d.getDate() + 3); return d.toISOString().slice(0, 16)
+  })
 
-  const candidate = candidates.find((c) => c.id === id)
+  const lightCandidate = candidates.find((c) => c.id === id)
+
+  // Fetch full candidate data (light endpoint omits workHistory/education/summary)
+  useEffect(() => {
+    if (id) {
+      authFetch(`${config.endpoints.candidates}/${id}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data) setFullCandidateData(data) })
+        .catch(() => {})
+    }
+  }, [id])
+
+  // Merge full data over light store data
+  const candidate = lightCandidate ? {
+    ...lightCandidate,
+    ...(fullCandidateData ? {
+      summary: fullCandidateData.summary || lightCandidate.summary || '',
+      workHistory: (fullCandidateData.workHistory || []).map((job: any) => ({
+        title: job.title || job.position || '',
+        company: job.company || job.organization || '',
+        duration: job.duration || job.period || job.years || '',
+        description: job.description || job.responsibilities || '',
+      })),
+      education: (fullCandidateData.education || []).map((edu: any) => ({
+        degree: edu.degree || edu.title || '',
+        field: edu.field || '',
+        institution: edu.institution || edu.school || '',
+        year: edu.year || edu.graduation_year || '',
+      })),
+      resumeText: fullCandidateData.resume_text || fullCandidateData.resumeText || lightCandidate.resumeText || '',
+      certifications: fullCandidateData.certifications || lightCandidate.certifications || [],
+      languages: fullCandidateData.languages || lightCandidate.languages || [],
+      aiAnalysis: fullCandidateData.ai_analysis || fullCandidateData.aiAnalysis || lightCandidate.aiAnalysis || null,
+    } : {}),
+  } : null
 
   // Auto-load cached AI analysis on page load
   useEffect(() => {
@@ -140,33 +182,39 @@ export default function CandidateDetail() {
 
   const handleScheduleInterview = () => {
     if (!candidate) return
-    // Create calendar event using native browser calendar
-    const startDate = new Date()
-    startDate.setDate(startDate.getDate() + 3) // 3 days from now
-    startDate.setHours(10, 0, 0, 0) // 10:00 AM
-    
+    setShowCalendarPicker(true)
+  }
+
+  const openCalendar = (provider: 'google' | 'outlook') => {
+    if (!candidate) return
+    const startDate = new Date(interviewDate)
     const endDate = new Date(startDate)
-    endDate.setHours(11, 0, 0, 0) // 11:00 AM
-    
-    const formatDate = (date: Date) => {
-      return date.toISOString().replace(/-|:|\.\d+/g, '')
-    }
-    
+    endDate.setHours(endDate.getHours() + 1)
+
     const title = encodeURIComponent(`Interview: ${candidate.name}`)
     const details = encodeURIComponent(`Interview for ${candidate.name}\nEmail: ${candidate.email}\nPhone: ${candidate.phone}`)
     const location = encodeURIComponent('Video Call')
-    
-    // Google Calendar URL
-    const googleCalUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&details=${details}&location=${location}&dates=${formatDate(startDate)}/${formatDate(endDate)}`
-    
+
+    let calendarUrl: string
+
+    if (provider === 'outlook') {
+      const startIso = startDate.toISOString()
+      const endIso = endDate.toISOString()
+      calendarUrl = `https://outlook.office.com/calendar/0/deeplink/compose?subject=${title}&body=${details}&location=${location}&startdt=${encodeURIComponent(startIso)}&enddt=${encodeURIComponent(endIso)}`
+    } else {
+      const formatDate = (date: Date) => date.toISOString().replace(/-|:|\.\d+/g, '')
+      calendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${title}&details=${details}&location=${location}&dates=${formatDate(startDate)}/${formatDate(endDate)}`
+    }
+
     addNotification({
       type: 'success',
       title: 'Interview Scheduled',
-      message: `Interview with ${candidate.name} scheduled for ${startDate.toLocaleDateString()}`,
+      message: `Interview with ${candidate.name} scheduled for ${startDate.toLocaleDateString()} at ${startDate.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
       actionUrl: `/candidates/${candidate.id}`
     })
-    
-    window.open(googleCalUrl, '_blank')
+
+    setShowCalendarPicker(false)
+    window.open(calendarUrl, '_blank')
   }
 
   const handleSendMessage = () => {
@@ -406,6 +454,19 @@ export default function CandidateDetail() {
                   </Button>
                 </div>
               </div>
+            </div>
+
+            {/* Quick Actions Row — Schedule / Message / Reject inline */}
+            <div className="flex items-center gap-2 px-6 pb-4 pt-1 border-t border-gray-100 mt-3">
+              <Button variant="success" size="sm" className="text-xs h-8" onClick={handleScheduleInterview}>
+                <Calendar className="w-3.5 h-3.5 mr-1" />Schedule Interview
+              </Button>
+              <Button variant="outline" size="sm" className="text-xs h-8" onClick={handleSendMessage}>
+                <Mail className="w-3.5 h-3.5 mr-1" />Send Message
+              </Button>
+              <Button variant="destructive" size="sm" className="text-xs h-8" onClick={handleRejectCandidate}>
+                <XOctagon className="w-3.5 h-3.5 mr-1" />Reject Candidate
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -782,24 +843,62 @@ export default function CandidateDetail() {
             </motion.div>
           )}
 
-          {/* Actions — slim buttons */}
-          <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.2 }}>
-            <Card className="border-0 shadow-sm">
-              <CardContent className="p-3 space-y-1.5">
-                <Button variant="success" className="w-full h-8 text-xs" onClick={handleScheduleInterview}>
-                  Schedule Interview
-                </Button>
-                <Button variant="outline" className="w-full h-8 text-xs" onClick={handleSendMessage}>
-                  Send Message
-                </Button>
-                <Button variant="destructive" className="w-full h-8 text-xs" onClick={handleRejectCandidate}>
-                  Reject Candidate
-                </Button>
-              </CardContent>
-            </Card>
-          </motion.div>
+          {/* Actions moved to hero card — inline row at top */}
         </div>
       </div>
+
+      {/* Calendar Picker Modal */}
+      {showCalendarPicker && candidate && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40" onClick={() => setShowCalendarPicker(false)}>
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            onClick={(e) => e.stopPropagation()}
+            className="bg-white rounded-xl shadow-2xl w-full max-w-sm mx-4 overflow-hidden"
+          >
+            <div className="bg-gradient-to-r from-slate-800 to-slate-700 px-5 py-3.5">
+              <h3 className="text-white font-semibold text-sm">Schedule Interview</h3>
+              <p className="text-gray-300 text-xs mt-0.5">with {candidate.name}</p>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-xs font-medium text-gray-600 mb-1.5">Date & Time</label>
+                <input
+                  type="datetime-local"
+                  value={interviewDate}
+                  onChange={(e) => setInterviewDate(e.target.value)}
+                  className="w-full px-3 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:border-sky-400 focus:ring-1 focus:ring-sky-400"
+                />
+              </div>
+              <div className="space-y-2">
+                <p className="text-xs font-medium text-gray-600">Open in Calendar</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    onClick={() => openCalendar('outlook')}
+                    className="flex items-center justify-center gap-2 px-3 py-2.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-medium transition-colors"
+                  >
+                    <Calendar className="w-3.5 h-3.5" />
+                    Microsoft Outlook
+                  </button>
+                  <button
+                    onClick={() => openCalendar('google')}
+                    className="flex items-center justify-center gap-2 px-3 py-2.5 bg-red-500 hover:bg-red-600 text-white rounded-lg text-xs font-medium transition-colors"
+                  >
+                    <Calendar className="w-3.5 h-3.5" />
+                    Google Calendar
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowCalendarPicker(false)}
+                className="w-full text-center text-xs text-gray-500 hover:text-gray-700 py-1"
+              >
+                Cancel
+              </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   )
 }

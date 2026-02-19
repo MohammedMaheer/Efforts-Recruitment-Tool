@@ -5934,13 +5934,29 @@ async def classify_title(title: str = Body(..., embed=True)):
 # ===========================================================================
 
 def _format_search_results(raw_results: list, candidates: list) -> list:
-    """Normalize search results into {candidate, relevance_score, match_reasons} format."""
+    """Normalize search results into {candidate, relevance_score, match_reasons} format.
+    Deduplicates by candidate ID — keeps the first (highest-ranked) occurrence."""
     formatted = []
+    seen_ids = set()  # Track seen candidate IDs to prevent duplicates
     for item in raw_results:
         if isinstance(item, dict):
+            # Extract candidate ID for dedup check
+            cand_id = None
+            if 'candidate' in item and isinstance(item['candidate'], dict):
+                cand_id = str(item['candidate'].get('id', ''))
+            elif 'id' in item:
+                cand_id = str(item['id'])
+            elif 'candidate_id' in item:
+                cand_id = str(item['candidate_id'])
+
+            # Skip if we've already seen this candidate
+            if cand_id and cand_id in seen_ids:
+                continue
+
             # If it already has the expected shape
             if 'candidate' in item and 'relevance_score' in item:
                 formatted.append(item)
+                if cand_id: seen_ids.add(cand_id)
             # rank_candidates_for_job format: {candidate, match, score}
             elif 'candidate' in item and 'score' in item:
                 match_data = item.get('match', {})
@@ -5952,6 +5968,7 @@ def _format_search_results(raw_results: list, candidates: list) -> list:
                     "missing_skills": match_data.get('missing_skills', []),
                     "recommendation": match_data.get('recommendation', ''),
                 })
+                if cand_id: seen_ids.add(cand_id)
             # If it's a raw candidate dict with a score field
             elif 'id' in item or 'name' in item:
                 score = item.get('score', item.get('match_score', item.get('matchScore', 50)))
@@ -5960,6 +5977,7 @@ def _format_search_results(raw_results: list, candidates: list) -> list:
                     "relevance_score": score,
                     "match_reasons": item.get('match_reasons', item.get('key_strengths', ["AI matched"]))
                 })
+                if cand_id: seen_ids.add(cand_id)
             # LLM ranking format: {candidate_id, score, ...}
             elif 'candidate_id' in item:
                 cand = next((c for c in candidates if str(c.get('id')) == str(item['candidate_id'])), None)
@@ -5969,6 +5987,7 @@ def _format_search_results(raw_results: list, candidates: list) -> list:
                         "relevance_score": int(item.get('score', item.get('job_fit_score', 50))),
                         "match_reasons": item.get('match_reasons', item.get('key_strengths', ["AI matched"]))
                     })
+                    if cand_id: seen_ids.add(cand_id)
     return formatted
 
 @app.post("/api/ai/smart-search")

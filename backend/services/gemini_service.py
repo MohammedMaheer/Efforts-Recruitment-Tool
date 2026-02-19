@@ -1131,6 +1131,10 @@ RESPONSE RULES:
             # Fallback: if parsing found nothing, send top-N from pool
             if not candidates_lookup:
                 for i, c in enumerate(_selected_candidates[:num_candidates]):
+                    cid = c.get('id', '')
+                    if cid in used_ids:
+                        continue  # Skip duplicates in fallback too
+                    used_ids.add(cid)
                     candidates_lookup.append({
                         'index': i + 1,
                         'id': c.get('id', ''),
