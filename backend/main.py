@@ -1903,14 +1903,17 @@ async def get_candidates(
     page: int = 1,
     limit: int = 50,
     job_category: Optional[str] = None,
-    min_score: Optional[int] = None
+    min_score: Optional[int] = None,
+    fields: Optional[str] = None
 ):
     """
     Get candidates with OPTIMIZED pagination and caching
     Efficiently handles 100,000+ candidates
+    Use fields=light for fast list views (skips resume_text, ai_analysis)
     """
+    is_light = fields == 'light'
     # Create cache key
-    cache_key = f"candidates_p{page}_l{limit}_c{job_category}_s{min_score}"
+    cache_key = f"candidates_p{page}_l{limit}_c{job_category}_s{min_score}_f{fields}"
     
     # Check cache first
     if cache_key in response_cache:
@@ -1926,14 +1929,22 @@ async def get_candidates(
         if min_score:
             filters['min_score'] = min_score
         
-        # Use connection pooling
+        # Use lightweight query for list views, full query for detail views
         async with db_semaphore:
-            candidates, total_count = await asyncio.to_thread(
-                db_service.get_candidates_paginated,
-                page,
-                limit,
-                filters
-            )
+            if is_light:
+                candidates, total_count = await asyncio.to_thread(
+                    db_service.get_candidates_light,
+                    page,
+                    limit,
+                    filters
+                )
+            else:
+                candidates, total_count = await asyncio.to_thread(
+                    db_service.get_candidates_paginated,
+                    page,
+                    limit,
+                    filters
+                )
         
         result = {
             "page": page,
@@ -3825,6 +3836,14 @@ async def trigger_reset_and_reparse(email_address: str):
         logger.info(f"✅ Incremental sync complete! {new_count} new, {updated_count} updated, {skipped_count} skipped from {len(messages)} emails")
         logger.info(f"📊 Database: {current_count} → {final_count} candidates (no data lost!)")
         
+        # Update last sync time on success (so sync-status shows it)
+        global _last_email_sync_time
+        _last_email_sync_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+        try:
+            await asyncio.to_thread(db_service.set_sync_metadata, 'last_email_sync_time', _last_email_sync_time)
+        except Exception:
+            pass  # non-critical
+        
     except Exception as e:
         logger.error(f"Error in auto-triggered sync: {str(e)}")
     finally:
@@ -4047,9 +4066,19 @@ async def get_sync_status():
     All times are in UTC (ISO 8601 with Z suffix).
     Frontend can poll this to detect new candidates.
     """
+    global _last_email_sync_time
     try:
+        # If in-memory value is null, try loading from DB (handles cold starts)
+        if not _last_email_sync_time:
+            try:
+                persisted = await asyncio.to_thread(db_service.get_sync_metadata, 'last_email_sync_time')
+                if persisted:
+                    _last_email_sync_time = persisted
+            except Exception:
+                pass
+        
         candidate_count = await asyncio.to_thread(lambda: db_service.get_total_candidates())
-        sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', '15'))
+        sync_interval = int(os.getenv('SYNC_INTERVAL_MINUTES', '30'))
         now_utc = datetime.utcnow()
         next_sync_utc = None
         if _last_email_sync_time:
@@ -4073,7 +4102,7 @@ async def get_sync_status():
         return {
             'last_sync_time': _last_email_sync_time,
             'candidate_count': 0,
-            'sync_interval_minutes': int(os.getenv('SYNC_INTERVAL_MINUTES', '15')),
+            'sync_interval_minutes': int(os.getenv('SYNC_INTERVAL_MINUTES', '30')),
             'status': 'error',
             'error': str(e)
         }
