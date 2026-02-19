@@ -291,6 +291,24 @@ export const candidateApi = {
   },
 
   /**
+   * Bulk shortlist candidates — single request for multiple candidates.
+   * Backend sends personalized, branded emails to each candidate.
+   */
+  async bulkShortlist(candidateIds: string[], sendEmails = true): Promise<ApiResponse<{
+    status: string;
+    total: number;
+    shortlisted: number;
+    emails_sent: number;
+    emails_failed: number;
+    results: Array<{ candidate_id: string; name?: string; status: string; email?: string }>;
+  }>> {
+    return client.post('/api/candidates/bulk-shortlist', {
+      candidate_ids: candidateIds,
+      send_emails: sendEmails,
+    });
+  },
+
+  /**
    * Reprocess candidate scores
    */
   async reprocessScores(): Promise<ApiResponse<{ processed: number; errors: number }>> {

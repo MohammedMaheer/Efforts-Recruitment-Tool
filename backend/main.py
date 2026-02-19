@@ -5182,17 +5182,15 @@ async def bulk_shortlist_candidates(
     current_user: dict = Depends(require_auth)
 ):
     """
-    Bulk shortlist candidates and send customizable notification emails.
-    Accepts optional custom email subject/body; uses AI-generated default if not provided.
+    Bulk shortlist candidates and send personalized notification emails.
+    Reuses the same rich _send_shortlist_email() pipeline as single shortlist,
+    so every candidate gets a fully branded, location-aware, personalized email.
     """
     try:
         results = []
         shortlisted = 0
         emails_sent = 0
         emails_failed = 0
-
-        company_name = os.getenv('COMPANY_NAME', _settings.company_name)
-        recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name)
 
         for cid in request.candidate_ids:
             try:
@@ -5206,92 +5204,33 @@ async def bulk_shortlist_candidates(
 
                 shortlisted += 1
 
-                # Send email if requested
+                # Send personalized email using the same rich pipeline as single shortlist
                 if request.send_emails:
                     candidate = await asyncio.to_thread(db_service.get_candidate_by_id, cid)
                     if not candidate or not candidate.get('email'):
-                        results.append({'candidate_id': cid, 'status': 'shortlisted', 'email': 'no_email'})
+                        results.append({
+                            'candidate_id': cid,
+                            'name': (candidate or {}).get('name', 'Unknown'),
+                            'status': 'shortlisted',
+                            'email': 'no_email'
+                        })
                         continue
 
                     candidate_name = candidate.get('name', 'Candidate')
-                    candidate_email = candidate.get('email', '')
-                    job_title = candidate.get('jobCategory', '') or candidate.get('job_category', '')
 
-                    if request.email_subject and request.email_body:
-                        # Use custom email from user
-                        subject = request.email_subject
-                        body = request.email_body
-                    else:
-                        # Use default template
-                        templates_svc = get_templates_service()
-                        rendered = templates_svc.render_template('shortlist_notification', {
-                            'candidate_name': candidate_name,
-                            'company_name': company_name,
-                            'recruiter_name': recruiter_name,
-                            'job_title': job_title,
-                        })
-                        subject = rendered['subject']
-                        body = rendered['body']
-
-                    # Replace placeholders with actual values
-                    subject = subject.replace('{{candidate_name}}', candidate_name)
-                    subject = subject.replace('{{company_name}}', company_name)
-                    subject = subject.replace('{{job_title}}', job_title)
-                    subject = subject.replace('{{recruiter_name}}', recruiter_name)
-                    body = body.replace('{{candidate_name}}', candidate_name)
-                    body = body.replace('{{company_name}}', company_name)
-                    body = body.replace('{{job_title}}', job_title)
-                    body = body.replace('{{recruiter_name}}', recruiter_name)
-
-                    # Convert to HTML
-                    body_html = body.replace('\n', '<br>')
-                    body_html = f'<div style="font-family: Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #333;">{body_html}</div>'
-
-                    # Send via Graph
                     try:
-                        client_id = os.getenv('MICROSOFT_CLIENT_ID')
-                        client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
-                        tenant_id = os.getenv('MICROSOFT_TENANT_ID')
-                        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
+                        # Use the same rich, branded, location-aware email as single shortlist
+                        email_result = await _send_shortlist_email(candidate)
+                        email_status = email_result.get('status', 'error') if email_result else 'error'
 
-                        if all([client_id, client_secret, tenant_id]):
-                            graph = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=sender_email)
-                            token_storage = get_token_storage()
-                            token_data = token_storage.get_token(sender_email)
-
-                            if token_data and token_data.get('access_token'):
-                                # Refresh if expired
-                                if token_data.get('is_expired') and token_data.get('refresh_token'):
-                                    refresh_result = await graph.refresh_access_token(token_data['refresh_token'])
-                                    if refresh_result['status'] == 'success':
-                                        token_storage.save_token(
-                                            email=sender_email,
-                                            access_token=refresh_result['access_token'],
-                                            refresh_token=refresh_result.get('refresh_token', token_data['refresh_token']),
-                                            expires_in=refresh_result['expires_in'],
-                                            auth_type='delegated'
-                                        )
-                                        token_data = token_storage.get_token(sender_email)
-                                graph.access_token = token_data['access_token']
-                                graph.auth_type = token_data.get('auth_type', 'delegated')
-                                graph.token_expiry = datetime.now() + timedelta(hours=1)
-                            else:
-                                raise Exception("No OAuth token. Authenticate via Settings → Connect Microsoft Account.")
-
-                            email_result = await graph.send_mail(
-                                to_email=candidate_email,
-                                subject=subject,
-                                body=body_html,
-                                content_type='HTML'
-                            )
-                            if email_result.get('status') == 'success':
-                                emails_sent += 1
-                                results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': 'sent'})
-                            else:
-                                emails_failed += 1
-                                results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': 'failed'})
+                        if email_status == 'success':
+                            emails_sent += 1
+                            results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': 'sent'})
+                        elif email_status == 'skipped':
+                            results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': email_result.get('reason', 'skipped')})
                         else:
-                            results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': 'no_credentials'})
+                            emails_failed += 1
+                            results.append({'candidate_id': cid, 'name': candidate_name, 'status': 'shortlisted', 'email': 'failed'})
                     except Exception as email_err:
                         emails_failed += 1
                         logger.warning(f"Email send error for {candidate_name}: {email_err}")
@@ -5302,6 +5241,9 @@ async def bulk_shortlist_candidates(
             except Exception as e:
                 logger.warning(f"Bulk shortlist error for {cid}: {e}")
                 results.append({'candidate_id': cid, 'status': 'error', 'message': str(e)})
+
+        # Invalidate cache after all updates
+        response_cache.clear()
 
         return {
             'status': 'success',

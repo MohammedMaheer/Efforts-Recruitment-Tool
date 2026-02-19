@@ -504,24 +504,37 @@ export default function AIAssistant() {
   const handleShortlistSelected = async (candidateList: Candidate[]) => {
     const toShortlist = candidateList.filter(c => selectedIds.has(c.id) && c.status !== 'Shortlisted')
     if (toShortlist.length === 0) return
-    let count = 0
-    for (const c of toShortlist) {
-      try {
-        await candidateApi.updateStatus(c.id, 'Shortlisted')
-        if (!isShortlisted(c.id)) toggleShortlist(c.id)
-        count++
-      } catch (e) { console.error('Shortlist error:', e) }
+    try {
+      const ids = toShortlist.map(c => c.id)
+      const result = await candidateApi.bulkShortlist(ids)
+      const data = result.data
+      const count = data?.shortlisted || 0
+      const emailsSent = data?.emails_sent || 0
+      toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
+      setSelectedIds(new Set())
+      const confirmMsg: Message = {
+        id: Date.now().toString(),
+        type: 'ai',
+        content: `**${count} candidate${count !== 1 ? 's' : ''}** shortlisted successfully. **${emailsSent}** personalized email${emailsSent !== 1 ? 's' : ''} sent.`,
+        timestamp: new Date(),
+        intent: 'shortlist_confirm',
+        actions: [{ label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }]
+      }
+      setMessages(prev => [...prev, confirmMsg])
+    } catch (e) {
+      console.error('Bulk shortlist error:', e)
+      // Fallback: try one-by-one
+      let count = 0
+      for (const c of toShortlist) {
+        try {
+          await candidateApi.updateStatus(c.id, 'Shortlisted')
+          if (!isShortlisted(c.id)) toggleShortlist(c.id)
+          count++
+        } catch (err) { console.error('Shortlist error:', err) }
+      }
+      setSelectedIds(new Set())
+      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${count} candidate${count !== 1 ? 's' : ''}** shortlisted. Personalized emails queued.`, timestamp: new Date(), intent: 'shortlist_confirm', actions: [{ label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }] }])
     }
-    setSelectedIds(new Set())
-    const confirmMsg: Message = {
-      id: Date.now().toString(),
-      type: 'ai',
-      content: `**${count} candidate${count !== 1 ? 's' : ''}** shortlisted successfully.`,
-      timestamp: new Date(),
-      intent: 'shortlist_confirm',
-      actions: [{ label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }]
-    }
-    setMessages(prev => [...prev, confirmMsg])
   }
 
   // ── Chat Session Persistence ──
@@ -900,14 +913,19 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       actions = [
         { label: 'Email All', icon: Mail, action: () => navigate('/email-integration'), variant: 'primary' },
         { label: 'Shortlist All', icon: Star, action: async () => {
-          for (const c of filteredCandidates) {
-            try {
-              await candidateApi.updateStatus(c.id, 'Shortlisted')
-            } catch (e) {
-              console.error(`Failed to shortlist ${c.name}:`, e)
+          try {
+            const ids = filteredCandidates.map(c => c.id)
+            const result = await candidateApi.bulkShortlist(ids)
+            const data = result.data
+            alert(`Shortlisted ${data?.shortlisted || 0} candidates — ${data?.emails_sent || 0} personalized emails sent!`)
+          } catch (e) {
+            console.error('Bulk shortlist error:', e)
+            // Fallback: one-by-one
+            for (const c of filteredCandidates) {
+              try { await candidateApi.updateStatus(c.id, 'Shortlisted') } catch (err) { console.error(`Failed to shortlist ${c.name}:`, err) }
             }
+            alert(`Shortlisted ${filteredCandidates.length} candidates — personalized emails queued!`)
           }
-          alert(`Shortlisted ${filteredCandidates.length} candidates — notification emails sent!`)
         }, variant: 'secondary' }
       ]
     }
