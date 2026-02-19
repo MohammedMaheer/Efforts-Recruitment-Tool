@@ -67,7 +67,7 @@ steps:
       - '--platform'
       - 'managed'
       - '--memory'
-      - '1536Mi'
+      - '2Gi'
       - '--cpu'
       - '1'
       - '--timeout'
