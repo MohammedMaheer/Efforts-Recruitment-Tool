@@ -273,24 +273,27 @@ export default function CandidateDetail() {
     }
   }
 
+  const [showRejectConfirm, setShowRejectConfirm] = useState(false)
+
   const handleRejectCandidate = async () => {
     if (!candidate) return
-    if (confirm(`Are you sure you want to reject ${candidate.name}?`)) {
-      try {
-        await candidateApi.updateStatus(candidate.id, 'Rejected')
-        
-        addNotification({
-          type: 'info',
-          title: 'Candidate Rejected',
-          message: `${candidate.name} has been marked as rejected`,
-          actionUrl: '/candidates'
-        })
-        alert(`${candidate.name} has been marked as rejected.`)
-        navigate('/candidates')
-      } catch (error) {
-        console.error('Update error:', error)
-        alert('Failed to update candidate status')
-      }
+    try {
+      await candidateApi.updateStatus(candidate.id, 'Rejected')
+      addNotification({
+        type: 'info',
+        title: 'Candidate Rejected',
+        message: `${candidate.name} has been marked as rejected`,
+        actionUrl: '/candidates'
+      })
+      setShowRejectConfirm(false)
+      navigate('/candidates')
+    } catch (error) {
+      console.error('Update error:', error)
+      addNotification({
+        type: 'error',
+        title: 'Update Failed',
+        message: 'Failed to update candidate status'
+      })
     }
   }
 
@@ -464,7 +467,7 @@ export default function CandidateDetail() {
               <Button variant="outline" size="sm" className="text-xs h-8" onClick={handleSendMessage}>
                 <Mail className="w-3.5 h-3.5 mr-1" />Send Message
               </Button>
-              <Button variant="destructive" size="sm" className="text-xs h-8" onClick={handleRejectCandidate}>
+              <Button variant="destructive" size="sm" className="text-xs h-8" onClick={() => setShowRejectConfirm(true)}>
                 <XOctagon className="w-3.5 h-3.5 mr-1" />Reject Candidate
               </Button>
             </div>
@@ -895,6 +898,27 @@ export default function CandidateDetail() {
               >
                 Cancel
               </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Reject Confirmation Modal */}
+      {showRejectConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowRejectConfirm(false)}>
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-xl shadow-xl p-6 max-w-sm mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Reject Candidate</h3>
+            <p className="text-sm text-gray-600 mb-5">
+              Are you sure you want to reject <span className="font-medium">{candidate?.name}</span>? This action will update their status.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <Button variant="outline" size="sm" onClick={() => setShowRejectConfirm(false)}>Cancel</Button>
+              <Button variant="destructive" size="sm" onClick={handleRejectCandidate}>Reject</Button>
             </div>
           </motion.div>
         </div>

@@ -1808,8 +1808,6 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                               </div>
 
                               {message.candidates!.map((candidate, idx) => {
-                                const matchedSection = split!.sections.find(s => s.candidateId === candidate.id)
-                                const sectionText = matchedSection?.text || ''
                                 return (
                                 <motion.div
                                   key={candidate.id}

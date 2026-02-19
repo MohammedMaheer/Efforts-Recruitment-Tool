@@ -784,7 +784,7 @@ export default function Candidates() {
                 <TableHead className="w-[80px]">Experience</TableHead>
                 <TableHead className="w-[90px]">Applied</TableHead>
                 <TableHead className="w-[80px]">Status</TableHead>
-                <TableHead className="w-[40px]"></TableHead>
+                <TableHead className="w-[80px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>

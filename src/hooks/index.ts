@@ -10,3 +10,4 @@ export { useLocalStorage } from './useLocalStorage';
 export { useAsync } from './useAsync';
 export { useIntersectionObserver } from './useIntersectionObserver';
 export { useRealTimeStats } from './useRealTimeStats';
+export { useEmailSync } from './useEmailSync';
