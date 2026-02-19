@@ -523,7 +523,10 @@ class OAuthAutomationService:
             graph_service = self._graph_service_factory(
                 self.client_id, self.client_secret, self.tenant_id, self.primary_email
             )
-            redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', 'http://localhost:5173/email')
+            default_redirect = 'https://efforts-recruitment.web.app/auth/callback'
+            if os.getenv('ENVIRONMENT') != 'production':
+                default_redirect = 'http://localhost:5173/email'
+            redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', default_redirect)
             return graph_service.get_authorization_url(
                 redirect_uri=redirect_uri,
                 state=self.primary_email

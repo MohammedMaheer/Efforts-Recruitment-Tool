@@ -4987,6 +4987,8 @@ async def _send_shortlist_email(candidate: Dict):
         token_storage = get_token_storage()
         token_data = token_storage.get_token(sender_email)
 
+        authenticated = False
+
         if token_data and token_data.get('access_token'):
             # Check if token is expired and try to refresh
             if token_data.get('is_expired') and token_data.get('refresh_token'):
@@ -5003,13 +5005,29 @@ async def _send_shortlist_email(candidate: Dict):
                     token_data = token_storage.get_token(sender_email)
                     logger.info("✅ Token refreshed for email sending")
                 else:
-                    logger.warning(f"⚠️ Token refresh failed: {refresh_result.get('error')}")
-                    return {'status': 'failed', 'reason': 'token_refresh_failed'}
-            graph.access_token = token_data['access_token']
-            graph.auth_type = token_data.get('auth_type', 'delegated')
-            graph.token_expiry = datetime.now() + timedelta(hours=1)
-        else:
-            logger.warning("⚠️ No OAuth token available for sending email. Please authenticate via Settings → Connect Microsoft Account.")
+                    logger.warning(f"⚠️ Delegated token refresh failed: {refresh_result.get('error')}")
+            if token_data and token_data.get('access_token') and not token_data.get('is_expired'):
+                graph.access_token = token_data['access_token']
+                graph.auth_type = token_data.get('auth_type', 'delegated')
+                graph.token_expiry = datetime.now() + timedelta(hours=1)
+                authenticated = True
+
+        # Fallback: Use application credentials (client_credentials flow)
+        # This works when Mail.Send APPLICATION permission is granted in Azure AD
+        if not authenticated:
+            logger.warning("🔑 No delegated token, trying application credentials (Mail.Send app permission)...")
+            try:
+                app_result = await graph.authenticate_with_credentials()
+                if app_result.get('status') == 'success':
+                    logger.warning(f"✅ Authenticated via app credentials for {sender_email}")
+                    authenticated = True
+                else:
+                    logger.warning(f"⚠️ App credentials auth failed: {app_result.get('error')}")
+            except Exception as app_err:
+                logger.warning(f"⚠️ App credentials auth error: {app_err}")
+
+        if not authenticated:
+            logger.warning("⚠️ No auth method available for sending email. Check delegated token or app permissions.")
             return {'status': 'failed', 'reason': 'no_token'}
 
         # Send the email
@@ -5021,7 +5039,7 @@ async def _send_shortlist_email(candidate: Dict):
         )
 
         if result.get('status') == 'success':
-            logger.info(f"✅ Shortlist email sent to {candidate_name} ({candidate_email}) [UAE={is_uae}]")
+            logger.warning(f"✅ Shortlist email sent to {candidate_name} ({candidate_email}) [UAE={is_uae}]")
         else:
             logger.warning(f"⚠️ Failed to send shortlist email to {candidate_email}: {result.get('message')}")
 
@@ -5076,6 +5094,93 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
     except Exception as e:
         logger.error(f"Status update error: {str(e)}")
         raise HTTPException(500, f"Error updating candidate status: {str(e)}")
+
+
+# ============================================================================
+# TEST EMAIL SENDING
+# ============================================================================
+
+@app.post("/api/email/test-send")
+async def test_email_send(current_user: dict = Depends(require_auth)):
+    """
+    Test email sending via Microsoft Graph.
+    Sends a test email from hr@effortz.com to the logged-in user's email.
+    Tests both delegated and application credential flows.
+    """
+    try:
+        client_id = os.getenv('MICROSOFT_CLIENT_ID')
+        client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
+        tenant_id = os.getenv('MICROSOFT_TENANT_ID')
+        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
+        recipient = current_user.get('email', sender_email)
+
+        if not all([client_id, client_secret, tenant_id]):
+            return {'status': 'error', 'message': 'Microsoft Graph credentials not configured'}
+
+        graph = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=sender_email)
+        auth_method = 'none'
+
+        # Try delegated token first
+        token_storage = get_token_storage()
+        token_data = token_storage.get_token(sender_email)
+
+        if token_data and token_data.get('access_token'):
+            if token_data.get('is_expired') and token_data.get('refresh_token'):
+                refresh_result = await graph.refresh_access_token(token_data['refresh_token'])
+                if refresh_result['status'] == 'success':
+                    token_storage.save_token(
+                        email=sender_email,
+                        access_token=refresh_result['access_token'],
+                        refresh_token=refresh_result.get('refresh_token', token_data['refresh_token']),
+                        expires_in=refresh_result['expires_in'],
+                        auth_type='delegated'
+                    )
+                    token_data = token_storage.get_token(sender_email)
+            if token_data and token_data.get('access_token') and not token_data.get('is_expired'):
+                graph.access_token = token_data['access_token']
+                graph.auth_type = token_data.get('auth_type', 'delegated')
+                graph.token_expiry = datetime.now() + timedelta(hours=1)
+                auth_method = 'delegated'
+
+        # Fallback to app credentials
+        if auth_method == 'none':
+            app_result = await graph.authenticate_with_credentials()
+            if app_result.get('status') == 'success':
+                auth_method = 'application'
+            else:
+                return {
+                    'status': 'error',
+                    'message': f'Both delegated and app auth failed. App error: {app_result.get("error")}',
+                    'sender_email': sender_email,
+                    'auth_method': 'none'
+                }
+
+        # Send test email
+        test_body = f"""
+<div style="font-family: 'Segoe UI', Arial, sans-serif; padding: 20px; max-width: 500px;">
+  <h2 style="color: #172554;">✅ Email Test Successful</h2>
+  <p>This test email was sent from <strong>{sender_email}</strong> using <strong>{auth_method}</strong> authentication.</p>
+  <p style="color: #6b7280; font-size: 12px;">Sent by Efforts Solutions Recruitment Platform</p>
+</div>"""
+
+        result = await graph.send_mail(
+            to_email=recipient,
+            subject=f"[Test] Efforts Recruitment Email Test - {auth_method}",
+            body=test_body,
+            content_type='HTML'
+        )
+
+        return {
+            'status': result.get('status'),
+            'auth_method': auth_method,
+            'sender': sender_email,
+            'recipient': recipient,
+            'message': result.get('message', '')
+        }
+
+    except Exception as e:
+        logger.error(f"Test email error: {e}")
+        return {'status': 'error', 'message': str(e)}
 
 
 # ============================================================================

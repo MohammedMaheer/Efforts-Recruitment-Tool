@@ -406,7 +406,7 @@ class MicrosoftGraphService:
             response = await asyncio.to_thread(lambda: requests.post(url, headers=headers, json=email_payload, timeout=30))
             response.raise_for_status()
 
-            logger.info(f"✅ Email sent to {to_email}: {subject}")
+            logger.warning(f"✅ Email sent to {to_email}: {subject}")
             return {
                 'status': 'success',
                 'message': f'Email sent to {to_email}'
