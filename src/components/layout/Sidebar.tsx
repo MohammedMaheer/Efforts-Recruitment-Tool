@@ -6,7 +6,6 @@ import {
   Star,
   Settings,
   Sparkles,
-  BarChart3,
   Wrench,
   ExternalLink,
 } from 'lucide-react'
@@ -15,7 +14,6 @@ import { cn } from '@/lib/utils'
 const navigation = [
   { name: 'Dashboard', href: '/dashboard', icon: LayoutDashboard },
   { name: 'AI Assistant', href: '/ai-assistant', icon: Sparkles, highlight: true },
-  { name: 'Analytics', href: '/analytics', icon: BarChart3, highlight: true },
   { name: 'Candidates', href: '/candidates', icon: Users },
   { name: 'Shortlist', href: '/shortlist', icon: Star },
   { name: 'Setup', href: '/setup', icon: Wrench },
@@ -28,19 +26,19 @@ export default function Sidebar() {
       {/* Top accent line */}
       <div className="brand-accent-line w-full" />
 
-      {/* Logo — Efforts Solutions brand */}
+      {/* Logo — AI Recruiter brand */}
       <div className="h-16 flex items-center px-5 border-b border-white/10">
         <NavLink to="/dashboard" className="flex items-center gap-3 group">
           <div className="h-10 w-10 flex-shrink-0 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center p-1 ring-1 ring-white/20 group-hover:ring-white/40 transition-all">
             <img
               src="/effortz-logo.png"
-              alt="Efforts Solutions"
+              alt="AI Recruiter"
               className="h-8 w-8 object-contain"
             />
           </div>
           <div className="min-w-0">
             <h1 className="text-[15px] font-bold text-white leading-tight tracking-tight">
-              Efforts Solutions
+              AI Recruiter
             </h1>
             <p className="text-[10px] font-medium text-sky-300 tracking-wider uppercase">
               Smart Hiring Platform

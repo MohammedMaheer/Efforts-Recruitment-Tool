@@ -46,6 +46,7 @@ import type { Candidate } from '@/store/candidateStore'
 import { useNavigate } from 'react-router-dom'
 import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
 import { useAIStatus } from '@/hooks/useAIStatus'
+import { useAuthStore } from '@/store/authStore'
 import { advancedApi, aiApi, candidateApi } from '@/services/api'
 import config from '@/config'
 import { authFetch } from '@/lib/authFetch'
@@ -399,7 +400,8 @@ const restoreChatHistory = (): Message[] => {
     const raw = sessionStorage.getItem('ai_chat_history')
     if (!raw) return []
     const parsed = JSON.parse(raw) as any[]
-    return parsed.map(m => ({
+    // Filter out old welcome messages (id '0') — will be regenerated fresh
+    return parsed.filter(m => m.id !== '0').map(m => ({
       ...m,
       timestamp: new Date(m.timestamp),
       // Re-hydrate action functions (they can't be serialized)
@@ -624,59 +626,22 @@ export default function AIAssistant() {
   const welcomeGenerated = useRef(messages.length > 0)
   
   useEffect(() => {
-    // Only generate welcome message once when we have data
-    // Skip if we restored chat history from session
+    // Show a simple personalized welcome message
     if (welcomeGenerated.current) return
     if (candidates.length === 0) return
     welcomeGenerated.current = true
-    
-    // Build smart welcome with actual candidate insights
-    const topSkills = new Map<string, number>()
-    const categories = new Map<string, number>()
-    const locations = new Map<string, number>()
-    let strongCount = 0
-    let recentCount = 0
-    const today = new Date()
-    
-    // Use the candidates we have so far for insights
-    candidates.forEach(c => {
-      c.skills?.forEach(s => topSkills.set(s, (topSkills.get(s) || 0) + 1))
-      if (c.jobCategory) categories.set(c.jobCategory, (categories.get(c.jobCategory) || 0) + 1)
-      if (c.location) locations.set(c.location, (locations.get(c.location) || 0) + 1)
-      if (c.matchScore >= 70) strongCount++
-      const d = new Date(c.appliedDate)
-      if (today.getTime() - d.getTime() < 86400000) recentCount++
-    })
 
-    // Use server totalCount for the headline number (accurate from first API call)
-    const displayTotal = totalCount > 0 ? totalCount : candidates.length
-    const topSkillsList = [...topSkills.entries()].sort((a, b) => b[1] - a[1]).slice(0, 5).map(([s]) => s)
-    const topCategories = [...categories.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([c, n]) => `${c} (${n})`)
-    const avgScore = candidates.length > 0 ? (candidates.reduce((a, c) => a + (c.matchScore || 0), 0) / candidates.length).toFixed(0) : '0'
+    // Clear any cached old welcome from sessionStorage
+    sessionStorage.removeItem('ai_chat_history')
+
+    const user = useAuthStore.getState().user
+    const firstName = user?.name?.split(' ')[0] || 'there'
 
     const welcomeMessage: Message = {
       id: '0',
       type: 'ai',
-      content: `Welcome! I'm your **AI Recruitment Assistant** with **${displayTotal} candidates** ready to analyze.
-
-${topCategories.length > 0 ? `**Top Categories:** ${topCategories.join(' · ')}` : ''}
-${topSkillsList.length > 0 ? `**Trending Skills:** ${topSkillsList.join(', ')}` : ''}
-
-**What I can do:**
-• **Smart Search** — Find candidates by role, skill, location, or any criteria
-• **Job Matching** — Upload a JD and I'll rank your best fits
-• **ML Ranking** — Predict hiring success with machine learning
-• **Analytics** — Pipeline insights, quality breakdown, hiring forecasts
-• **Actions** — Shortlist, email, schedule interviews directly from chat
-
-Try a suggestion below or ask anything!`,
+      content: `Hi ${firstName}! How can I help you today?`,
       timestamp: new Date(),
-      insights: displayTotal > 0 ? [
-        { title: 'Candidates', value: displayTotal, icon: Users, color: 'blue' },
-        { title: 'Avg Score', value: `${avgScore}%`, icon: TrendingUp, color: 'green' },
-        { title: 'Strong (70%+)', value: strongCount, icon: Star, color: 'yellow' },
-        { title: 'New Today', value: recentCount, icon: Clock, color: 'indigo' }
-      ] : undefined
     }
     setMessages([welcomeMessage])
   }, [candidates.length, totalCount, newChatTrigger])

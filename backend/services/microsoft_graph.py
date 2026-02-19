@@ -37,7 +37,7 @@ class MicrosoftGraphService:
             'code': authorization_code,
             'redirect_uri': redirect_uri,
             'grant_type': 'authorization_code',
-            'scope': 'https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access'
+            'scope': 'https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access'
         }
         
         try:
@@ -438,7 +438,7 @@ class MicrosoftGraphService:
             'client_secret': self.client_secret,
             'refresh_token': refresh_token,
             'grant_type': 'refresh_token',
-            'scope': 'https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/User.Read offline_access'
+            'scope': 'https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access'
         }
         
         try:
@@ -476,6 +476,7 @@ class MicrosoftGraphService:
         scopes = [
             'https://graph.microsoft.com/Mail.Read',
             'https://graph.microsoft.com/Mail.ReadWrite',
+            'https://graph.microsoft.com/Mail.Send',
             'https://graph.microsoft.com/User.Read',
             'offline_access'  # Required for refresh tokens
         ]

@@ -124,10 +124,10 @@ export default function LoginPage() {
             className="flex items-center gap-3 mb-12"
           >
             <div className="w-12 h-12 bg-white/10 backdrop-blur-sm rounded-xl flex items-center justify-center p-1 ring-1 ring-white/20">
-              <img src="/effortz-logo.png" alt="Efforts Solutions" className="w-10 h-10 object-contain" />
+              <img src="/effortz-logo.png" alt="AI Recruiter" className="w-10 h-10 object-contain" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold text-white">Efforts Solutions</h1>
+              <h1 className="text-2xl font-bold text-white">AI Recruiter</h1>
               <p className="text-sky-300 text-sm">Smart Hiring Platform</p>
             </div>
           </motion.div>
@@ -243,10 +243,10 @@ export default function LoginPage() {
               transition={{ delay: 0.2, type: "spring" }}
               className="inline-flex items-center justify-center w-16 h-16 bg-white rounded-2xl shadow-lg mb-4 p-2"
             >
-              <img src="/effortz-logo.png" alt="Efforts Solutions" className="w-12 h-12 object-contain" />
+              <img src="/effortz-logo.png" alt="AI Recruiter" className="w-12 h-12 object-contain" />
             </motion.div>
             <h1 className="text-3xl font-bold text-gray-900 mb-2">
-              Efforts Solutions
+              AI Recruiter
             </h1>
             <p className="text-gray-600">
               Smart Hiring Platform
@@ -452,7 +452,7 @@ export default function LoginPage() {
             transition={{ delay: 0.5 }}
             className="text-center text-sm text-gray-400 mt-6"
           >
-            © {new Date().getFullYear()} Efforts Solutions · Powered by <a href="https://effortz.com" target="_blank" rel="noopener noreferrer" className="text-sky-500 hover:text-sky-600 font-medium">effortz.com</a>
+            © {new Date().getFullYear()} AI Recruiter · Powered by <a href="https://effortz.com" target="_blank" rel="noopener noreferrer" className="text-sky-500 hover:text-sky-600 font-medium">effortz.com</a>
           </motion.p>
         </motion.div>
       </div>

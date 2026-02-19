@@ -1492,7 +1492,7 @@ async def get_setup_instructions():
                     "2. Click 'New registration' with name 'Efforts Solutions AI Recruiter'",
                     "3. Set redirect URI: http://localhost:5173/email (Web type)",
                     "4. Go to 'Certificates & secrets' → New client secret",
-                    "5. Go to 'API permissions' → Add: Mail.Read, Mail.ReadWrite, User.Read, offline_access",
+                    "5. Go to 'API permissions' → Add: Mail.Read, Mail.ReadWrite, Mail.Send, User.Read, offline_access",
                     "6. Copy Application ID, Directory ID, and Secret to .env",
                     "7. Set EMAIL_ADDRESS to your Outlook email"
                 ],
@@ -3937,15 +3937,19 @@ async def oauth2_callback_get(code: str = None, error: str = None, error_descrip
 
 
 @app.get("/api/email/oauth2/url")
-async def get_oauth2_url_simple():
+async def get_oauth2_url_simple(request: Request = None):
     """
     Get Microsoft OAuth2 authorization URL using config from .env
-    Simple endpoint - no parameters needed
+    Simple endpoint - no parameters needed. Auto-detects production redirect URI.
     """
     try:
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID', 'common')
-        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', os.getenv('OAUTH_REDIRECT_URI', 'http://localhost:3000/auth/callback'))
+        # Use env var if set, otherwise auto-detect from FRONTEND_URL or default to production Firebase
+        default_redirect = 'https://efforts-recruitment.web.app/auth/callback'
+        if os.getenv('ENVIRONMENT') != 'production':
+            default_redirect = 'http://localhost:3000/auth/callback'
+        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', os.getenv('OAUTH_REDIRECT_URI', default_redirect))
         
         if not client_id:
             raise HTTPException(400, "Microsoft OAuth2 not configured. Set MICROSOFT_CLIENT_ID in .env")
@@ -4688,7 +4692,7 @@ async def manual_email_sync():
             tenant_id = os.getenv('MICROSOFT_TENANT_ID')
             
             if client_id and tenant_id:
-                auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?client_id={client_id}&response_type=code&redirect_uri={os.getenv('MICROSOFT_REDIRECT_URI', os.getenv('OAUTH_REDIRECT_URI', 'http://localhost:3000/auth/callback'))}&scope=https://graph.microsoft.com/Mail.Read%20https://graph.microsoft.com/User.Read%20offline_access"
+                auth_url = f"https://login.microsoftonline.com/{tenant_id}/oauth2/v2.0/authorize?client_id={client_id}&response_type=code&redirect_uri={os.getenv('MICROSOFT_REDIRECT_URI', os.getenv('OAUTH_REDIRECT_URI', 'http://localhost:3000/auth/callback'))}&scope=https://graph.microsoft.com/Mail.Read%20https://graph.microsoft.com/Mail.ReadWrite%20https://graph.microsoft.com/Mail.Send%20https://graph.microsoft.com/User.Read%20offline_access"
                 return {
                     'status': 'needs_auth',
                     'message': 'No OAuth token found. Please authenticate manually.',
@@ -5395,25 +5399,69 @@ async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
             except Exception as oai_err:
                 logger.warning(f"OpenAI deep analysis error: {oai_err}")
         
-        # TIER 3: Fallback — use LLM-extracted data to build a meaningful report
+        # TIER 3: Fallback — use candidate data to build a meaningful report
+        # Rating/recommendation derived from matchScore for consistency
         if not analysis:
             skills = candidate_for_analysis.get('skills', [])
             exp = candidate_for_analysis.get('experience', 0)
             name = candidate_for_analysis.get('name', 'Unknown')
+            match_score = candidate_for_analysis.get('match_score', 50)
+            location = candidate_for_analysis.get('location', '')
+            
+            # Derive rating from actual match score so PDF values are consistent
+            if match_score >= 85:
+                fb_rating, fb_rec, fb_conf = 'A', 'STRONGLY_RECOMMEND', 85
+            elif match_score >= 75:
+                fb_rating, fb_rec, fb_conf = 'A-', 'RECOMMEND', 78
+            elif match_score >= 65:
+                fb_rating, fb_rec, fb_conf = 'B+', 'RECOMMEND', 72
+            elif match_score >= 55:
+                fb_rating, fb_rec, fb_conf = 'B', 'CONSIDER', 65
+            elif match_score >= 45:
+                fb_rating, fb_rec, fb_conf = 'B-', 'CONSIDER', 58
+            elif match_score >= 35:
+                fb_rating, fb_rec, fb_conf = 'C+', 'REVIEW', 50
+            else:
+                fb_rating, fb_rec, fb_conf = 'C', 'REVIEW', 42
+            
+            # Build profile-relevant pros/cons
+            fb_pros = []
+            if exp > 0:
+                fb_pros.append(f'Brings {exp} years of domain experience')
+            if len(skills) > 5:
+                fb_pros.append(f'Well-rounded skill set with {len(skills)} competencies')
+            elif len(skills) > 0:
+                fb_pros.append(f'Focused expertise in {", ".join(skills[:3])}')
+            if match_score >= 70:
+                fb_pros.append('Strong overall match score for the target role')
+            fb_pros.append('Profile is complete and in active pipeline')
+            
+            fb_cons = []
+            if len(skills) < 5:
+                fb_cons.append('Limited skills breadth — expanding technical portfolio recommended')
+            if exp < 3:
+                fb_cons.append('Early career stage — may need mentorship and onboarding support')
+            if not location or location in ('Not Specified', 'Unknown', ''):
+                fb_cons.append('Location not specified — remote/relocation flexibility should be verified')
+            if match_score < 60:
+                fb_cons.append('Below-average match score — verify alignment with role requirements')
+            if not fb_cons:
+                fb_cons.append('Profile appears strong overall — detailed AI review recommended for deeper insights')
+            
             analysis = {
-                'executive_summary': f'{name} is a professional with {exp} years of experience specializing in {", ".join(skills[:5]) if skills else "their field"}. Their profile indicates competency in their domain, though a more detailed assessment would benefit from AI model availability. Based on the information available, they appear to be a viable candidate worth considering for roles aligned with their skill set.',
+                'executive_summary': f'{name} is a professional with {exp} years of experience specializing in {", ".join(skills[:5]) if skills else "their field"}. With a match score of {match_score}%, they {"show strong alignment" if match_score >= 70 else "show moderate alignment" if match_score >= 50 else "may need further evaluation"} for the target role. Based on the available profile data, {"they are a strong candidate" if match_score >= 70 else "they are worth considering" if match_score >= 50 else "additional screening is recommended"}.',
                 'technical_assessment': f'The candidate lists {len(skills)} technical skills including {", ".join(skills[:8]) if skills else "unspecified technologies"}. The breadth of their technical stack suggests {"a well-rounded professional" if len(skills) > 5 else "a focused specialist"} capable of contributing to relevant projects.',
                 'experience_assessment': f'With {exp} years of professional experience, {name} {"demonstrates significant industry tenure" if exp > 5 else "is building their career foundation"}. Further details about career progression should be explored in interview.',
                 'education_assessment': 'Educational credentials are listed in their profile. Verification of qualifications is recommended during the screening process.',
-                'pros': [f'Brings {exp} years of domain experience', f'Skills portfolio includes {len(skills)} listed competencies', 'Profile is complete and in active pipeline'],
-                'cons': ['AI deep analysis unavailable — manual review recommended', 'Detailed assessment pending AI model availability'],
+                'pros': fb_pros,
+                'cons': fb_cons,
                 'career_trajectory': f'Based on {exp} years of experience, the candidate appears to be at a {"senior" if exp > 7 else "mid" if exp > 3 else "junior"}-level career stage.',
                 'ideal_roles': [candidate_for_analysis.get('job_category', 'General')],
                 'interview_focus_areas': ['Technical depth verification', 'Cultural alignment', 'Career motivation'],
-                'hiring_recommendation': 'CONSIDER',
-                'hiring_recommendation_rationale': 'Automated deep analysis was not available. Manual review and interview recommended.',
-                'confidence_score': 40,
-                'overall_rating': 'C+',
+                'hiring_recommendation': fb_rec,
+                'hiring_recommendation_rationale': f'Based on a {match_score}% match score with {exp} years of experience and {len(skills)} listed skills. {"Strong candidate for interview." if match_score >= 70 else "Worth considering with targeted interview questions." if match_score >= 50 else "Additional screening recommended before interview."}',
+                'confidence_score': fb_conf,
+                'overall_rating': fb_rating,
                 'source': 'fallback',
             }
         

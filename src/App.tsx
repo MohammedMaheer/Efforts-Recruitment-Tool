@@ -17,7 +17,6 @@ import CandidateDetail from '@/pages/CandidateDetail'
 import Shortlist from '@/pages/Shortlist'
 import Settings from '@/pages/Settings'
 import AIAssistant from '@/pages/AIAssistant'
-import AnalyticsDashboard from '@/components/AnalyticsDashboard'
 // JobDescriptions removed - JD matching integrated into AI Assistant
 import SetupWizard from '@/pages/SetupWizard'
 
@@ -112,7 +111,6 @@ function App() {
           <Route index element={<Navigate to="/dashboard" replace />} />
           <Route path="dashboard" element={<Dashboard />} />
           <Route path="ai-assistant" element={<AIAssistant />} />
-          <Route path="analytics" element={<AnalyticsDashboard />} />
           <Route path="candidates" element={<Candidates />} />
           <Route path="candidates/:id" element={<CandidateDetail />} />
           <Route path="shortlist" element={<Shortlist />} />

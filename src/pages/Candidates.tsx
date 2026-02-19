@@ -140,15 +140,21 @@ export default function Candidates() {
   // Sort function - memoized for performance
   const sortCandidates = useCallback((items: typeof candidates, sort: SortOption) => {
     const sorted = [...items]
+    // Safe date parser — handles empty/invalid dates by treating them as epoch 0
+    const safeDate = (d: string) => {
+      if (!d) return 0
+      const t = new Date(d).getTime()
+      return isNaN(t) ? 0 : t
+    }
     switch (sort) {
       case 'score-desc':
         return sorted.sort((a, b) => b.matchScore - a.matchScore)
       case 'score-asc':
         return sorted.sort((a, b) => a.matchScore - b.matchScore)
       case 'date-newest':
-        return sorted.sort((a, b) => new Date(b.appliedDate).getTime() - new Date(a.appliedDate).getTime())
+        return sorted.sort((a, b) => safeDate(b.appliedDate) - safeDate(a.appliedDate))
       case 'date-oldest':
-        return sorted.sort((a, b) => new Date(a.appliedDate).getTime() - new Date(b.appliedDate).getTime())
+        return sorted.sort((a, b) => safeDate(a.appliedDate) - safeDate(b.appliedDate))
       case 'name-asc':
         return sorted.sort((a, b) => a.name.localeCompare(b.name))
       case 'name-desc':

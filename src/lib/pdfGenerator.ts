@@ -1,11 +1,12 @@
 /**
- * Efforts Solutions AI Recruiter — Branded PDF Generator
+ * AI Recruiter — Branded PDF Generator
  * Generates professional candidate assessment PDFs with AI summary + profile
+ * Blue gradient candidate header design with circular score indicator
  */
 
 import { jsPDF } from 'jspdf'
 
-// Efforts Solutions brand colors
+// AI Recruiter brand colors
 const BRAND = {
   primary: [29, 78, 216] as [number, number, number],     // #1d4ed8 — deep royal blue
   primaryDark: [23, 37, 84] as [number, number, number],   // #172554 — navy
@@ -37,6 +38,7 @@ interface CandidateData {
   workHistory?: Array<{ title: string; company: string; duration: string; description?: string }>
   certifications?: string[]
   languages?: string[]
+  resumeText?: string
 }
 
 interface AIAnalysisData {
@@ -55,11 +57,12 @@ interface AIAnalysisData {
   ideal_roles?: string[]
   salary_range_estimate?: string
   culture_fit_notes?: string
+  source?: string
 }
 
 // Cache for logo image data URL + natural dimensions
 let cachedLogoDataUrl: string | null = null
-let cachedLogoAspect: number = 1 // width / height
+let cachedLogoAspect: number = 1
 
 async function getLogoDataUrl(): Promise<{ dataUrl: string; aspect: number }> {
   if (cachedLogoDataUrl) return { dataUrl: cachedLogoDataUrl, aspect: cachedLogoAspect }
@@ -78,25 +81,19 @@ async function getLogoDataUrl(): Promise<{ dataUrl: string; aspect: number }> {
       resolve({ dataUrl: cachedLogoDataUrl, aspect: cachedLogoAspect })
     }
     img.onerror = () => {
-      // Fallback: generate a simple "E" logo
       const canvas = document.createElement('canvas')
       canvas.width = 120
       canvas.height = 120
       const ctx = canvas.getContext('2d')!
-      
-      // Blue rounded rect
       ctx.fillStyle = '#1d4ed8'
       ctx.beginPath()
       ctx.roundRect(0, 0, 120, 120, 20)
       ctx.fill()
-      
-      // White "E"
       ctx.fillStyle = '#ffffff'
-      ctx.font = 'bold 80px Arial'
+      ctx.font = 'bold 60px Arial'
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText('E', 60, 65)
-      
+      ctx.fillText('AI', 60, 65)
       cachedLogoDataUrl = canvas.toDataURL('image/png')
       cachedLogoAspect = 1
       resolve({ dataUrl: cachedLogoDataUrl, aspect: cachedLogoAspect })
@@ -112,7 +109,6 @@ function setColor(doc: jsPDF, color: [number, number, number]) {
 function drawRect(doc: jsPDF, x: number, y: number, w: number, h: number, color: [number, number, number], radius?: number) {
   doc.setFillColor(color[0], color[1], color[2])
   if (radius) {
-    // Rounded rectangle
     doc.roundedRect(x, y, w, h, radius, radius, 'F')
   } else {
     doc.rect(x, y, w, h, 'F')
@@ -126,88 +122,138 @@ function drawLine(doc: jsPDF, x1: number, y1: number, x2: number, y2: number, co
 }
 
 /**
- * Draw branded header with logo, company name, and candidate name
+ * Derive consistent rating/recommendation from matchScore when AI analysis is fallback
  */
-async function drawHeader(doc: jsPDF, candidate: CandidateData, pageWidth: number): Promise<number> {
-  // Navy header bar
-  drawRect(doc, 0, 0, pageWidth, 42, BRAND.primaryDark)
+function deriveRatingFromScore(score: number): { rating: string; recommendation: string; confidence: number } {
+  if (score >= 85) return { rating: 'A', recommendation: 'STRONGLY_RECOMMEND', confidence: 85 }
+  if (score >= 75) return { rating: 'A-', recommendation: 'RECOMMEND', confidence: 78 }
+  if (score >= 65) return { rating: 'B+', recommendation: 'RECOMMEND', confidence: 72 }
+  if (score >= 55) return { rating: 'B', recommendation: 'CONSIDER', confidence: 65 }
+  if (score >= 45) return { rating: 'B-', recommendation: 'CONSIDER', confidence: 58 }
+  if (score >= 35) return { rating: 'C+', recommendation: 'REVIEW', confidence: 50 }
+  if (score >= 25) return { rating: 'C', recommendation: 'REVIEW', confidence: 42 }
+  return { rating: 'C-', recommendation: 'NOT_RECOMMENDED', confidence: 35 }
+}
+
+/**
+ * Draw compact navy top bar with logo + company name (reduced height)
+ */
+async function drawTopBar(doc: jsPDF, pageWidth: number): Promise<number> {
+  const barH = 18
+  drawRect(doc, 0, 0, pageWidth, barH, BRAND.primaryDark)
   
-  // Logo — constrain to max width so it never overlaps with text
-  let textStartX = 48 // default if logo fails
+  let textStartX = 24
   try {
     const { dataUrl: logoDataUrl, aspect } = await getLogoDataUrl()
-    const logoH = 14 // fixed height in mm
-    const maxLogoW = 32 // maximum width to prevent overlap
+    const logoH = 10
+    // Properly preserve aspect ratio — calculate width from height
     let logoW = logoH * aspect
-    // If the logo is very wide (text-logo), cap it and shrink height proportionally
-    if (logoW > maxLogoW) {
-      logoW = maxLogoW
+    // Cap max width but also recalculate height to preserve ratio
+    if (logoW > 24) {
+      logoW = 24
+      // logoH stays the same since we capped width only
     }
-    const logoX = 12
-    const logoY = (42 - logoH) / 2
+    const logoX = 8
+    const logoY = (barH - logoH) / 2
     doc.addImage(logoDataUrl, 'PNG', logoX, logoY, logoW, logoH)
-    textStartX = logoX + logoW + 4 // position text right after logo with 4mm gap
+    textStartX = logoX + logoW + 3
   } catch {
-    // Fallback text logo
-    doc.setFontSize(18)
-    doc.setFont('helvetica', 'bold')
-    setColor(doc, BRAND.white)
-    doc.text('E', 22, 24)
-    textStartX = 32
+    textStartX = 10
   }
   
-  // Company name — positioned after logo
-  doc.setFontSize(16)
-  doc.setFont('helvetica', 'bold')
-  setColor(doc, BRAND.white)
-  doc.text('Efforts Solutions', textStartX, 18)
-  
-  doc.setFontSize(9)
-  doc.setFont('helvetica', 'normal')
-  setColor(doc, BRAND.primaryLight)
-  doc.text('AI Recruiter — Candidate Assessment Report', textStartX, 26)
-  
-  // Date on right
-  doc.setFontSize(8)
-  setColor(doc, BRAND.primaryLight)
-  const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-  doc.text(dateStr, pageWidth - 14, 18, { align: 'right' })
-  doc.text('CONFIDENTIAL', pageWidth - 14, 26, { align: 'right' })
-  
-  // Accent line under header
-  drawRect(doc, 0, 42, pageWidth, 1.5, BRAND.accent)
-  
-  // Candidate name banner
-  const bannerY = 48
-  drawRect(doc, 0, bannerY, pageWidth, 22, BRAND.grayLight)
-  
-  doc.setFontSize(14)
-  doc.setFont('helvetica', 'bold')
-  setColor(doc, BRAND.primaryDark)
-  doc.text(candidate.name, 14, bannerY + 10)
-  
-  // Category & match score badges
-  doc.setFontSize(9)
-  doc.setFont('helvetica', 'normal')
-  setColor(doc, BRAND.gray)
-  const infoLine = [
-    candidate.jobCategory || 'General',
-    candidate.jobSubcategory,
-    `${candidate.experience} yrs experience`,
-    candidate.location,
-  ].filter(Boolean).join('  |  ')
-  doc.text(infoLine, 14, bannerY + 17)
-  
-  // Match Score badge on right
-  const score = candidate.matchScore ?? 50
-  const scoreColor = score >= 70 ? BRAND.green : score >= 50 ? BRAND.amber : BRAND.red
-  drawRect(doc, pageWidth - 50, bannerY + 3, 36, 16, scoreColor, 3)
   doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
   setColor(doc, BRAND.white)
-  doc.text(`${score.toFixed(0)}%`, pageWidth - 32, bannerY + 13, { align: 'center' })
+  doc.text('AI Recruiter', textStartX, barH / 2 - 1)
   
-  return bannerY + 26 // return Y position after header
+  doc.setFontSize(7)
+  doc.setFont('helvetica', 'normal')
+  setColor(doc, BRAND.primaryLight)
+  doc.text('Smart Hiring Platform', textStartX, barH / 2 + 4)
+  
+  doc.setFontSize(7)
+  setColor(doc, BRAND.primaryLight)
+  const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
+  doc.text(dateStr, pageWidth - 10, barH / 2 - 1, { align: 'right' })
+  doc.text('CONFIDENTIAL', pageWidth - 10, barH / 2 + 4, { align: 'right' })
+  
+  drawRect(doc, 0, barH, pageWidth, 1, BRAND.accent)
+  
+  return barH + 1
+}
+
+/**
+ * Draw blue gradient candidate header with circular score indicator
+ */
+function drawCandidateHeader(doc: jsPDF, candidate: CandidateData, y: number, pageWidth: number): number {
+  const headerH = 34
+  const margin = 14
+  
+  // Blue gradient background (simulate with overlapping rects)
+  drawRect(doc, 0, y, pageWidth, headerH, BRAND.primary)
+  // Lighter overlay on right for gradient effect
+  doc.setFillColor(59, 130, 246)
+  doc.rect(pageWidth * 0.55, y, pageWidth * 0.45, headerH, 'F')
+  
+  // Candidate name
+  doc.setFontSize(16)
+  doc.setFont('helvetica', 'bold')
+  setColor(doc, BRAND.white)
+  doc.text(candidate.name, margin, y + 11)
+  
+  // Job title / category
+  const titleLine = candidate.jobSubcategory || candidate.jobCategory || 'Professional'
+  doc.setFontSize(9)
+  doc.setFont('helvetica', 'normal')
+  doc.setTextColor(200, 220, 255)
+  doc.text(titleLine, margin, y + 18)
+  
+  // Contact info row
+  doc.setFontSize(7)
+  doc.setTextColor(180, 200, 240)
+  const contactItems: string[] = []
+  if (candidate.location && candidate.location !== 'Not Specified' && candidate.location !== 'Unknown') {
+    contactItems.push(candidate.location)
+  }
+  if (candidate.email) contactItems.push(candidate.email)
+  if (candidate.phone) contactItems.push(candidate.phone)
+  if (candidate.experience > 0) contactItems.push(`${candidate.experience} yrs exp`)
+  doc.text(contactItems.join('  |  '), margin, y + 24)
+  
+  // Category badge at bottom
+  if (candidate.jobCategory) {
+    const catText = candidate.jobCategory
+    const catW = doc.getTextWidth(catText) + 6
+    drawRect(doc, margin, y + 27, catW, 5, [50, 100, 220] as [number, number, number], 2)
+    doc.setFontSize(6.5)
+    setColor(doc, BRAND.white)
+    doc.text(catText, margin + 3, y + 30.5)
+  }
+  
+  // Score circle on right
+  const score = candidate.matchScore ?? 50
+  const circleX = pageWidth - 28
+  const circleY = y + headerH / 2
+  const circleR = 12
+  
+  // White circle
+  doc.setFillColor(255, 255, 255)
+  doc.circle(circleX, circleY, circleR, 'F')
+  
+  // Score number
+  const scoreColor = score >= 70 ? BRAND.green : score >= 50 ? BRAND.amber : BRAND.red
+  doc.setFontSize(14)
+  doc.setFont('helvetica', 'bold')
+  setColor(doc, scoreColor)
+  doc.text(`${score.toFixed(0)}%`, circleX, circleY + 1, { align: 'center' })
+  
+  // "MATCH" label
+  doc.setFontSize(5)
+  doc.setFont('helvetica', 'bold')
+  setColor(doc, BRAND.gray)
+  doc.text('MATCH', circleX, circleY + 5.5, { align: 'center' })
+  
+  return y + headerH + 2
 }
 
 /**
@@ -220,13 +266,10 @@ function drawFooter(doc: jsPDF, pageWidth: number, pageHeight: number, pageNum: 
   doc.setFontSize(7)
   doc.setFont('helvetica', 'normal')
   setColor(doc, BRAND.gray)
-  doc.text('Efforts Solutions  |  www.effortz.com  |  Confidential AI Assessment Report', 14, footerY)
+  doc.text('AI Recruiter  |  Smart Hiring Platform  |  Confidential Assessment Report', 14, footerY)
   doc.text(`Page ${pageNum}`, pageWidth - 14, footerY, { align: 'right' })
 }
 
-/**
- * Section heading with accent line
- */
 function drawSectionHeading(doc: jsPDF, title: string, y: number, pageWidth: number): number {
   drawRect(doc, 14, y, 3, 8, BRAND.primary)
   doc.setFontSize(11)
@@ -237,22 +280,16 @@ function drawSectionHeading(doc: jsPDF, title: string, y: number, pageWidth: num
   return y + 14
 }
 
-/**
- * Check if we need a new page, and if so, add one with footer on previous
- */
 function checkPageBreak(doc: jsPDF, currentY: number, neededSpace: number, pageWidth: number, pageHeight: number, pageNum: { value: number }): number {
   if (currentY + neededSpace > pageHeight - 20) {
     drawFooter(doc, pageWidth, pageHeight, pageNum.value)
     doc.addPage()
     pageNum.value++
-    return 16 // top margin on new page
+    return 16
   }
   return currentY
 }
 
-/**
- * Write wrapped text and return new Y position
- */
 function writeWrappedText(doc: jsPDF, text: string, x: number, y: number, maxWidth: number, fontSize: number, color: [number, number, number], lineHeight = 4.5): number {
   doc.setFontSize(fontSize)
   doc.setFont('helvetica', 'normal')
@@ -263,35 +300,58 @@ function writeWrappedText(doc: jsPDF, text: string, x: number, y: number, maxWid
 }
 
 /**
- * Main PDF generation function — Compact 1-2 page layout
- * AI Summary first, then Candidate Profile flows naturally
+ * Main PDF generation — AI Summary page, then Original CV on subsequent pages
  */
 export async function generateCandidatePDF(
   candidate: CandidateData,
   aiAnalysis?: AIAnalysisData | null
 ): Promise<void> {
   const doc = new jsPDF('p', 'mm', 'a4')
-  const pageWidth = doc.internal.pageSize.getWidth()  // 210
-  const pageHeight = doc.internal.pageSize.getHeight() // 297
+  const pageWidth = doc.internal.pageSize.getWidth()
+  const pageHeight = doc.internal.pageSize.getHeight()
   const margin = 14
   const contentWidth = pageWidth - margin * 2
   const pageNum = { value: 1 }
   
-  // =========================================================================
-  // HEADER — Compact branded header with candidate info
-  // =========================================================================
-  let y = await drawHeader(doc, candidate, pageWidth)
-  y += 3
+  // Normalize AI analysis: if fallback, derive rating/recommendation from matchScore
+  let normalizedAnalysis = aiAnalysis ? { ...aiAnalysis } : null
+  if (normalizedAnalysis) {
+    const isFallback = normalizedAnalysis.source === 'fallback' || 
+                       (normalizedAnalysis.overall_rating === 'C+' && normalizedAnalysis.confidence_score === 40)
+    if (isFallback) {
+      const derived = deriveRatingFromScore(candidate.matchScore ?? 50)
+      normalizedAnalysis.overall_rating = derived.rating
+      normalizedAnalysis.hiring_recommendation = derived.recommendation
+      normalizedAnalysis.confidence_score = derived.confidence
+      
+      // Replace generic cons with profile-relevant observations
+      const skills = candidate.skills || []
+      const exp = candidate.experience || 0
+      const relevantCons: string[] = []
+      if (skills.length < 5) relevantCons.push('Limited skills breadth — expanding technical portfolio recommended')
+      if (exp < 3) relevantCons.push('Early career stage — may need mentorship and onboarding support')
+      if (!candidate.linkedin) relevantCons.push('No LinkedIn profile provided for background verification')
+      if (!candidate.education || candidate.education.length === 0) relevantCons.push('Education details not specified — verification recommended')
+      if (!candidate.workHistory || candidate.workHistory.length === 0) relevantCons.push('Work history not detailed — explore experience depth in interview')
+      if (relevantCons.length === 0) relevantCons.push('Profile appears strong — detailed AI analysis recommended for deeper insights')
+      normalizedAnalysis.cons = relevantCons
+    }
+  }
+  
+  // ===== TOP BAR =====
+  let y = await drawTopBar(doc, pageWidth)
+  
+  // ===== CANDIDATE HEADER — Blue gradient =====
+  y = drawCandidateHeader(doc, candidate, y, pageWidth)
+  y += 2
 
-  // =========================================================================
-  // SECTION 1 — AI ASSESSMENT (compact)
-  // =========================================================================
+  // ===== SECTION 1 — AI ASSESSMENT =====
 
-  // --- Rating, Recommendation & Confidence in a single compact row ---
-  if (aiAnalysis?.overall_rating || aiAnalysis?.hiring_recommendation) {
+  // Rating, Recommendation & Confidence row
+  if (normalizedAnalysis?.overall_rating || normalizedAnalysis?.hiring_recommendation) {
     const boxY = y
     
-    if (aiAnalysis.overall_rating) {
+    if (normalizedAnalysis.overall_rating) {
       drawRect(doc, margin, boxY, 35, 12, BRAND.primaryLight, 3)
       doc.setFontSize(7)
       doc.setFont('helvetica', 'normal')
@@ -300,11 +360,11 @@ export async function generateCandidatePDF(
       doc.setFontSize(11)
       doc.setFont('helvetica', 'bold')
       setColor(doc, BRAND.primaryDark)
-      doc.text(aiAnalysis.overall_rating, margin + 17.5, boxY + 10, { align: 'center' })
+      doc.text(normalizedAnalysis.overall_rating, margin + 17.5, boxY + 10, { align: 'center' })
     }
     
-    if (aiAnalysis.hiring_recommendation) {
-      const rec = aiAnalysis.hiring_recommendation.replace(/_/g, ' ')
+    if (normalizedAnalysis.hiring_recommendation) {
+      const rec = normalizedAnalysis.hiring_recommendation.replace(/_/g, ' ')
       const recColor = rec.includes('STRONGLY') || rec.includes('RECOMMEND') ? BRAND.green : rec.includes('CONSIDER') ? BRAND.amber : BRAND.red
       drawRect(doc, margin + 38, boxY, 55, 12, recColor, 3)
       doc.setFontSize(7)
@@ -316,7 +376,7 @@ export async function generateCandidatePDF(
       doc.text(rec, margin + 65.5, boxY + 10, { align: 'center' })
     }
     
-    if (aiAnalysis.confidence_score) {
+    if (normalizedAnalysis.confidence_score) {
       drawRect(doc, margin + 96, boxY, 32, 12, BRAND.grayLight, 3)
       doc.setFontSize(7)
       doc.setFont('helvetica', 'normal')
@@ -325,11 +385,10 @@ export async function generateCandidatePDF(
       doc.setFontSize(11)
       doc.setFont('helvetica', 'bold')
       setColor(doc, BRAND.primaryDark)
-      doc.text(`${aiAnalysis.confidence_score}%`, margin + 112, boxY + 10, { align: 'center' })
+      doc.text(`${normalizedAnalysis.confidence_score}%`, margin + 112, boxY + 10, { align: 'center' })
     }
 
-    // Ideal Roles on right side
-    if (aiAnalysis?.ideal_roles && aiAnalysis.ideal_roles.length > 0) {
+    if (normalizedAnalysis?.ideal_roles && normalizedAnalysis.ideal_roles.length > 0) {
       doc.setFontSize(7)
       doc.setFont('helvetica', 'bold')
       setColor(doc, BRAND.gray)
@@ -337,7 +396,7 @@ export async function generateCandidatePDF(
       doc.setFontSize(7)
       doc.setFont('helvetica', 'normal')
       setColor(doc, BRAND.black)
-      const rolesText = aiAnalysis.ideal_roles.slice(0, 3).join(', ')
+      const rolesText = normalizedAnalysis.ideal_roles.slice(0, 3).join(', ')
       const roleLines = doc.splitTextToSize(rolesText, 46)
       doc.text(roleLines, margin + 134, boxY + 8)
     }
@@ -345,31 +404,30 @@ export async function generateCandidatePDF(
     y = boxY + 15
   }
 
-  // --- AI EXECUTIVE SUMMARY ---
-  if (aiAnalysis?.executive_summary) {
+  // Executive Summary
+  if (normalizedAnalysis?.executive_summary) {
     y = drawSectionHeading(doc, 'AI Executive Summary', y, pageWidth)
-    y = writeWrappedText(doc, aiAnalysis.executive_summary, margin, y, contentWidth, 8.5, BRAND.black, 3.8)
+    y = writeWrappedText(doc, normalizedAnalysis.executive_summary, margin, y, contentWidth, 8.5, BRAND.black, 3.8)
     y += 3
   }
 
-  // --- PROS & CONS (compact two columns) ---
-  if ((aiAnalysis?.pros && aiAnalysis.pros.length > 0) || (aiAnalysis?.cons && aiAnalysis.cons.length > 0)) {
-    const maxItems = Math.max(aiAnalysis?.pros?.length || 0, aiAnalysis?.cons?.length || 0)
+  // Pros & Cons
+  if ((normalizedAnalysis?.pros && normalizedAnalysis.pros.length > 0) || (normalizedAnalysis?.cons && normalizedAnalysis.cons.length > 0)) {
+    const maxItems = Math.max(normalizedAnalysis?.pros?.length || 0, normalizedAnalysis?.cons?.length || 0)
     const prosConsHeight = maxItems * 4 + 10
     y = checkPageBreak(doc, y, prosConsHeight, pageWidth, pageHeight, pageNum)
     
     const colWidth = (contentWidth - 4) / 2
 
-    // Strengths
-    if (aiAnalysis?.pros && aiAnalysis.pros.length > 0) {
-      drawRect(doc, margin, y, colWidth, 6, [220, 252, 231], 2)
+    if (normalizedAnalysis?.pros && normalizedAnalysis.pros.length > 0) {
+      drawRect(doc, margin, y, colWidth, 6, [220, 252, 231] as [number, number, number], 2)
       doc.setFontSize(8)
       doc.setFont('helvetica', 'bold')
       setColor(doc, BRAND.green)
       doc.text('+ Strengths', margin + 3, y + 4)
       
       let prosY = y + 9
-      aiAnalysis.pros.slice(0, 5).forEach((pro) => {
+      normalizedAnalysis.pros.slice(0, 5).forEach((pro) => {
         doc.setFontSize(7.5)
         doc.setFont('helvetica', 'normal')
         setColor(doc, BRAND.black)
@@ -379,17 +437,16 @@ export async function generateCandidatePDF(
       })
     }
     
-    // Areas for Improvement
-    if (aiAnalysis?.cons && aiAnalysis.cons.length > 0) {
+    if (normalizedAnalysis?.cons && normalizedAnalysis.cons.length > 0) {
       const consX = margin + colWidth + 4
-      drawRect(doc, consX, y, colWidth, 6, [254, 226, 226], 2)
+      drawRect(doc, consX, y, colWidth, 6, [254, 226, 226] as [number, number, number], 2)
       doc.setFontSize(8)
       doc.setFont('helvetica', 'bold')
       setColor(doc, BRAND.red)
       doc.text('- Areas for Improvement', consX + 3, y + 4)
       
       let consY = y + 9
-      aiAnalysis.cons.slice(0, 5).forEach((con) => {
+      normalizedAnalysis.cons.slice(0, 5).forEach((con) => {
         doc.setFontSize(7.5)
         doc.setFont('helvetica', 'normal')
         setColor(doc, BRAND.black)
@@ -403,34 +460,34 @@ export async function generateCandidatePDF(
     y += 3
   }
 
-  // --- TECHNICAL + EXPERIENCE ASSESSMENT (combined, compact) ---
-  if (aiAnalysis?.technical_assessment || aiAnalysis?.experience_assessment) {
+  // Technical & Experience Assessment
+  if (normalizedAnalysis?.technical_assessment || normalizedAnalysis?.experience_assessment) {
     y = checkPageBreak(doc, y, 18, pageWidth, pageHeight, pageNum)
     y = drawSectionHeading(doc, 'Technical & Experience Assessment', y, pageWidth)
-    if (aiAnalysis.technical_assessment) {
-      const techText = aiAnalysis.technical_assessment.length > 300 ? aiAnalysis.technical_assessment.substring(0, 300) + '...' : aiAnalysis.technical_assessment
+    if (normalizedAnalysis.technical_assessment) {
+      const techText = normalizedAnalysis.technical_assessment.length > 300 ? normalizedAnalysis.technical_assessment.substring(0, 300) + '...' : normalizedAnalysis.technical_assessment
       y = writeWrappedText(doc, techText, margin, y, contentWidth, 8, BRAND.black, 3.6)
       y += 2
     }
-    if (aiAnalysis.experience_assessment) {
-      const expText = aiAnalysis.experience_assessment.length > 300 ? aiAnalysis.experience_assessment.substring(0, 300) + '...' : aiAnalysis.experience_assessment
+    if (normalizedAnalysis.experience_assessment) {
+      const expText = normalizedAnalysis.experience_assessment.length > 300 ? normalizedAnalysis.experience_assessment.substring(0, 300) + '...' : normalizedAnalysis.experience_assessment
       y = writeWrappedText(doc, expText, margin, y, contentWidth, 8, BRAND.black, 3.6)
       y += 2
     }
     y += 2
   }
 
-  // --- HIRING RECOMMENDATION RATIONALE (compact) ---
-  if (aiAnalysis?.hiring_recommendation_rationale) {
+  // Hiring Recommendation Rationale
+  if (normalizedAnalysis?.hiring_recommendation_rationale) {
     y = checkPageBreak(doc, y, 14, pageWidth, pageHeight, pageNum)
     y = drawSectionHeading(doc, 'Hiring Recommendation', y, pageWidth)
-    const ratText = aiAnalysis.hiring_recommendation_rationale.length > 250 ? aiAnalysis.hiring_recommendation_rationale.substring(0, 250) + '...' : aiAnalysis.hiring_recommendation_rationale
+    const ratText = normalizedAnalysis.hiring_recommendation_rationale.length > 250 ? normalizedAnalysis.hiring_recommendation_rationale.substring(0, 250) + '...' : normalizedAnalysis.hiring_recommendation_rationale
     y = writeWrappedText(doc, ratText, margin, y, contentWidth, 8, BRAND.black, 3.6)
     y += 3
   }
 
-  // --- INTERVIEW FOCUS AREAS (inline, compact) ---
-  if (aiAnalysis?.interview_focus_areas && aiAnalysis.interview_focus_areas.length > 0) {
+  // Interview Focus Areas
+  if (normalizedAnalysis?.interview_focus_areas && normalizedAnalysis.interview_focus_areas.length > 0) {
     y = checkPageBreak(doc, y, 10, pageWidth, pageHeight, pageNum)
     doc.setFontSize(8)
     doc.setFont('helvetica', 'bold')
@@ -438,35 +495,33 @@ export async function generateCandidatePDF(
     doc.text('Interview Focus:', margin, y + 3)
     doc.setFont('helvetica', 'normal')
     setColor(doc, BRAND.black)
-    const focusText = aiAnalysis.interview_focus_areas.slice(0, 5).join('  •  ')
+    const focusText = normalizedAnalysis.interview_focus_areas.slice(0, 5).join('  •  ')
     const focusLines = doc.splitTextToSize(focusText, contentWidth - 30)
     doc.text(focusLines, margin + 28, y + 3)
     y += focusLines.length * 3.5 + 5
   }
 
-  // =========================================================================
-  // DIVIDER — Thin accent line between AI and Profile sections
-  // =========================================================================
+  // ===== DIVIDER =====
   y = checkPageBreak(doc, y, 6, pageWidth, pageHeight, pageNum)
   drawLine(doc, margin, y, pageWidth - margin, y, BRAND.accent, 0.8)
   y += 4
 
-  // =========================================================================
-  // SECTION 2 — CANDIDATE PROFILE (flows naturally, no forced page break)
-  // =========================================================================
+  // ===== SECTION 2 — CANDIDATE PROFILE =====
 
-  // --- CONTACT INFORMATION (compact inline) ---
+  // Contact Info
   y = checkPageBreak(doc, y, 20, pageWidth, pageHeight, pageNum)
   y = drawSectionHeading(doc, 'Contact & Profile', y, pageWidth)
   
-  const contactPairs = [
+  const contactPairs: [string, string][] = [
     ['Email', candidate.email],
     ['Phone', candidate.phone || 'N/A'],
-    ['Location', candidate.location],
-    ['LinkedIn', candidate.linkedin || 'N/A'],
-    ['Experience', `${candidate.experience} years`],
-    ['Category', candidate.jobCategory || 'General'],
   ]
+  if (candidate.location && candidate.location !== 'Not Specified' && candidate.location !== 'Unknown') {
+    contactPairs.push(['Location', candidate.location])
+  }
+  contactPairs.push(['LinkedIn', candidate.linkedin || 'N/A'])
+  contactPairs.push(['Experience', `${candidate.experience} years`])
+  contactPairs.push(['Category', candidate.jobCategory || 'General'])
   
   const colW = contentWidth / 2
   contactPairs.forEach((info, idx) => {
@@ -485,7 +540,7 @@ export async function generateCandidatePDF(
   })
   y += Math.ceil(contactPairs.length / 2) * 5 + 3
 
-  // --- PROFESSIONAL SUMMARY (compact) ---
+  // Professional Summary
   if (candidate.summary) {
     y = checkPageBreak(doc, y, 14, pageWidth, pageHeight, pageNum)
     y = drawSectionHeading(doc, 'Professional Summary', y, pageWidth)
@@ -494,7 +549,7 @@ export async function generateCandidatePDF(
     y += 3
   }
 
-  // --- SKILLS (compact badges) ---
+  // Skills badges
   if (candidate.skills && candidate.skills.length > 0) {
     y = checkPageBreak(doc, y, 14, pageWidth, pageHeight, pageNum)
     y = drawSectionHeading(doc, 'Skills & Expertise', y, pageWidth)
@@ -521,7 +576,7 @@ export async function generateCandidatePDF(
     y += badgeH + 4
   }
 
-  // --- WORK EXPERIENCE (compact — limit to 3 most recent) ---
+  // Work Experience
   if (candidate.workHistory && candidate.workHistory.length > 0) {
     y = checkPageBreak(doc, y, 16, pageWidth, pageHeight, pageNum)
     y = drawSectionHeading(doc, 'Work Experience', y, pageWidth)
@@ -559,7 +614,7 @@ export async function generateCandidatePDF(
     }
   }
 
-  // --- EDUCATION (compact) ---
+  // Education
   if (candidate.education && candidate.education.length > 0) {
     y = checkPageBreak(doc, y, 12, pageWidth, pageHeight, pageNum)
     y = drawSectionHeading(doc, 'Education', y, pageWidth)
@@ -581,7 +636,7 @@ export async function generateCandidatePDF(
     y += 2
   }
 
-  // --- CERTIFICATIONS & LANGUAGES (combined, single line each) ---
+  // Certifications & Languages
   if ((candidate.certifications && candidate.certifications.length > 0) || (candidate.languages && candidate.languages.length > 0)) {
     y = checkPageBreak(doc, y, 10, pageWidth, pageHeight, pageNum)
     
@@ -609,8 +664,8 @@ export async function generateCandidatePDF(
     }
   }
 
-  // --- SALARY ESTIMATE (if available) ---
-  if (aiAnalysis?.salary_range_estimate) {
+  // Salary Estimate
+  if (normalizedAnalysis?.salary_range_estimate) {
     y = checkPageBreak(doc, y, 6, pageWidth, pageHeight, pageNum)
     doc.setFontSize(7.5)
     doc.setFont('helvetica', 'bold')
@@ -618,16 +673,70 @@ export async function generateCandidatePDF(
     doc.text('Est. Salary Range:', margin, y)
     doc.setFont('helvetica', 'normal')
     setColor(doc, BRAND.black)
-    doc.text(aiAnalysis.salary_range_estimate, margin + 32, y)
+    doc.text(normalizedAnalysis.salary_range_estimate, margin + 32, y)
     y += 5
+  }
+
+  // ===== SECTION 3 — ORIGINAL CV / RESUME TEXT =====
+  if (candidate.resumeText && candidate.resumeText.trim().length > 20) {
+    // Footer on current page, then new page for CV
+    drawFooter(doc, pageWidth, pageHeight, pageNum.value)
+    doc.addPage()
+    pageNum.value++
+    
+    // CV header bar
+    drawRect(doc, 0, 0, pageWidth, 10, BRAND.primaryDark)
+    doc.setFontSize(9)
+    doc.setFont('helvetica', 'bold')
+    setColor(doc, BRAND.white)
+    doc.text('Original CV / Resume', margin, 7)
+    doc.setFontSize(7)
+    doc.setFont('helvetica', 'normal')
+    setColor(doc, BRAND.primaryLight)
+    doc.text(candidate.name, pageWidth - 14, 7, { align: 'right' })
+    drawRect(doc, 0, 10, pageWidth, 0.5, BRAND.accent)
+    y = 16
+    
+    // Write resume text with page breaks
+    doc.setFontSize(8)
+    doc.setFont('helvetica', 'normal')
+    setColor(doc, BRAND.black)
+    
+    const resumeLines = doc.splitTextToSize(candidate.resumeText.trim(), contentWidth)
+    const lineH = 3.5
+    
+    for (let i = 0; i < resumeLines.length; i++) {
+      if (y + lineH > pageHeight - 20) {
+        drawFooter(doc, pageWidth, pageHeight, pageNum.value)
+        doc.addPage()
+        pageNum.value++
+        
+        // Continuation header
+        drawRect(doc, 0, 0, pageWidth, 8, BRAND.primaryDark)
+        doc.setFontSize(7)
+        doc.setFont('helvetica', 'bold')
+        setColor(doc, BRAND.white)
+        doc.text('Original CV / Resume (continued)', margin, 5.5)
+        doc.setFont('helvetica', 'normal')
+        setColor(doc, BRAND.primaryLight)
+        doc.text(candidate.name, pageWidth - 14, 5.5, { align: 'right' })
+        drawRect(doc, 0, 8, pageWidth, 0.5, BRAND.accent)
+        y = 14
+        
+        doc.setFontSize(8)
+        doc.setFont('helvetica', 'normal')
+        setColor(doc, BRAND.black)
+      }
+      doc.text(resumeLines[i], margin, y)
+      y += lineH
+    }
   }
 
   // Final footer
   drawFooter(doc, pageWidth, pageHeight, pageNum.value)
   
-  // Save
   const safeName = candidate.name.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_')
-  doc.save(`Efforts_Solutions_AI_Assessment_${safeName}.pdf`)
+  doc.save(`AI_Recruiter_Assessment_${safeName}.pdf`)
 }
 
 /**
