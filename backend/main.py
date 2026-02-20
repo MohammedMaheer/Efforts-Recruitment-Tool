@@ -4915,71 +4915,56 @@ async def _send_shortlist_email(candidate: Dict):
         job_sub = candidate.get('jobSubcategory', '') or candidate.get('job_subcategory', '') or ''
         display_title = job_sub if job_sub else job_title
 
-        # UAE locations that require visa details
-        uae_locations = ['dubai', 'abu dhabi', 'sharjah', 'ajman', 'ras al khaimah', 
-                         'fujairah', 'umm al quwain', 'uae', 'united arab emirates']
-        is_uae = any(loc in candidate_location for loc in uae_locations)
+        # UAE / GCC locations → Abu Dhabi office; India/others → Chennai office
+        uae_gcc_locations = ['dubai', 'abu dhabi', 'sharjah', 'ajman', 'ras al khaimah',
+                             'fujairah', 'umm al quwain', 'uae', 'united arab emirates',
+                             'bahrain', 'kuwait', 'oman', 'qatar', 'saudi', 'riyadh',
+                             'jeddah', 'dammam', 'muscat', 'doha', 'manama']
+        is_uae = any(loc in candidate_location for loc in uae_gcc_locations)
 
-        # Determine work location description dynamically
-        if is_uae:
-            # Try to extract specific UAE city
-            work_location = 'Abu Dhabi office'  # default
-            for city in ['Dubai', 'Abu Dhabi', 'Sharjah', 'Ajman']:
-                if city.lower() in candidate_location:
-                    work_location = f'{city} office'
-                    break
-        else:
-            work_location = candidate_location.title() if candidate_location else 'our office'
+        # Office assignment: GCC → Abu Dhabi, everyone else → Chennai
+        work_office = 'Abu Dhabi office' if is_uae else 'Chennai office'
 
-        # Build smart subject
-        subject = f"Thank you for your interest - {company_name}"
+        # Build subject
+        subject = f"Thank you for your interest - Efforts Solutions"
         if display_title:
-            subject = f"Thank you for your interest in {display_title} - {company_name}"
-
-        # Build dynamic email body
-        greeting = f"Dear {candidate_name},"
-        intro = "Thank you for your interest. To proceed further, could you please share the following details with us:"
+            subject = f"Thank you for your interest in {display_title} - Efforts Solutions"
 
         # Build bullet points based on location
         details_requested = []
         details_requested.append("Your availability to join")
-        
         if is_uae:
             details_requested.append("Your visa status")
-            details_requested.append(f"Willingness to work from {work_location}")
-        else:
-            details_requested.append(f"Willingness to work from {work_location}")
-        
+        details_requested.append(f"Willingness to work from {work_office}")
         details_requested.append("Your current salary and expected salary for this role")
 
-        bullets_html = "".join([f"<li style='margin-bottom: 8px;'>{d}</li>" for d in details_requested])
+        bullets_html = "".join([f"<p style='margin: 4px 0 4px 10px;'>* {d}</p>" for d in details_requested])
 
-        closing = "Look forward to your response."
-        signature = f"""Best regards,<br>
-{recruiter_name}<br>
-{company_name}"""
-
-        # Professional HTML email
+        # Professional HTML email matching Efforts Solutions signature
         body_html = f"""
-<div style="font-family: 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.7; color: #1a1a2e; max-width: 600px; margin: 0 auto;">
-  <div style="background: linear-gradient(135deg, #172554, #1d4ed8); padding: 24px 30px; border-radius: 8px 8px 0 0;">
-    <h2 style="color: #ffffff; margin: 0; font-size: 18px; font-weight: 600;">Efforts Solutions</h2>
-    <p style="color: #93c5fd; margin: 4px 0 0 0; font-size: 12px;">IT Technology & Solutions</p>
-  </div>
-  <div style="padding: 30px; background: #ffffff; border: 1px solid #e5e7eb; border-top: none;">
-    <p style="margin-top: 0;">{greeting}</p>
-    <p>{intro}</p>
-    <ul style="padding-left: 20px; margin: 16px 0;">
-      {bullets_html}
-    </ul>
-    <p style="margin-bottom: 24px;">{closing}</p>
-    <div style="border-top: 1px solid #e5e7eb; padding-top: 16px; margin-top: 24px;">
-      <p style="margin: 0; color: #374151;">{signature}</p>
-    </div>
-  </div>
-  <div style="padding: 12px 30px; background: #f8fafc; border: 1px solid #e5e7eb; border-top: none; border-radius: 0 0 8px 8px; text-align: center;">
-    <p style="margin: 0; font-size: 11px; color: #9ca3af;">This email was sent by Efforts Solutions Recruitment Platform</p>
-  </div>
+<div style="font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #000000; max-width: 650px;">
+  <p style="margin: 0 0 12px 0;">Hi,</p>
+  <p style="margin: 0 0 12px 0;">&nbsp;</p>
+  <p style="margin: 0 0 12px 0;">Thank you for your interest. To proceed further, could you please share the following details with us:</p>
+  <p style="margin: 0 0 4px 0;">&nbsp;</p>
+  {bullets_html}
+  <p style="margin: 12px 0 4px 0;">&nbsp;</p>
+  <p style="margin: 0 0 12px 0;">Look forward to your response.</p>
+  <p style="margin: 0 0 4px 0;">&nbsp;</p>
+  <p style="margin: 0 0 4px 0;">&nbsp;</p>
+  <p style="margin: 0; color: #808080;">Best Regards,</p>
+  <p style="margin: 0 0 4px 0;">&nbsp;</p>
+  <p style="margin: 0 0 4px 0;">&nbsp;</p>
+  <p style="margin: 0;"><strong>Shenaz Farhana</strong></p>
+  <p style="margin: 0; color: #808080;">HR &amp; Admin Department</p>
+  <p style="margin: 0; color: #808080;">Efforts Solutions IT, M12 Burooj Tower, Al Khalidhiya, Abu Dhabi, UAE</p>
+  <p style="margin: 0; color: #808080;">T: +971 2 546 8880 | E: <a href="mailto:hr@effortz.com" style="color: #0563C1;">hr@effortz.com</a> | W: <a href="https://effortz.com" style="color: #0563C1;">effortz.com</a> | <a href="https://safeye.ai" style="color: #0563C1;">safeye.ai</a></p>
+  <p style="margin: 6px 0 0 0;">
+    <strong>ICV Certified</strong> &#9989; | <strong>ISO 9001</strong> &#9989; | <strong>ISO/IEC 27001</strong> &#9989; | <strong>ISO 45001</strong> &#9989; | <strong>MCC Approved</strong> &#9989;
+  </p>
+  <p style="margin: 4px 0 0 0; font-size: 12px; color: #808080;">Enterprise Solutions | IT Outsourcing | Digital Solutions | ICT/ELV Managed Services | AI/ML/IOT/ERP/ECM/BPM/OCR/RPA</p>
+  <hr style="border: none; border-top: 2px solid #1a3c6e; margin: 12px 0 8px 0;" />
+  <p style="margin: 0; font-size: 10px; color: #999999;">This email and its contents are confidential and intended solely for the recipient. Sharing this message without the sender's written consent is strictly prohibited. If received in error, please reply and delete it immediately.</p>
 </div>"""
 
         # Setup Graph service and authenticate
