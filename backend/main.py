@@ -1801,17 +1801,17 @@ async def cleanup_gibberish_profiles(current_user: dict = Depends(require_auth))
     - Chat transcripts from Zoho SalesIQ, Freshdesk, etc.
     - System-generated emails that aren't real candidates
     - Profiles with no meaningful candidate data
-    
-    For profiles that contain real candidate data buried in garbage,
-    attempts to extract and reprocess the actual candidate info.
+    - Names with mojibake/encoding corruption
+    - Noreply / system notification senders
+    - uploaded.local placeholder emails
     """
     import re as _re
+    import unicodedata
     try:
         response_cache.clear()
         conn = db_service.get_connection_raw()
         cursor = conn.cursor()
         
-        # Get ALL candidates for analysis
         cursor.execute("""
             SELECT id, email, name, phone, location, skills, experience,
                    summary, resume_text, raw_email_subject, match_score,
@@ -1823,26 +1823,64 @@ async def cleanup_gibberish_profiles(current_user: dict = Depends(require_auth))
         
         deleted_ids = []
         reprocessed = []
-        flagged = []
+        encoding_fixed = []
         
         # System email patterns that indicate non-candidate
         _system_emails = [
             r'systemgenerated@', r'@zohosalesiq', r'@zohocrm',
             r'@freshdesk', r'@zendesk', r'@intercom', r'@tawk\.to',
             r'noreply@zoho', r'notification@zoho',
+            r'noreply@', r'no-reply@', r'-noreply@',
+            r'@uploaded\.local$',
+            r'^office365reports@', r'^employers-noreply@',
+            r'security-noreply@', r'viva-noreply@',
+            r'messages-noreply@', r'@email\.teams\.microsoft',
+            r'@emeaemail\.teams\.microsoft',
+            r'^noreply@groups\.google', r'^noreply@getgulfjob',
+            r'^noreply@ionos', r'^noreply@bayt',
         ]
         
-        # Invalid name patterns for candidates
+        # Invalid name patterns
         _invalid_candidate_names = {
             'salesiq', 'zoho', 'freshdesk', 'zendesk', 'intercom', 'hubspot',
             'salesforce', 'tawk', 'crisp', 'bot', 'chatbot', 'website',
             'system', 'auto-reply', 'systemgenerated', 'notification',
+            'office365reports', 'indeed for employers', 'google groups',
+            'getgulfjob', 'ionos customer service', 'bayt.com',
         }
+        
+        # Mojibake detection regex
+        _mojibake_re = _re.compile(
+            r'Ã[\x80-\xbf¡-ÿ]|â€[™¢¦œ"\'\-]|Â[\xa0-\xff]|Ã©|Ã¨|Ã¼|Ã¶'
+        )
+        
+        def _is_mojibake(t):
+            if not t or len(t) < 3:
+                return False
+            hits = len(_mojibake_re.findall(t))
+            return hits > 0 and (hits * 2) / len(t) > 0.1
+        
+        def _try_fix_encoding(t):
+            """Attempt to repair double-encoded UTF-8."""
+            if not t: return t
+            try:
+                fixed = t.encode('cp1252').decode('utf-8', errors='ignore')
+                if fixed and not _is_mojibake(fixed):
+                    return fixed
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+            try:
+                fixed = t.encode('latin-1').decode('utf-8', errors='ignore')
+                if fixed and not _is_mojibake(fixed):
+                    return fixed
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                pass
+            return t
         
         for row in rows:
             c = dict(zip(columns, row))
             cid = c['id']
-            email_addr = (c.get('email') or '').lower()
+            email_addr = (c.get('email') or '').lower().strip()
             name = (c.get('name') or '').strip()
             summary = (c.get('summary') or '')
             resume_text = (c.get('resume_text') or '')
@@ -1857,39 +1895,89 @@ async def cleanup_gibberish_profiles(current_user: dict = Depends(require_auth))
                     reason = f'system email: {email_addr}'
                     break
             
-            # Check 2: Invalid name (product/company name, not a person)
-            if not is_gibberish and name.lower() in _invalid_candidate_names:
-                is_gibberish = True
-                reason = f'invalid name: {name}'
-            
-            # Check 3: Summary is a chat transcript
-            if not is_gibberish and summary:
-                _sum_lower = summary[:200].lower()
-                if 'chat transcript' in _sum_lower and ('attended by' in _sum_lower or 'chat duration' in _sum_lower):
+            # Check 2: Invalid name (product/company/service name)
+            if not is_gibberish:
+                name_lower = name.lower().strip()
+                if name_lower in _invalid_candidate_names:
                     is_gibberish = True
-                    reason = f'chat transcript in summary'
+                    reason = f'invalid name: {name}'
+                # Detect "X in Teams" pattern
+                elif _re.match(r'.+ in Teams$', name, _re.IGNORECASE):
+                    is_gibberish = True
+                    reason = f'Teams notification: {name}'
             
-            # Check 4: Resume text is chat/form data
+            # Check 3: Name is entirely mojibake / encoding garbage
+            if not is_gibberish and name and _is_mojibake(name):
+                # Try to fix the name
+                fixed_name = _try_fix_encoding(name)
+                if fixed_name != name and not _is_mojibake(fixed_name) and len(fixed_name.strip()) > 1:
+                    # Name was fixable — update it
+                    fixed_summary = _try_fix_encoding(summary) if _is_mojibake(summary) else summary
+                    fixed_resume = _try_fix_encoding(resume_text) if _is_mojibake(resume_text) else resume_text
+                    cursor.execute("""
+                        UPDATE candidates SET name = ?, summary = ?, resume_text = ?, last_updated = ?
+                        WHERE id = ?
+                    """, (fixed_name, fixed_summary, fixed_resume, datetime.now().isoformat(), cid))
+                    encoding_fixed.append({'id': cid, 'old_name': name, 'new_name': fixed_name, 'email': email_addr})
+                    continue  # Fixed, not gibberish
+                else:
+                    # Name is unfixable mojibake — try extracting real name from summary/resume  
+                    _text_for_name = (summary or '') + ' ' + (resume_text or '')
+                    _name_extract = _re.search(
+                        r'(?:my\s+name\s+is|i\s+am|this\s+is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,4})',
+                        _text_for_name, _re.IGNORECASE
+                    )
+                    if _name_extract:
+                        _extracted_name = _name_extract.group(1).strip()
+                        if len(_extracted_name) > 3 and not _is_mojibake(_extracted_name):
+                            # Found a real name in text — update in place
+                            cursor.execute("""
+                                UPDATE candidates SET name = ?, last_updated = ? WHERE id = ?
+                            """, (_extracted_name, datetime.now().isoformat(), cid))
+                            encoding_fixed.append({'id': cid, 'old_name': name[:30], 'new_name': _extracted_name, 'email': email_addr, 'fix': 'name extracted from summary'})
+                            continue
+                    # Truly unfixable
+                    is_gibberish = True
+                    reason = f'mojibake name: {name[:30]}'
+            
+            # Check 4: Summary is a chat transcript
+            if not is_gibberish and summary:
+                _sum_lower = summary[:300].lower()
+                if ('chat transcript' in _sum_lower and ('attended by' in _sum_lower or 'chat duration' in _sum_lower)):
+                    is_gibberish = True
+                    reason = 'chat transcript in summary'
+            
+            # Check 5: Resume text is chat/form data
             if not is_gibberish and resume_text:
                 _rt_lower = resume_text[:300].lower()
                 if ('chat transcript' in _rt_lower and 'operating system' in _rt_lower and 'browser' in _rt_lower):
                     is_gibberish = True
-                    reason = f'chat metadata in resume_text'
+                    reason = 'chat metadata in resume_text'
             
-            # Check 5: Name looks like a single word that's not a name
-            if not is_gibberish and name and ' ' not in name:
-                # Single-word names that match common system/product patterns
-                if _re.match(r'^(SalesIQ|ChatBot|WebBot|FormBot|AutoReply|NoReply|Mailer|Daemon)$', name, _re.IGNORECASE):
+            # Check 6: Name is just "Databases: ..." or other data extraction artifact
+            if not is_gibberish and name:
+                if _re.match(r'^(Databases?|Technologies?|Skills?|Tools?|Frameworks?)\s*:', name, _re.IGNORECASE):
                     is_gibberish = True
-                    reason = f'system name: {name}'
+                    reason = f'data artifact name: {name[:40]}'
+            
+            # Check 7: Fix encoding in resume_text even for valid candidates
+            if not is_gibberish and resume_text and _is_mojibake(resume_text):
+                fixed_resume = _try_fix_encoding(resume_text)
+                if fixed_resume != resume_text and not _is_mojibake(fixed_resume):
+                    fixed_summary = _try_fix_encoding(summary) if summary and _is_mojibake(summary) else summary
+                    cursor.execute("""
+                        UPDATE candidates SET resume_text = ?, summary = ?, last_updated = ?
+                        WHERE id = ?
+                    """, (fixed_resume, fixed_summary, datetime.now().isoformat(), cid))
+                    encoding_fixed.append({'id': cid, 'name': name, 'email': email_addr, 'fix': 'resume_text encoding repaired'})
+                    continue
             
             if is_gibberish:
-                # Try to extract real candidate from the data
+                # Try to extract real candidate from the data (for chat transcripts)
                 _real_name = None
                 _real_email = None
                 _useful_text = summary + ' ' + resume_text
                 
-                # Look for real candidate name
                 _name_match = _re.search(
                     r'(?:my\s+name\s+is|i\s+am|this\s+is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
                     _useful_text, _re.IGNORECASE
@@ -1900,69 +1988,75 @@ async def cleanup_gibberish_profiles(current_user: dict = Depends(require_auth))
                     _real_name = _name_match.group(1).strip()
                 if _email_match:
                     _candidate_email = _email_match.group(0).strip()
-                    # Make sure it's not a system email
                     if not any(_re.search(p, _candidate_email, _re.IGNORECASE) for p in _system_emails):
                         _real_email = _candidate_email
                 
                 if _real_name and _real_email:
-                    # This gibberish profile contains a real candidate - reprocess
-                    # Clean the text: find where the actual message starts
-                    _msg_start = _re.search(
-                        r'(?:dear\s+sir|dear\s+madam|hi\s*,|hello|i\s+am\s+writing|my\s+name\s+is)',
-                        _useful_text, _re.IGNORECASE
-                    )
-                    _clean_summary = _useful_text[_msg_start.start():] if _msg_start else summary
-                    _clean_summary = _clean_summary[:1000].strip()
-                    
-                    # Generate new ID based on real email
                     import hashlib
                     new_id = hashlib.md5(_real_email.encode()).hexdigest()
-                    
-                    # Check if this real candidate already exists
                     cursor.execute("SELECT id FROM candidates WHERE id = ?", (new_id,))
                     existing = cursor.fetchone()
-                    
                     if existing:
-                        # Real candidate already exists separately - just delete the gibberish
                         cursor.execute("DELETE FROM candidates WHERE id = ?", (cid,))
-                        deleted_ids.append({'id': cid, 'name': name, 'email': email_addr, 'reason': reason + ' (real candidate already exists)'})
+                        deleted_ids.append({'id': cid, 'name': name, 'email': email_addr, 'reason': reason + ' (real candidate exists)'})
                     else:
-                        # Update the gibberish record with real data
+                        _msg_start = _re.search(r'(?:dear|hi\s*,|hello|i\s+am|my\s+name)', _useful_text, _re.IGNORECASE)
+                        _clean_summary = _useful_text[_msg_start.start():_msg_start.start()+1000] if _msg_start else summary[:500]
                         cursor.execute("""
-                            UPDATE candidates SET
-                                id = ?, email = ?, name = ?, summary = ?,
-                                resume_text = ?, last_updated = ?
+                            UPDATE candidates SET id=?, email=?, name=?, summary=?, resume_text=?, last_updated=?
                             WHERE id = ?
-                        """, (
-                            new_id, _real_email, _real_name, _clean_summary,
-                            _clean_summary, datetime.now().isoformat(), cid
-                        ))
-                        reprocessed.append({
-                            'old_id': cid, 'new_id': new_id,
-                            'old_name': name, 'new_name': _real_name,
-                            'old_email': email_addr, 'new_email': _real_email,
-                            'reason': reason
-                        })
+                        """, (new_id, _real_email, _real_name, _clean_summary.strip(),
+                              _clean_summary.strip(), datetime.now().isoformat(), cid))
+                        reprocessed.append({'old_id': cid, 'new_id': new_id, 'old_name': name,
+                                          'new_name': _real_name, 'reason': reason})
                 else:
-                    # No real candidate found - delete
                     cursor.execute("DELETE FROM candidates WHERE id = ?", (cid,))
                     deleted_ids.append({'id': cid, 'name': name, 'email': email_addr, 'reason': reason})
         
         conn.commit()
         conn.close()
         
-        logger.warning(f"Gibberish cleanup: {len(deleted_ids)} deleted, {len(reprocessed)} reprocessed")
+        logger.warning(f"Gibberish cleanup: {len(deleted_ids)} deleted, {len(reprocessed)} reprocessed, {len(encoding_fixed)} encoding fixed")
         
         return {
             "status": "success",
             "deleted_count": len(deleted_ids),
             "reprocessed_count": len(reprocessed),
+            "encoding_fixed_count": len(encoding_fixed),
             "deleted": deleted_ids,
             "reprocessed": reprocessed,
+            "encoding_fixed": encoding_fixed,
         }
     except Exception as e:
         logger.error(f"Gibberish cleanup failed: {e}")
         raise HTTPException(500, f"Cleanup error: {str(e)}")
+
+
+@app.patch("/api/admin/candidates/{candidate_id}")
+async def admin_update_candidate(candidate_id: str, request: Request, current_user: dict = Depends(require_auth)):
+    """Admin endpoint to directly update candidate fields (name, email, summary, etc.)."""
+    updates = await request.json()
+    allowed_fields = {'name', 'email', 'summary', 'resume_text', 'status', 'match_score', 'skills'}
+    filtered = {k: v for k, v in updates.items() if k in allowed_fields}
+    if not filtered:
+        raise HTTPException(400, f"No valid fields. Allowed: {allowed_fields}")
+    try:
+        conn = db_service.get_connection_raw()
+        cursor = conn.cursor()
+        set_parts = [f"{k} = ?" for k in filtered]
+        set_parts.append("last_updated = ?")
+        vals = list(filtered.values()) + [datetime.now().isoformat(), candidate_id]
+        cursor.execute(f"UPDATE candidates SET {', '.join(set_parts)} WHERE id = ?", vals)
+        if cursor.rowcount == 0:
+            conn.close()
+            raise HTTPException(404, "Candidate not found")
+        conn.commit()
+        conn.close()
+        return {"status": "success", "updated_fields": list(filtered.keys()), "candidate_id": candidate_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 @app.post("/api/candidates/reset-and-reparse")

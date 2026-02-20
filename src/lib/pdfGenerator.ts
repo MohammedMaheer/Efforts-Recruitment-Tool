@@ -689,7 +689,22 @@ export async function generateCandidatePDF(
   }
 
   // ===== SECTION 3 — ORIGINAL CV / RESUME TEXT =====
-  if (candidate.resumeText && candidate.resumeText.trim().length > 20) {
+  // Sanitize resume text: detect and skip garbled/mojibake content
+  let cleanResumeText = candidate.resumeText?.trim() || ''
+  // Use simple string-based mojibake detection (regex character classes cause build issues with non-ASCII ranges)
+  const mojibakeMarkers = ['Ã\u0082', 'Ã\u0083', 'Ã\u00A9', 'Ã\u00A8', 'Ã\u00BC', 'Ã\u00B6', '\u00C3\u0082', '\u00C3\u0083', '\u00C2\u00A0']
+  let mojibakeHits = 0
+  for (const marker of mojibakeMarkers) {
+    let idx = -1
+    let startPos = 0
+    while ((idx = cleanResumeText.indexOf(marker, startPos)) !== -1) {
+      mojibakeHits++
+      startPos = idx + marker.length
+    }
+  }
+  const isMojibake = mojibakeHits > 5 && (mojibakeHits * 3) / cleanResumeText.length > 0.05
+
+  if (cleanResumeText.length > 20 && !isMojibake) {
     // Footer on current page, then new page for CV
     drawFooter(doc, pageWidth, pageHeight, pageNum.value)
     doc.addPage()
@@ -713,7 +728,7 @@ export async function generateCandidatePDF(
     doc.setFont('helvetica', 'normal')
     setColor(doc, BRAND.black)
     
-    const resumeLines = doc.splitTextToSize(candidate.resumeText.trim(), contentWidth)
+    const resumeLines = doc.splitTextToSize(cleanResumeText, contentWidth)
     const lineH = 3.5
     
     for (let i = 0; i < resumeLines.length; i++) {

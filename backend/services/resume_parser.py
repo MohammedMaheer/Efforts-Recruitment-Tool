@@ -8,6 +8,43 @@ from io import BytesIO
 
 logger = logging.getLogger(__name__)
 
+# Common mojibake sequences (UTF-8 decoded as latin-1/cp1252)
+MOJIBAKE_PATTERNS = re.compile(
+    r'Ã[\x80-\xbf¡-ÿ]'
+    r'|â€[™¢¦œ"\'\-\—]'
+    r'|Ã¢â‚¬'
+    r'|â\x80[\x90-\x9f]'
+    r'|Â[\xa0-\xff]'
+    r'|Ã©|Ã¨|Ã¼|Ã¶|Ã±|Ã§'
+)
+
+def is_mojibake(text: str, threshold: float = 0.15) -> bool:
+    """Detect if text contains excessive mojibake / encoding corruption.
+    Returns True if >threshold fraction of chars are garbled."""
+    if not text or len(text) < 20:
+        return False
+    mojibake_chars = sum(len(m) for m in MOJIBAKE_PATTERNS.findall(text))
+    ratio = mojibake_chars / len(text)
+    return ratio > threshold
+
+def try_fix_encoding(text: str) -> str:
+    """Attempt to repair double-encoded UTF-8 text."""
+    if not text:
+        return text
+    try:
+        fixed = text.encode('cp1252').decode('utf-8', errors='ignore')
+        if fixed and len(fixed) > len(text) * 0.3 and not is_mojibake(fixed, 0.1):
+            return fixed
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    try:
+        fixed = text.encode('latin-1').decode('utf-8', errors='ignore')
+        if fixed and len(fixed) > len(text) * 0.3 and not is_mojibake(fixed, 0.1):
+            return fixed
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        pass
+    return text
+
 
 class ResumeParser:
     """
@@ -88,8 +125,12 @@ class ResumeParser:
         if not text:
             return ""
         
-        # Unicode normalization â€” convert special chars to ASCII equivalents
-        text = unicodedata.normalize('NFKD', text)
+        # Try to fix double-encoded UTF-8 (mojibake)
+        if is_mojibake(text):
+            text = try_fix_encoding(text)
+        
+        # Unicode normalization — use NFC to compose chars (preserves non-Latin)
+        text = unicodedata.normalize('NFC', text)
         
         # Fix common PDF extraction artifacts
         # Replace multiple spaces (from column layouts) with single space per line
@@ -204,13 +245,20 @@ class ResumeParser:
         text = await self.extract_text(content, filename)
         
         if not text or len(text.strip()) < 30:
-            logger.warning(f"âš ï¸ Insufficient text extracted from {filename}")
+            logger.warning(f"Insufficient text extracted from {filename}")
             return self._empty_result(text)
+        
+        # Check for mojibake/garbled text — flag it if mostly unreadable
+        if is_mojibake(text, threshold=0.25):
+            logger.warning(f"Text from {filename} appears garbled/mojibake ({len(text)} chars). Attempting repair.")
+            text = try_fix_encoding(text)
+            if is_mojibake(text, threshold=0.25):
+                logger.warning(f"Text still garbled after repair for {filename}")
         
         # Strategy 1: Try LLM-powered extraction (100% accurate)
         llm_result = await self._parse_with_llm(text)
         if llm_result:
-            logger.info(f"âœ… Resume parsed with LLM: {llm_result.get('name', 'Unknown')}")
+            logger.info(f"Resume parsed with LLM: {llm_result.get('name', 'Unknown')}")
             llm_result['raw_text'] = text[:5000]
             return llm_result
         
