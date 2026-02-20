@@ -360,6 +360,11 @@ class DatabaseService:
         r'^[a-f0-9]{32,}@',           # hash-style relay addresses
         r'^employer.*noreply@',
         r'^.+-[a-f0-9]{8,}@indeedemail',
+        r'^systemgenerated@',
+        r'@zohosalesiq\.',
+        r'@zohocrm\.',
+        r'@freshdesk\.',
+        r'@zendesk\.',
     ]
     
     @staticmethod

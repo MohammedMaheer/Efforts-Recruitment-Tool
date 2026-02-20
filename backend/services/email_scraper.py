@@ -617,7 +617,10 @@ def is_valid_name(name: str) -> bool:
         'no-reply', 'notifications', 'notification', 'jobs', 'careers', 'hiring',
         'recruitment', 'recruiter', 'hr', 'human resources', 'support', 'info',
         'admin', 'administrator', 'system', 'automated', 'donotreply', 'mailer',
-        'daemon', 'postmaster', 'webmaster', 'team', 'service', 'services'
+        'daemon', 'postmaster', 'webmaster', 'team', 'service', 'services',
+        'salesiq', 'zoho', 'freshdesk', 'zendesk', 'intercom', 'hubspot',
+        'salesforce', 'tawk', 'crisp', 'bot', 'chatbot', 'auto-reply',
+        'systemgenerated', 'noreply-hr', 'website', 'contact', 'enquiry',
     ]
     if name.lower().strip() in invalid_names:
         return False
@@ -996,13 +999,58 @@ class EmailScraperService:
                 r'noreply@', r'no-reply@', r'donotreply@', r'notification@',
                 r'employers-noreply@', r'mailer-daemon@', r'postmaster@',
                 r'support@indeed', r'jobs@indeed', r'@indeedemail\.com',
-                r'notification@linkedin', r'messages-noreply@linkedin'
+                r'notification@linkedin', r'messages-noreply@linkedin',
+                r'systemgenerated@', r'@zohosalesiq', r'@zohocrm',
+                r'@freshdesk', r'@zendesk', r'@intercom', r'@hubspot',
+                r'@salesforce', r'@tawk\.to', r'@crisp\.chat',
             ]
+            is_system_email = False
             for pattern in skip_email_patterns:
                 if re.search(pattern, sender_email, re.IGNORECASE):
-                    # This is a system email - we need to extract the REAL candidate from the body
-                    logger.info(f"ðŸ“§ System email detected: {sender_email} - will extract candidate from body")
+                    is_system_email = True
+                    logger.info(f"System email detected: {sender_email} - will extract candidate from body")
                     break
+            
+            # FILTER: Detect chat transcript / non-candidate content
+            _body_lower = clean_body[:500].lower() if clean_body else ''
+            is_chat_transcript = bool(re.search(r'chat\s*transcript|attended\s*by\s*:|chat\s*duration\s*:', _body_lower))
+            is_system_notification = bool(re.search(
+                r'your\s*subscription|invoice|receipt|payment\s*confirm|order\s*confirm|shipping|delivery\s*notification|unsubscribe\s*from|newsletter\s*update',
+                _body_lower
+            ))
+            
+            # For chat transcripts from SalesIQ etc. - extract real candidate or skip
+            if is_chat_transcript and is_system_email:
+                logger.info(f"Chat transcript from {sender_email} - attempting to extract real candidate")
+                _chat_name_match = re.search(r'(?:my\s+name\s+is|i\s+am|this\s+is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})', clean_body, re.IGNORECASE)
+                _chat_email_match = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', clean_body)
+                if _chat_name_match and _chat_email_match:
+                    _real_name = _chat_name_match.group(1).strip()
+                    _real_email = _chat_email_match.group(0).strip()
+                    if is_valid_name(_real_name) and '@zohosalesiq' not in _real_email.lower():
+                        sender_email = _real_email
+                        email_data['sender_name'] = _real_name
+                        # Strip chat metadata, keep candidate's actual message
+                        _msg_start = re.search(r'(?:dear\s+sir|dear\s+madam|hi\s*,|hello|i\s+am\s+writing|my\s+name\s+is)', clean_body, re.IGNORECASE)
+                        if _msg_start:
+                            clean_body = clean_body[_msg_start.start():]
+                        logger.info(f"Extracted real candidate from chat: {_real_name} ({_real_email})")
+                    else:
+                        logger.info(f"Chat transcript has no valid candidate - skipping")
+                        return None
+                else:
+                    logger.info(f"Chat transcript with no identifiable candidate - skipping")
+                    return None
+            elif is_chat_transcript and not is_system_email:
+                # Chat transcript from non-system email - clean metadata
+                _msg_start = re.search(r'(?:dear\s+sir|dear\s+madam|hi\s*,|hello|i\s+am\s+writing|my\s+name\s+is)', clean_body, re.IGNORECASE)
+                if _msg_start:
+                    clean_body = clean_body[_msg_start.start():]
+            
+            # Skip pure system notifications
+            if is_system_notification and not is_chat_transcript:
+                logger.info(f"System notification email - skipping: {subject[:60]}")
+                return None
             
             # FIRST: Try LLM-powered email parsing (100% accurate)
             llm_portal_data = None

@@ -30,7 +30,7 @@ import { useCandidateStore } from '@/store/candidateStore'
 import { useNotificationStore } from '@/store/notificationStore'
 import { useAuthStore } from '@/store/authStore'
 import { candidateApi } from '@/services/api'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
+import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
 import { Progress } from '@/components/ui/Progress'
@@ -357,7 +357,7 @@ export default function CandidateDetail() {
   const catColor = getCategoryColor(candidate.jobCategory || 'General')
 
   return (
-    <div className="max-w-6xl mx-auto space-y-5">
+    <div className="max-w-6xl mx-auto space-y-5 pb-10">
       {/* Breadcrumb */}
       <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }}>
         <button
@@ -375,16 +375,15 @@ export default function CandidateDetail() {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.25 }}
       >
-        <Card className="overflow-hidden border-0 shadow-sm">
+        <Card className="overflow-hidden border border-gray-100/80 shadow-sm bg-white">
           {/* Colored accent bar */}
-          <div className={`h-1 bg-gradient-to-r ${scoreBg}`} />
+          <div className="h-1 bg-gradient-to-r from-sky-500 to-indigo-500" />
           <CardContent className="p-6">
             <div className="flex flex-col lg:flex-row lg:items-start gap-5">
               {/* Left: Avatar + Info */}
               <div className="flex items-start gap-4 flex-1 min-w-0">
-                <Avatar className="w-16 h-16 ring-2 ring-gray-100 flex-shrink-0">
-                  <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${candidate.name}&backgroundColor=1e40af&textColor=ffffff`} />
-                  <AvatarFallback className="text-xl bg-slate-800 text-white font-semibold">{candidate.name.charAt(0)}</AvatarFallback>
+                <Avatar className="w-14 h-14 ring-2 ring-sky-100 flex-shrink-0">
+                  <AvatarFallback className="text-lg font-semibold bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700">{candidate.name.charAt(0)}</AvatarFallback>
                 </Avatar>
                 <div className="min-w-0 flex-1">
                   <div className="flex items-center gap-2 flex-wrap mb-1.5">
@@ -451,10 +450,10 @@ export default function CandidateDetail() {
               <div className="flex items-center gap-3 flex-shrink-0">
                 {/* Score badge */}
                 <div className="text-center px-4">
-                  <div className={`text-3xl font-bold ${scoreColor}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</div>
+                  <div className={`text-2xl font-bold ${scoreColor}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</div>
                   <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mt-0.5">Match</div>
                 </div>
-                <div className="h-12 w-px bg-gray-200" />
+                <div className="h-10 w-px bg-gray-200" />
                 {/* Action buttons */}
                 <div className="flex items-center gap-2">
                   <Button 
@@ -489,7 +488,7 @@ export default function CandidateDetail() {
             </div>
 
             {/* Quick Actions Row — Schedule / Message / Reject inline */}
-            <div className="flex items-center gap-2 px-6 pb-4 pt-1 border-t border-gray-100 mt-3">
+            <div className="flex items-center gap-2 px-6 pb-4 pt-2.5 border-t border-gray-100 mt-3">
               <Button variant="success" size="sm" className="text-xs h-8" onClick={handleScheduleInterview}>
                 <Calendar className="w-3.5 h-3.5 mr-1" />Schedule Interview
               </Button>
@@ -507,13 +506,11 @@ export default function CandidateDetail() {
       {/* AI Analysis — Compact Assessment Card */}
       {aiAnalysis && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          <Card className="border border-sky-100 bg-white overflow-hidden">
-            <div className="h-0.5 bg-gradient-to-r from-sky-500 to-indigo-500" />
-            <CardHeader className="pb-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <Sparkles className="w-4 h-4 text-sky-500" />
-                  <CardTitle className="text-sm font-semibold text-gray-900">AI Assessment</CardTitle>
+          <div className="rounded-xl border border-sky-100 bg-white overflow-hidden shadow-sm">
+            <div className="bg-gradient-to-r from-sky-50 to-indigo-50 px-5 py-3 flex items-center justify-between border-b border-sky-100/60">
+              <div className="flex items-center gap-2">
+                <Sparkles className="w-4 h-4 text-sky-500" />
+                <span className="text-sm font-semibold text-gray-900">AI Assessment</span>
                   {aiAnalysis.isFallback && <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Basic</span>}
                   {aiAnalysis.from_cache && <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Cached</span>}
                 </div>
@@ -536,8 +533,7 @@ export default function CandidateDetail() {
                   )}
                 </div>
               </div>
-            </CardHeader>
-            <CardContent className="space-y-4 pt-0">
+            <div className="p-5 space-y-4">
               {/* Executive Summary */}
               {aiAnalysis.executive_summary && (
                 <p className="text-sm text-gray-700 leading-relaxed bg-slate-50 rounded-lg p-4">{aiAnalysis.executive_summary}</p>
@@ -628,8 +624,8 @@ export default function CandidateDetail() {
                   {aiAnalysis.source && <span className="capitalize">{aiAnalysis.source === 'fallback' ? 'profile-based' : aiAnalysis.source}</span>}
                 </div>
               )}
-            </CardContent>
-          </Card>
+            </div>
+          </div>
         </motion.div>
       )}
 
@@ -650,8 +646,8 @@ export default function CandidateDetail() {
         <div className="lg:col-span-2 space-y-4">
           {/* Summary */}
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
-            <Card className="border-0 shadow-sm">
-              <CardContent className="p-5">
+            <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+              <div className="p-5">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Professional Summary</h3>
                 {fullDataLoading && !fullCandidateData ? (
                   <div className="space-y-2 animate-pulse">
@@ -664,30 +660,30 @@ export default function CandidateDetail() {
                 ) : (
                   <p className="text-sm text-gray-400 italic">No summary available. Run AI Analysis to generate one.</p>
                 )}
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </motion.div>
 
           {/* Skills */}
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
-            <Card className="border-0 shadow-sm">
-              <CardContent className="p-5">
+            <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+              <div className="p-5">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Skills & Expertise</h3>
                 <div className="flex flex-wrap gap-1.5">
                   {candidate.skills.map((skill) => (
-                    <span key={skill} className="inline-flex items-center px-2.5 py-1 rounded-md text-xs font-medium bg-sky-50 text-sky-700 border border-sky-100">
+                    <span key={skill} className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-sky-50 text-sky-700 border border-sky-100">
                       {skill}
                     </span>
                   ))}
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </motion.div>
 
           {/* Work Experience */}
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.15 }}>
-            <Card className="border-0 shadow-sm">
-              <CardContent className="p-5">
+            <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+              <div className="p-5">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-4 flex items-center gap-1.5">
                   <Briefcase className="w-3.5 h-3.5" />Work Experience
                 </h3>
@@ -715,14 +711,14 @@ export default function CandidateDetail() {
                     <p className="text-sm text-gray-400 italic">No work experience data available</p>
                   )}
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </motion.div>
 
           {/* Education */}
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.2 }}>
-            <Card className="border-0 shadow-sm">
-              <CardContent className="p-5">
+            <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+              <div className="p-5">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3 flex items-center gap-1.5">
                   <GraduationCap className="w-3.5 h-3.5" />Education
                 </h3>
@@ -746,8 +742,8 @@ export default function CandidateDetail() {
                     <p className="text-sm text-gray-400 italic">No education data available</p>
                   )}
                 </div>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </motion.div>
 
           {/* Certifications & Languages — combined row */}
@@ -755,8 +751,8 @@ export default function CandidateDetail() {
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.25 }}>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {candidate.certifications && candidate.certifications.length > 0 && (
-                  <Card className="border-0 shadow-sm">
-                    <CardContent className="p-5">
+                  <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+                    <div className="p-5">
                       <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1.5">
                         <Award className="w-3.5 h-3.5" />Certifications
                       </h3>
@@ -768,12 +764,12 @@ export default function CandidateDetail() {
                           </div>
                         ))}
                       </div>
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
                 )}
                 {candidate.languages && candidate.languages.length > 0 && (
-                  <Card className="border-0 shadow-sm">
-                    <CardContent className="p-5">
+                  <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+                    <div className="p-5">
                       <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1.5">
                         <Globe className="w-3.5 h-3.5" />Languages
                       </h3>
@@ -782,8 +778,8 @@ export default function CandidateDetail() {
                           <span key={i} className="text-xs px-2 py-0.5 rounded-full border border-sky-100 bg-sky-50/50 text-sky-700">{lang}</span>
                         ))}
                       </div>
-                    </CardContent>
-                  </Card>
+                    </div>
+                  </div>
                 )}
               </div>
             </motion.div>
@@ -794,9 +790,9 @@ export default function CandidateDetail() {
         <div className="space-y-4">
           {/* Match Score — compact */}
           <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.05 }}>
-            <Card className="border-0 shadow-sm overflow-hidden">
-              <div className="h-1 bg-gradient-to-r from-sky-500 to-sky-600" />
-              <CardContent className="p-4 text-center">
+            <div className="rounded-xl border border-sky-100 bg-white shadow-sm overflow-hidden">
+              <div className="h-1 bg-gradient-to-r from-sky-500 to-indigo-500" />
+              <div className="p-4 text-center">
                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Match Score</p>
                 <div className={`text-4xl font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
                   {(candidate.matchScore ?? 50).toFixed(0)}%
@@ -821,14 +817,14 @@ export default function CandidateDetail() {
                 }`}>
                   {candidate.status} Match
                 </span>
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </motion.div>
 
           {/* Quick Info — compact rows */}
           <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }}>
-            <Card className="border-0 shadow-sm">
-              <CardContent className="p-4 space-y-2.5">
+            <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+              <div className="p-4 space-y-2.5">
                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Quick Info</p>
                 {[
                   { label: 'Experience', value: `${candidate.experience} years` },
@@ -840,16 +836,16 @@ export default function CandidateDetail() {
                     <span className="font-medium text-gray-900">{row.value}</span>
                   </div>
                 ))}
-              </CardContent>
-            </Card>
+              </div>
+            </div>
           </motion.div>
 
           {/* AI Evaluation — compact */}
           {candidate.evaluation && (
             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.15 }}>
-              <Card className="border-0 shadow-sm overflow-hidden">
-                <div className="h-0.5 bg-sky-500" />
-                <CardContent className="p-4 space-y-3">
+              <div className="rounded-xl border border-sky-100 bg-white shadow-sm overflow-hidden">
+                <div className="h-0.5 bg-gradient-to-r from-sky-500 to-indigo-500" />
+                <div className="p-4 space-y-3">
                   <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">AI Evaluation</p>
 
                   <div>
@@ -884,8 +880,8 @@ export default function CandidateDetail() {
                     <h4 className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Recommendation</h4>
                     <p className="text-xs text-gray-700 leading-relaxed">{candidate.evaluation.recommendation}</p>
                   </div>
-                </CardContent>
-              </Card>
+                </div>
+              </div>
             </motion.div>
           )}
 

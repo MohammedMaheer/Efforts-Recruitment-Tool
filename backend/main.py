@@ -176,25 +176,53 @@ async def auto_sync_emails():
                             else:
                                 logger.warning(f"⚠️ Refresh token failed: {refresh_result.get('error', 'unknown')}")
                         
-                        # PRIORITY 2: No refresh token available — user must authenticate via frontend
-                        # NOTE: Client Credentials Flow only works with Azure AD mailboxes.
-                        # Our email (hr@effortz.com) uses delegated auth with refresh tokens.
-                        # User must authenticate ONCE via frontend, then auto-refresh works forever.
+                        # PRIORITY 2: No refresh token — try app credentials first, then prompt user
                         if not auth_success and not refresh_token:
-                            logger.info("=" * 60)
-                            logger.info("📋 EMAIL SYNC REQUIRES ONE-TIME MICROSOFT OAUTH LOGIN")
-                            logger.info("=" * 60)
-                            logger.info(f"   1. Open: {os.getenv('CORS_ORIGINS', 'https://efforts-recruitment.web.app')}")
-                            logger.info("   2. Go to: Settings → Email Integration")
-                            logger.info("   3. Click: Connect Microsoft Account")
-                            logger.info("   4. Sign in with your Microsoft/Outlook account")
-                            logger.info("   → After this ONE-TIME login, auto-refresh works FOREVER")
-                            logger.info("=" * 60)
+                            logger.warning("No refresh token available. Trying app credentials (Mail.Read)...")
+                            try:
+                                cred_result = await graph_service.authenticate_with_credentials()
+                                if cred_result.get('status') == 'success':
+                                    auth_success = True
+                                    logger.warning("Authenticated via APP CREDENTIALS for email sync")
+                                    token_data = {
+                                        'access_token': cred_result['access_token'],
+                                        'auth_type': 'application',
+                                        'is_expired': False,
+                                        'expires_at_dt': datetime.now() + timedelta(seconds=cred_result.get('expires_in', 3600))
+                                    }
+                            except Exception:
+                                pass
+                            
+                            if not auth_success:
+                                logger.info("=" * 60)
+                                logger.info("EMAIL SYNC REQUIRES ONE-TIME MICROSOFT OAUTH LOGIN")
+                                logger.info("=" * 60)
+                                logger.info(f"   1. Open: {os.getenv('CORS_ORIGINS', 'https://efforts-recruitment.web.app')}")
+                                logger.info("   2. Go to: Settings > Email Integration")
+                                logger.info("   3. Click: Connect Microsoft Account")
+                                logger.info("=" * 60)
                         elif not auth_success and refresh_token:
-                            # Refresh failed but we have a refresh_token — DON'T try client_credentials
-                            # because it would overwrite the delegated token + refresh_token
-                            logger.warning(f"⚠️ Refresh token failed for {primary_email}. User needs to re-authenticate via Settings.")
-                            logger.info("📋 Re-authenticate: Settings → Email Integration → Connect Microsoft Account")
+                            # Refresh failed — try application credentials as fallback
+                            # This requires Mail.Read application permission on Azure app
+                            logger.warning(f"Refresh token failed for {primary_email}. Trying app credentials fallback...")
+                            try:
+                                cred_result = await graph_service.authenticate_with_credentials()
+                                if cred_result.get('status') == 'success':
+                                    auth_success = True
+                                    logger.warning(f"Authenticated via APP CREDENTIALS for email sync (Mail.Read permission)")
+                                    # Update token_data so the check below passes
+                                    token_data = {
+                                        'access_token': cred_result['access_token'],
+                                        'auth_type': 'application',
+                                        'is_expired': False,
+                                        'expires_at_dt': datetime.now() + timedelta(seconds=cred_result.get('expires_in', 3600))
+                                    }
+                                else:
+                                    logger.warning(f"App credentials auth failed: {cred_result.get('error', 'unknown')}")
+                                    logger.info("Re-authenticate: Settings > Email Integration > Connect Microsoft Account")
+                            except Exception as cred_err:
+                                logger.warning(f"App credentials fallback error: {cred_err}")
+                                logger.info("Re-authenticate: Settings > Email Integration > Connect Microsoft Account")
                     
                     # Use the token if we have a valid one
                     if token_data and token_data.get('access_token') and not token_data.get('is_expired', True):
@@ -452,7 +480,7 @@ async def auto_sync_emails():
                             
                             total_processed_after = await asyncio.to_thread(lambda: db_service.get_processed_email_count())
                             newly_processed = total_processed_after - processed_count_before
-                            logger.info(f"✅ OAuth2 sync: {primary_email} - {len(messages)} total emails, {new_count} new candidates, {newly_processed} newly processed, {len(messages) - newly_processed} already processed")
+                            logger.warning(f"OAuth2 sync: {primary_email} - {len(messages)} total emails, {new_count} new candidates, {newly_processed} newly processed, {len(messages) - newly_processed} already processed")
                             oauth2_success = True
                             # Update last sync time on success — persist to DB
                             _last_email_sync_time = sync_start_time
@@ -1763,6 +1791,178 @@ async def purge_indeed_candidates(current_user: dict = Depends(require_auth)):
     except Exception as e:
         logger.error(f"Purge failed: {e}")
         raise HTTPException(500, f"Purge error: {str(e)}")
+
+
+# ====== INTELLIGENT GIBBERISH PROFILE CLEANUP ======
+@app.post("/api/admin/cleanup-gibberish")
+async def cleanup_gibberish_profiles(current_user: dict = Depends(require_auth)):
+    """
+    Intelligently find and clean up gibberish/non-candidate profiles:
+    - Chat transcripts from Zoho SalesIQ, Freshdesk, etc.
+    - System-generated emails that aren't real candidates
+    - Profiles with no meaningful candidate data
+    
+    For profiles that contain real candidate data buried in garbage,
+    attempts to extract and reprocess the actual candidate info.
+    """
+    import re as _re
+    try:
+        response_cache.clear()
+        conn = db_service.get_connection_raw()
+        cursor = conn.cursor()
+        
+        # Get ALL candidates for analysis
+        cursor.execute("""
+            SELECT id, email, name, phone, location, skills, experience,
+                   summary, resume_text, raw_email_subject, match_score,
+                   job_category, job_subcategory, status
+            FROM candidates
+        """)
+        rows = cursor.fetchall()
+        columns = [desc[0] for desc in cursor.description]
+        
+        deleted_ids = []
+        reprocessed = []
+        flagged = []
+        
+        # System email patterns that indicate non-candidate
+        _system_emails = [
+            r'systemgenerated@', r'@zohosalesiq', r'@zohocrm',
+            r'@freshdesk', r'@zendesk', r'@intercom', r'@tawk\.to',
+            r'noreply@zoho', r'notification@zoho',
+        ]
+        
+        # Invalid name patterns for candidates
+        _invalid_candidate_names = {
+            'salesiq', 'zoho', 'freshdesk', 'zendesk', 'intercom', 'hubspot',
+            'salesforce', 'tawk', 'crisp', 'bot', 'chatbot', 'website',
+            'system', 'auto-reply', 'systemgenerated', 'notification',
+        }
+        
+        for row in rows:
+            c = dict(zip(columns, row))
+            cid = c['id']
+            email_addr = (c.get('email') or '').lower()
+            name = (c.get('name') or '').strip()
+            summary = (c.get('summary') or '')
+            resume_text = (c.get('resume_text') or '')
+            
+            is_gibberish = False
+            reason = ''
+            
+            # Check 1: System email address
+            for pat in _system_emails:
+                if _re.search(pat, email_addr, _re.IGNORECASE):
+                    is_gibberish = True
+                    reason = f'system email: {email_addr}'
+                    break
+            
+            # Check 2: Invalid name (product/company name, not a person)
+            if not is_gibberish and name.lower() in _invalid_candidate_names:
+                is_gibberish = True
+                reason = f'invalid name: {name}'
+            
+            # Check 3: Summary is a chat transcript
+            if not is_gibberish and summary:
+                _sum_lower = summary[:200].lower()
+                if 'chat transcript' in _sum_lower and ('attended by' in _sum_lower or 'chat duration' in _sum_lower):
+                    is_gibberish = True
+                    reason = f'chat transcript in summary'
+            
+            # Check 4: Resume text is chat/form data
+            if not is_gibberish and resume_text:
+                _rt_lower = resume_text[:300].lower()
+                if ('chat transcript' in _rt_lower and 'operating system' in _rt_lower and 'browser' in _rt_lower):
+                    is_gibberish = True
+                    reason = f'chat metadata in resume_text'
+            
+            # Check 5: Name looks like a single word that's not a name
+            if not is_gibberish and name and ' ' not in name:
+                # Single-word names that match common system/product patterns
+                if _re.match(r'^(SalesIQ|ChatBot|WebBot|FormBot|AutoReply|NoReply|Mailer|Daemon)$', name, _re.IGNORECASE):
+                    is_gibberish = True
+                    reason = f'system name: {name}'
+            
+            if is_gibberish:
+                # Try to extract real candidate from the data
+                _real_name = None
+                _real_email = None
+                _useful_text = summary + ' ' + resume_text
+                
+                # Look for real candidate name
+                _name_match = _re.search(
+                    r'(?:my\s+name\s+is|i\s+am|this\s+is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})',
+                    _useful_text, _re.IGNORECASE
+                )
+                _email_match = _re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', _useful_text)
+                
+                if _name_match:
+                    _real_name = _name_match.group(1).strip()
+                if _email_match:
+                    _candidate_email = _email_match.group(0).strip()
+                    # Make sure it's not a system email
+                    if not any(_re.search(p, _candidate_email, _re.IGNORECASE) for p in _system_emails):
+                        _real_email = _candidate_email
+                
+                if _real_name and _real_email:
+                    # This gibberish profile contains a real candidate - reprocess
+                    # Clean the text: find where the actual message starts
+                    _msg_start = _re.search(
+                        r'(?:dear\s+sir|dear\s+madam|hi\s*,|hello|i\s+am\s+writing|my\s+name\s+is)',
+                        _useful_text, _re.IGNORECASE
+                    )
+                    _clean_summary = _useful_text[_msg_start.start():] if _msg_start else summary
+                    _clean_summary = _clean_summary[:1000].strip()
+                    
+                    # Generate new ID based on real email
+                    import hashlib
+                    new_id = hashlib.md5(_real_email.encode()).hexdigest()
+                    
+                    # Check if this real candidate already exists
+                    cursor.execute("SELECT id FROM candidates WHERE id = ?", (new_id,))
+                    existing = cursor.fetchone()
+                    
+                    if existing:
+                        # Real candidate already exists separately - just delete the gibberish
+                        cursor.execute("DELETE FROM candidates WHERE id = ?", (cid,))
+                        deleted_ids.append({'id': cid, 'name': name, 'email': email_addr, 'reason': reason + ' (real candidate already exists)'})
+                    else:
+                        # Update the gibberish record with real data
+                        cursor.execute("""
+                            UPDATE candidates SET
+                                id = ?, email = ?, name = ?, summary = ?,
+                                resume_text = ?, last_updated = ?
+                            WHERE id = ?
+                        """, (
+                            new_id, _real_email, _real_name, _clean_summary,
+                            _clean_summary, datetime.now().isoformat(), cid
+                        ))
+                        reprocessed.append({
+                            'old_id': cid, 'new_id': new_id,
+                            'old_name': name, 'new_name': _real_name,
+                            'old_email': email_addr, 'new_email': _real_email,
+                            'reason': reason
+                        })
+                else:
+                    # No real candidate found - delete
+                    cursor.execute("DELETE FROM candidates WHERE id = ?", (cid,))
+                    deleted_ids.append({'id': cid, 'name': name, 'email': email_addr, 'reason': reason})
+        
+        conn.commit()
+        conn.close()
+        
+        logger.warning(f"Gibberish cleanup: {len(deleted_ids)} deleted, {len(reprocessed)} reprocessed")
+        
+        return {
+            "status": "success",
+            "deleted_count": len(deleted_ids),
+            "reprocessed_count": len(reprocessed),
+            "deleted": deleted_ids,
+            "reprocessed": reprocessed,
+        }
+    except Exception as e:
+        logger.error(f"Gibberish cleanup failed: {e}")
+        raise HTTPException(500, f"Cleanup error: {str(e)}")
 
 
 @app.post("/api/candidates/reset-and-reparse")
