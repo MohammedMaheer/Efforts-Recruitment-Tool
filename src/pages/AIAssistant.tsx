@@ -60,6 +60,20 @@ import { toast } from '@/components/ui/Toast'
 import { generateQuickProfilePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
 import { isTextGarbled } from '@/lib/textUtils'
 
+// ── Location cleanup utility ──
+const cleanLocation = (loc: string | undefined | null): string => {
+  if (!loc) return ''
+  let cleaned = loc.trim()
+  // Strip Arabic/non-Latin text in parentheses (e.g. UAE Arabic name)
+  cleaned = cleaned.replace(/\s*\([^)]*[\u0600-\u06FF][^)]*\)\s*/g, '').trim()
+  // Remove locations that are just common pronouns / noise words extracted from email body
+  const noise = /^(you|me|us|we|they|them|him|her|i|my|your|our|here|there|null|undefined|n\/a|none|na|unknown|test|email|sir|madam|dear|hi|hello|the|a|an|from|to|for)$/i
+  if (noise.test(cleaned)) return ''
+  // Too short to be a real location  
+  if (cleaned.length <= 1) return ''
+  return cleaned
+}
+
 // ── Score utilities (matching Shortlist design) ──
 const getScoreColor = (score: number) => {
   if (score >= 90) return 'text-emerald-600'
@@ -587,6 +601,7 @@ export default function AIAssistant() {
         // Merge full data with the summary card data
         const merged: Candidate = {
           ...candidate,
+          location: cleanLocation(fullData.location || candidate.location),
           summary: fullData.summary || candidate.summary || '',
           workHistory: (fullData.workHistory || []).map((job: any) => ({
             title: job.title || job.position || '',
@@ -637,6 +652,7 @@ export default function AIAssistant() {
           ...candidate,
           // Pull latest status from DB so shortlist badge is accurate
           status: fullData.status || candidate.status || 'New',
+          location: cleanLocation(fullData.location || candidate.location),
           summary: fullData.summary || candidate.summary || '',
           workHistory: (fullData.workHistory || []).map((job: any) => ({
             title: job.title || job.position || '',
@@ -1316,11 +1332,11 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         // them directly — no fragile index matching needed.
         const makeCandidateFromLookup = (entry: any): Candidate => {
           const local = candidates.find(c => c.id === entry.id)
-          return local || {
+          return local ? { ...local, location: cleanLocation(local.location) } : {
             id: entry.id,
             name: entry.name || 'Unknown',
             matchScore: entry.matchScore || 50,
-            location: entry.location || '',
+            location: cleanLocation(entry.location),
             jobCategory: entry.jobCategory || 'General',
             experience: entry.experience || 0,
             skills: entry.skills || [],
@@ -2062,7 +2078,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                       </p>
                       <div className="flex items-center gap-1 text-xs text-gray-400 mt-0.5">
                         <MapPin className="w-3 h-3 flex-shrink-0" />
-                        <span className="truncate">{candidate.location || 'N/A'}</span>
+                        <span className="truncate">{cleanLocation(candidate.location) || 'N/A'}</span>
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
@@ -2104,8 +2120,8 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                           {resultDetailCandidate.jobCategory && resultDetailCandidate.jobCategory !== 'General' ? resultDetailCandidate.jobCategory : 'Candidate'}
                         </p>
                         <div className="flex items-center gap-3 mt-2 text-sm text-slate-300 flex-wrap">
-                          {resultDetailCandidate.location && (
-                            <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{resultDetailCandidate.location}</span>
+                          {cleanLocation(resultDetailCandidate.location) && (
+                            <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{cleanLocation(resultDetailCandidate.location)}</span>
                           )}
                           {resultDetailCandidate.experience > 0 && (
                             <span className="flex items-center gap-1">• {resultDetailCandidate.experience}+ Years experience</span>
@@ -2143,14 +2159,122 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                     <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
                       <Sparkles className="w-4 h-4 text-sky-500" />AI Analysis
                     </h3>
-                    <div className="bg-gradient-to-br from-sky-50/50 to-indigo-50/50 rounded-xl p-4 border border-sky-100">
+                    <div className="bg-gradient-to-br from-sky-50/50 to-indigo-50/50 rounded-xl p-4 border border-sky-100 space-y-4">
                       {resultDetailLoading ? (
                         <div className="flex items-center gap-2 py-2">
                           <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
                           <span className="text-sm text-gray-500">Loading AI analysis...</span>
                         </div>
                       ) : resultDetailAnalysis?.executive_summary ? (
-                        <p className="text-sm text-gray-700 leading-relaxed">{resultDetailAnalysis.executive_summary}</p>
+                        <>
+                          {/* Executive Summary */}
+                          <p className="text-sm text-gray-700 leading-relaxed">{resultDetailAnalysis.executive_summary}</p>
+
+                          {/* Hiring Recommendation Badge */}
+                          {resultDetailAnalysis.hiring_recommendation && (
+                            <div className="flex items-center gap-3 flex-wrap">
+                              <span className={`text-xs font-bold px-3 py-1 rounded-full ${
+                                resultDetailAnalysis.hiring_recommendation === 'STRONG_HIRE' ? 'bg-emerald-100 text-emerald-700' :
+                                resultDetailAnalysis.hiring_recommendation === 'HIRE' ? 'bg-green-100 text-green-700' :
+                                resultDetailAnalysis.hiring_recommendation === 'CONSIDER' ? 'bg-amber-100 text-amber-700' :
+                                'bg-red-100 text-red-700'
+                              }`}>
+                                {resultDetailAnalysis.hiring_recommendation.replace(/_/g, ' ')}
+                              </span>
+                              {resultDetailAnalysis.overall_rating && (
+                                <span className="text-xs font-semibold text-gray-500">Rating: {resultDetailAnalysis.overall_rating}</span>
+                              )}
+                              {resultDetailAnalysis.confidence_score && (
+                                <span className="text-xs text-gray-400">Confidence: {resultDetailAnalysis.confidence_score}%</span>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Technical Assessment */}
+                          {resultDetailAnalysis.technical_assessment && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-gray-600 mb-1 flex items-center gap-1"><Zap className="w-3 h-3 text-sky-500" />Technical Assessment</h4>
+                              <p className="text-xs text-gray-600 leading-relaxed">{resultDetailAnalysis.technical_assessment}</p>
+                            </div>
+                          )}
+
+                          {/* Experience Assessment */}
+                          {resultDetailAnalysis.experience_assessment && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-gray-600 mb-1 flex items-center gap-1"><Briefcase className="w-3 h-3 text-sky-500" />Experience Assessment</h4>
+                              <p className="text-xs text-gray-600 leading-relaxed">{resultDetailAnalysis.experience_assessment}</p>
+                            </div>
+                          )}
+
+                          {/* Pros & Cons */}
+                          {(resultDetailAnalysis.pros?.length > 0 || resultDetailAnalysis.cons?.length > 0) && (
+                            <div className="grid grid-cols-2 gap-3">
+                              {resultDetailAnalysis.pros?.length > 0 && (
+                                <div>
+                                  <h4 className="text-xs font-semibold text-green-700 mb-1.5 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Strengths</h4>
+                                  <ul className="space-y-1">
+                                    {resultDetailAnalysis.pros.map((p: string, i: number) => (
+                                      <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
+                                        <span className="w-1.5 h-1.5 bg-green-400 rounded-full mt-1 flex-shrink-0" />{p}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                              {resultDetailAnalysis.cons?.length > 0 && (
+                                <div>
+                                  <h4 className="text-xs font-semibold text-amber-700 mb-1.5 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />Areas to Explore</h4>
+                                  <ul className="space-y-1">
+                                    {resultDetailAnalysis.cons.map((c: string, i: number) => (
+                                      <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
+                                        <span className="w-1.5 h-1.5 bg-amber-400 rounded-full mt-1 flex-shrink-0" />{c}
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          )}
+
+                          {/* Career Trajectory */}
+                          {resultDetailAnalysis.career_trajectory && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-gray-600 mb-1 flex items-center gap-1"><TrendingUp className="w-3 h-3 text-sky-500" />Career Trajectory</h4>
+                              <p className="text-xs text-gray-600 leading-relaxed">{resultDetailAnalysis.career_trajectory}</p>
+                            </div>
+                          )}
+
+                          {/* Interview Focus Areas */}
+                          {resultDetailAnalysis.interview_focus_areas?.length > 0 && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-gray-600 mb-1.5 flex items-center gap-1"><Target className="w-3 h-3 text-sky-500" />Interview Focus Areas</h4>
+                              <div className="flex flex-wrap gap-1.5">
+                                {resultDetailAnalysis.interview_focus_areas.map((area: string, i: number) => (
+                                  <span key={i} className="text-[10px] px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full">{area}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Ideal Roles */}
+                          {resultDetailAnalysis.ideal_roles?.length > 0 && resultDetailAnalysis.ideal_roles[0] !== 'General' && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-gray-600 mb-1.5 flex items-center gap-1"><Star className="w-3 h-3 text-sky-500" />Ideal Roles</h4>
+                              <div className="flex flex-wrap gap-1.5">
+                                {resultDetailAnalysis.ideal_roles.map((role: string, i: number) => (
+                                  <span key={i} className="text-[10px] px-2 py-0.5 bg-sky-50 text-sky-700 border border-sky-200 rounded-full">{role}</span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Recommendation Rationale */}
+                          {resultDetailAnalysis.hiring_recommendation_rationale && (
+                            <div className="pt-2 border-t border-sky-100">
+                              <p className="text-[11px] text-gray-500 italic leading-relaxed">{resultDetailAnalysis.hiring_recommendation_rationale}</p>
+                            </div>
+                          )}
+                        </>
                       ) : resultDetailCandidate.summary ? (
                         <p className="text-sm text-gray-700 leading-relaxed">{resultDetailCandidate.summary}</p>
                       ) : (
@@ -2618,11 +2742,12 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                   {idx > 0 && (
                                     <div className="my-3 border-t-2 border-dashed border-gray-200" />
                                   )}
-                                  {/* Unified candidate card */}
+                                  {/* Unified candidate card — entire card clickable */}
                                   <Card 
-                                    className={`overflow-hidden border-2 hover:shadow-md transition-all ${
+                                    className={`overflow-hidden border-2 hover:shadow-md transition-all cursor-pointer ${
                                       selectedIds.has(candidate.id) ? 'border-sky-400 bg-sky-50/30' : 'hover:border-sky-200'
                                     }`}
+                                    onClick={() => handlePreviewCandidate(candidate)}
                                   >
                                     {/* Header: Checkbox + Rank + Avatar + Name + Score + Actions */}
                                     <div className="flex items-center gap-2 px-3 py-2.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100">
@@ -2642,11 +2767,11 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                           {candidate.name.charAt(0)}
                                         </AvatarFallback>
                                       </Avatar>
-                                      <div className="min-w-0 flex-1 cursor-pointer" onClick={() => handlePreviewCandidate(candidate)}>
+                                      <div className="min-w-0 flex-1">
                                         <h4 className="font-semibold text-gray-900 text-sm truncate hover:text-sky-600">{candidate.name}</h4>
                                         <p className="text-xs text-gray-500 flex items-center gap-1 truncate">
                                           <MapPin className="w-3 h-3 flex-shrink-0" />
-                                          <span className="truncate">{candidate.location || 'N/A'}</span>
+                                          <span className="truncate">{cleanLocation(candidate.location) || 'N/A'}</span>
                                         </p>
                                       </div>
                                       <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
@@ -2807,9 +2932,10 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                             <div className="my-3 border-t-2 border-dashed border-gray-200" />
                           )}
                           <Card 
-                            className={`hover:shadow-md transition-all border-2 overflow-hidden ${
+                            className={`hover:shadow-md transition-all border-2 overflow-hidden cursor-pointer ${
                               selectedIds.has(candidate.id) ? 'border-sky-400 bg-sky-50/30' : 'hover:border-sky-200'
                             }`}
+                            onClick={() => handlePreviewCandidate(candidate)}
                           >
                             {/* Header: Checkbox + Rank + Avatar + Name + Score + Actions */}
                             <div className="flex items-center gap-2 px-3 py-2.5 bg-gradient-to-r from-gray-50 to-white border-b border-gray-100">
@@ -2820,9 +2946,9 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                               <Avatar className="w-8 h-8 flex-shrink-0 border-2 border-white shadow">
                                 <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700">{candidate.name.charAt(0)}</AvatarFallback>
                               </Avatar>
-                              <div className="min-w-0 flex-1 cursor-pointer" onClick={() => handlePreviewCandidate(candidate)}>
+                              <div className="min-w-0 flex-1">
                                 <h4 className="text-sm font-semibold text-gray-900 truncate hover:text-sky-600">{candidate.name}</h4>
-                                <p className="text-xs text-gray-500 flex items-center gap-1 truncate"><MapPin className="w-3 h-3 flex-shrink-0" /><span className="truncate">{candidate.location || 'N/A'}</span></p>
+                                <p className="text-xs text-gray-500 flex items-center gap-1 truncate"><MapPin className="w-3 h-3 flex-shrink-0" /><span className="truncate">{cleanLocation(candidate.location) || 'N/A'}</span></p>
                               </div>
                               <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
                                 <p className={`text-lg font-bold ${getScoreColor(candidate.matchScore ?? 50)}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</p>
@@ -3073,9 +3199,9 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                           </a>
                         )}
                       </div>
-                      {previewCandidate.location && (
+                      {cleanLocation(previewCandidate.location) && (
                         <div className="flex items-center gap-1 mt-1 text-sm text-teal-200">
-                          <MapPin className="w-3.5 h-3.5" />{previewCandidate.location}
+                          <MapPin className="w-3.5 h-3.5" />{cleanLocation(previewCandidate.location)}
                         </div>
                       )}
                     </div>
@@ -3144,12 +3270,69 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                     <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
                       <Sparkles className="w-4 h-4 text-teal-500" />AI Analysis
                     </h3>
-                    <div className="bg-gradient-to-br from-teal-50/50 to-slate-50/50 rounded-xl p-4 border border-teal-100">
+                    <div className="bg-gradient-to-br from-teal-50/50 to-slate-50/50 rounded-xl p-4 border border-teal-100 space-y-3">
                       <p className="text-sm text-gray-700 leading-relaxed">
                         {previewAnalysis.executive_summary || previewCandidate.summary || 'No AI analysis available yet.'}
                       </p>
+
+                      {/* Technical & Experience Assessments */}
+                      {previewAnalysis.technical_assessment && (
+                        <div>
+                          <h4 className="text-xs font-semibold text-gray-600 mb-1 flex items-center gap-1"><Zap className="w-3 h-3 text-teal-500" />Technical Assessment</h4>
+                          <p className="text-xs text-gray-600 leading-relaxed">{previewAnalysis.technical_assessment}</p>
+                        </div>
+                      )}
+                      {previewAnalysis.experience_assessment && (
+                        <div>
+                          <h4 className="text-xs font-semibold text-gray-600 mb-1 flex items-center gap-1"><Briefcase className="w-3 h-3 text-teal-500" />Experience Assessment</h4>
+                          <p className="text-xs text-gray-600 leading-relaxed">{previewAnalysis.experience_assessment}</p>
+                        </div>
+                      )}
+
+                      {/* Pros & Cons */}
+                      {(previewAnalysis.pros?.length > 0 || previewAnalysis.cons?.length > 0) && (
+                        <div className="grid grid-cols-2 gap-3">
+                          {previewAnalysis.pros?.length > 0 && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-green-700 mb-1 flex items-center gap-1"><CheckCircle2 className="w-3 h-3" />Strengths</h4>
+                              <ul className="space-y-1">
+                                {previewAnalysis.pros.map((p: string, i: number) => (
+                                  <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
+                                    <span className="w-1.5 h-1.5 bg-green-400 rounded-full mt-1 flex-shrink-0" />{p}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                          {previewAnalysis.cons?.length > 0 && (
+                            <div>
+                              <h4 className="text-xs font-semibold text-amber-700 mb-1 flex items-center gap-1"><AlertTriangle className="w-3 h-3" />Areas to Explore</h4>
+                              <ul className="space-y-1">
+                                {previewAnalysis.cons.map((c: string, i: number) => (
+                                  <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
+                                    <span className="w-1.5 h-1.5 bg-amber-400 rounded-full mt-1 flex-shrink-0" />{c}
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Interview Focus Areas */}
+                      {previewAnalysis.interview_focus_areas?.length > 0 && (
+                        <div>
+                          <h4 className="text-xs font-semibold text-gray-600 mb-1 flex items-center gap-1"><Target className="w-3 h-3 text-teal-500" />Interview Focus</h4>
+                          <div className="flex flex-wrap gap-1.5">
+                            {previewAnalysis.interview_focus_areas.map((area: string, i: number) => (
+                              <span key={i} className="text-[10px] px-2 py-0.5 bg-indigo-50 text-indigo-700 border border-indigo-200 rounded-full">{area}</span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
                       {(previewAnalysis.overall_rating || previewAnalysis.hiring_recommendation) && (
-                        <div className="flex items-center gap-2 mt-3">
+                        <div className="flex items-center gap-2 pt-2 border-t border-teal-100">
                           {previewAnalysis.overall_rating && (
                             <span className={`text-xs font-bold px-2 py-0.5 rounded ${
                               previewAnalysis.overall_rating?.startsWith('A') ? 'bg-emerald-100 text-emerald-700' :
@@ -3164,6 +3347,9 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                               previewAnalysis.hiring_recommendation === 'CONSIDER' ? 'bg-amber-500 text-white' :
                               'bg-red-500 text-white'
                             }`}>{previewAnalysis.hiring_recommendation.replace('_', ' ')}</span>
+                          )}
+                          {previewAnalysis.confidence_score && (
+                            <span className="text-[10px] text-gray-400">Confidence: {previewAnalysis.confidence_score}%</span>
                           )}
                         </div>
                       )}
@@ -3268,9 +3454,9 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                         <ExternalLink className="w-3 h-3 ml-auto text-gray-400" />
                       </a>
                     )}
-                    {previewCandidate.location && (
+                    {previewCandidate.location && cleanLocation(previewCandidate.location) && (
                       <div className="flex items-center gap-2 text-sm text-gray-600 p-2">
-                        <MapPin className="w-4 h-4 text-gray-400" />{previewCandidate.location}
+                        <MapPin className="w-4 h-4 text-gray-400" />{cleanLocation(previewCandidate.location)}
                       </div>
                     )}
                   </div>

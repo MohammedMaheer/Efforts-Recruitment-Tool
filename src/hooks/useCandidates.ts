@@ -4,6 +4,19 @@ import type { Candidate } from '@/types'
 import { useAuthStore } from '@/store/authStore'
 import config from '@/config'
 
+// Clean up bad location values extracted from email body parsing
+const cleanLocation = (loc: string | undefined | null): string => {
+  if (!loc) return ''
+  let cleaned = loc.trim()
+  // Strip Arabic/non-Latin text in parentheses (e.g. UAE Arabic name)
+  cleaned = cleaned.replace(/\s*\([^)]*[\u0600-\u06FF][^)]*\)\s*/g, '').trim()
+  // Remove locations that are just common pronouns / noise words
+  const noise = /^(you|me|us|we|they|them|him|her|i|my|your|our|here|there|null|undefined|n\/a|none|na|unknown|test|email|sir|madam|dear|hi|hello|the|a|an|from|to|for)$/i
+  if (noise.test(cleaned)) return ''
+  if (cleaned.length <= 1) return ''
+  return cleaned
+}
+
 interface UseCandidatesOptions {
   autoFetch?: boolean
   refreshInterval?: number | null // in milliseconds, null to disable
@@ -88,7 +101,7 @@ const transformCandidate = (c: any): Candidate => {
     name: c.name || 'Unknown',
     email: c.email || '',
     phone: c.phone || '',
-    location: c.location || '',
+    location: cleanLocation(c.location),
     experience,
     matchScore,
     status,
