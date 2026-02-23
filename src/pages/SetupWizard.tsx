@@ -173,7 +173,7 @@ export default function SetupWizard() {
 
   const fetchPlatformStats = async () => {
     try {
-      const res = await authFetch(`${config.apiUrl}/api/dashboard/stats`)
+      const res = await authFetch(`${config.apiUrl}/api/stats`)
       if (res.ok) setPlatformStats(await res.json())
     } catch (error) {
       console.error('Failed to fetch platform stats:', error)
@@ -511,7 +511,7 @@ export default function SetupWizard() {
             </div>
             <div className="mt-3 grid grid-cols-3 gap-2">
               {[
-                { l: 'AI Chat Tokens', v: '3,500', c: 'text-sky-600' },
+                { l: 'Job Categories', v: platformStats?.job_categories?.toLocaleString() || '—', c: 'text-sky-600' },
                 { l: 'Sync Interval', v: `${oauthStatus?.sync_interval_minutes || 60} min`, c: 'text-green-600' },
                 { l: 'Strong Matches', v: platformStats?.strong_matches?.toLocaleString() || '—', c: 'text-amber-600' },
               ].map((s, i) => (

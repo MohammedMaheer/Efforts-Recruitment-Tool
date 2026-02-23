@@ -11,6 +11,19 @@ export default defineConfig({
       '@': path.resolve(path.dirname(fileURLToPath(import.meta.url)), './src'),
     },
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          // Split large vendor libraries into separate chunks
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-ui': ['@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', '@radix-ui/react-tabs', '@radix-ui/react-select', '@radix-ui/react-progress', '@radix-ui/react-slider'],
+          'vendor-charts': ['recharts'],
+          'vendor-utils': ['date-fns', 'clsx', 'tailwind-merge', 'zustand'],
+        },
+      },
+    },
+  },
   server: {
     port: 3000,
     proxy: {

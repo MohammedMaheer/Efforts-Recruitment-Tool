@@ -91,6 +91,17 @@ class ApiClient {
         const data = await response.json().catch(() => null);
 
         if (!response.ok) {
+          // Auto-logout on 401 Unauthorized (expired/invalid token)
+          if (response.status === 401) {
+            const authStore = useAuthStore.getState();
+            if (authStore.isAuthenticated) {
+              authStore.logout();
+              // Redirect to login page
+              if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
+                window.location.href = '/login';
+              }
+            }
+          }
           return {
             data: null,
             error: {
@@ -313,6 +324,106 @@ export const candidateApi = {
    */
   async reprocessScores(): Promise<ApiResponse<{ processed: number; errors: number }>> {
     return client.post('/api/candidates/reprocess-scores');
+  },
+
+  /**
+   * Reprocess poorly-scored candidates with Gemini AI (deep analysis)
+   */
+  async reprocessWithGemini(): Promise<ApiResponse<{
+    total_found: number;
+    processed: number;
+    improved: number;
+    errors: number;
+  }>> {
+    return client.post('/api/candidates/reprocess-with-gemini');
+  },
+
+  /**
+   * Delete a single candidate
+   */
+  async deleteCandidate(id: string): Promise<ApiResponse<{ status: string; message: string }>> {
+    return client.delete(`/api/candidates/${id}`);
+  },
+
+  /**
+   * Reset all shortlisted candidates back to Strong
+   */
+  async resetShortlist(): Promise<ApiResponse<{ status: string; reset_count: number }>> {
+    return client.post('/api/candidates/reset-shortlist');
+  },
+
+  /**
+   * Reprocess garbled/badly processed candidates (cleanup + rescore + fix encoding)
+   */
+  async reprocessGarbled(): Promise<ApiResponse<{
+    cleaned: number;
+    rescored: number;
+    encoding_fixed: number;
+    errors: number;
+  }>> {
+    return client.post('/api/candidates/reprocess-garbled');
+  },
+
+  /**
+   * Cleanup gibberish profiles (comprehensive repair)
+   */
+  async cleanupGibberish(): Promise<ApiResponse<{
+    deleted_count: number;
+    reprocessed_count: number;
+    encoding_fixed_count: number;
+    total_fixed: number;
+    details: Record<string, number>;
+    needs_rescore: number;
+  }>> {
+    return client.post('/api/admin/cleanup-gibberish');
+  },
+
+  /**
+   * Full database audit — read-only health report
+   */
+  async databaseAudit(): Promise<ApiResponse<{
+    total_candidates: number;
+    active_candidates: number;
+    issues: Record<string, number>;
+    score_distribution: Record<string, number>;
+    category_distribution: Record<string, number>;
+    samples: Record<string, Array<Record<string, unknown>>>;
+  }>> {
+    return client.get('/api/admin/database-audit');
+  },
+
+  /**
+   * Full database repair — cleanup + fix encoding + re-score everything
+   */
+  async fullDatabaseRepair(): Promise<ApiResponse<{
+    repair: Record<string, unknown>;
+    rescore: { rescored: number; errors: number };
+    post_repair_health: Record<string, unknown>;
+  }>> {
+    return client.post('/api/admin/database-repair-full');
+  },
+
+  /**
+   * Re-lookup candidates from original emails via Microsoft Graph
+   */
+  async relookupFromEmail(): Promise<ApiResponse<{
+    checked: number;
+    improved: number;
+    errors: number;
+    improvements: Array<Record<string, unknown>>;
+  }>> {
+    return client.post('/api/admin/relookup-from-email');
+  },
+
+  /**
+   * Deduplicate candidates (merge same email, different case)
+   */
+  async deduplicate(): Promise<ApiResponse<{
+    checked: number;
+    merged: number;
+    details: Array<Record<string, unknown>>;
+  }>> {
+    return client.post('/api/candidates/deduplicate');
   },
 
   /**

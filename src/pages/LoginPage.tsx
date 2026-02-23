@@ -5,6 +5,35 @@ import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { useAuthStore } from '@/store/authStore'
 
+const features = [
+  {
+    icon: Brain,
+    title: 'AI-Powered Matching',
+    description: 'Advanced algorithms analyze candidates against job requirements'
+  },
+  {
+    icon: Zap,
+    title: 'Instant Resume Parsing',
+    description: 'Extract key information from resumes in seconds'
+  },
+  {
+    icon: Target,
+    title: 'Smart Filtering',
+    description: 'Find the perfect candidates with intelligent search'
+  },
+  {
+    icon: TrendingUp,
+    title: 'Analytics Dashboard',
+    description: 'Track recruitment metrics and optimize your process'
+  }
+]
+
+const stats = [
+  { value: '10,000+', label: 'Candidates Analyzed' },
+  { value: '95%', label: 'Match Accuracy' },
+  { value: '5x', label: 'Faster Hiring' },
+]
+
 export default function LoginPage() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -17,35 +46,6 @@ export default function LoginPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const login = useAuthStore((state) => state.login)
   const register = useAuthStore((state) => state.register)
-
-  const features = [
-    {
-      icon: Brain,
-      title: 'AI-Powered Matching',
-      description: 'Advanced algorithms analyze candidates against job requirements'
-    },
-    {
-      icon: Zap,
-      title: 'Instant Resume Parsing',
-      description: 'Extract key information from resumes in seconds'
-    },
-    {
-      icon: Target,
-      title: 'Smart Filtering',
-      description: 'Find the perfect candidates with intelligent search'
-    },
-    {
-      icon: TrendingUp,
-      title: 'Analytics Dashboard',
-      description: 'Track recruitment metrics and optimize your process'
-    }
-  ]
-
-  const stats = [
-    { value: '10,000+', label: 'Candidates Analyzed' },
-    { value: '95%', label: 'Match Accuracy' },
-    { value: '5x', label: 'Faster Hiring' },
-  ]
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -92,7 +92,7 @@ export default function LoginPage() {
       setActiveFeature((prev) => (prev + 1) % features.length)
     }, 4000)
     return () => clearInterval(interval)
-  }, [features.length])
+  }, [])
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 via-white to-sky-50 flex">

@@ -79,6 +79,9 @@ class Task:
     progress: float = 0.0
     progress_message: str = ""
     
+    # Re-queue tracking (for dependency waits)
+    _requeue_count: int = 0
+    
     # Dependencies
     depends_on: List[str] = field(default_factory=list)
     
@@ -131,6 +134,7 @@ class BackgroundTaskManager:
         self._workers: List[asyncio.Task] = []
         self._running = False
         self._lock = asyncio.Lock()
+        self._cleanup_interval_tasks: int = 0  # Counter for periodic cleanup
         
         self.stats = TaskStats()
     
@@ -190,6 +194,25 @@ class BackgroundTaskManager:
                         for dep_id in task.depends_on
                     )
                     if not deps_complete:
+                        # Check if any dependency has failed or is missing entirely
+                        deps_failed = any(
+                            self._tasks.get(dep_id, Task(id='', name='', func=lambda: None)).status == TaskStatus.FAILED
+                            for dep_id in task.depends_on
+                        )
+                        deps_missing = any(
+                            dep_id not in self._tasks
+                            for dep_id in task.depends_on
+                        )
+                        # Track re-queue count to prevent infinite loops
+                        task._requeue_count += 1
+                        
+                        if deps_failed or deps_missing or task._requeue_count > 50:
+                            reason = "dependency failed" if deps_failed else ("dependency missing" if deps_missing else "max retries exceeded")
+                            logger.warning(f"Task {task.name} ({task.id}) abandoned: {reason}")
+                            task.status = TaskStatus.FAILED
+                            task.error = f"Abandoned: {reason}"
+                            continue
+                        
                         # Re-queue task
                         await self._queue.put(task)
                         await asyncio.sleep(0.1)
@@ -197,6 +220,12 @@ class BackgroundTaskManager:
                 
                 # Execute task
                 await self._execute_task(task, worker_name)
+                
+                # Periodic cleanup: every 100 completed tasks, purge old finished tasks
+                self._cleanup_interval_tasks += 1
+                if self._cleanup_interval_tasks >= 100:
+                    self._cleanup_interval_tasks = 0
+                    await self.cleanup_old_tasks(max_age_hours=1)
                 
             except asyncio.CancelledError:
                 break
@@ -242,6 +271,9 @@ class BackgroundTaskManager:
             elapsed = (time.time() - start_time) * 1000
             error_msg = f"{type(e).__name__}: {str(e)}"
             task.error_history.append(error_msg)
+            # Cap error history to prevent unbounded growth
+            if len(task.error_history) > 50:
+                task.error_history = task.error_history[-50:]
             
             logger.error(f"[{worker_name}] Task {task.id} failed: {error_msg}")
             
@@ -466,14 +498,20 @@ def background_task(
 
 # Global task manager instance
 _task_manager: Optional[BackgroundTaskManager] = None
+_task_manager_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_task_manager() -> BackgroundTaskManager:
-    """Get or create the global task manager"""
+    """Get or create the global task manager (thread-safe singleton)"""
     global _task_manager
     
-    if _task_manager is None:
-        _task_manager = BackgroundTaskManager(max_workers=4)
-        await _task_manager.start()
+    if _task_manager is not None:
+        return _task_manager
+    
+    async with _task_manager_lock:
+        # Double-check after acquiring lock
+        if _task_manager is None:
+            _task_manager = BackgroundTaskManager(max_workers=4)
+            await _task_manager.start()
     
     return _task_manager

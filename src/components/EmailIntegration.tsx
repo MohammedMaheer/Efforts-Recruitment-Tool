@@ -9,6 +9,7 @@ import { Badge } from '@/components/ui/Badge'
 import { useNotificationStore } from '@/store/notificationStore'
 import config from '@/config'
 import { authFetch } from '@/lib/authFetch'
+import { toast } from '@/components/ui/Toast'
 
 interface EmailProvider {
   id: string
@@ -270,7 +271,7 @@ export default function EmailIntegration() {
       }
     } catch (error) {
       console.error('Sync error:', error)
-      alert('Sync failed. Please check your credentials and try again.')
+      toast.error('Sync failed', 'Please check your credentials and try again.')
     } finally {
       setIsSyncing(false)
     }
@@ -295,13 +296,13 @@ export default function EmailIntegration() {
           title: 'Auto-Sync Enabled',
           message: 'New applications will be imported every minute',
         })
-        alert('Auto-sync configured! New applications will be imported every minute.')
+        toast.success('Auto-sync configured', 'New applications will be imported every minute.')
       } else {
         throw new Error('Failed to setup auto-sync')
       }
     } catch (error) {
       console.error('Auto-sync error:', error)
-      alert('Failed to setup auto-sync. Please ensure email is connected first.')
+      toast.error('Auto-sync failed', 'Please ensure email is connected first.')
     }
   }
 

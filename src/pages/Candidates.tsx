@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { Search, SlidersHorizontal, RefreshCw, Loader2, Users, Briefcase, ChevronDown, ChevronRight, Calendar, ArrowUpDown, Mail, MessageCircle, Linkedin, Phone, Download, Star, CheckCircle, XCircle } from 'lucide-react'
+import { Search, SlidersHorizontal, RefreshCw, Loader2, Users, Briefcase, ChevronDown, ChevronRight, Calendar, ArrowUpDown, Mail, MessageCircle, Linkedin, Phone, Download, Star, CheckCircle, XCircle, FileText } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCandidates } from '@/hooks/useCandidates'
 import { useEmailSync } from '@/hooks/useEmailSync'
@@ -18,11 +18,12 @@ import {
   TableRow,
 } from '@/components/ui/Table'
 import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
-import { generateQuickProfilePDF } from '@/lib/pdfGenerator'
+import { generateQuickProfilePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
 import { candidateApi } from '@/services/api'
+import type { Candidate } from '@/types'
 
 // Quick contact helper - opens contact without navigating away
-const openContact = (e: React.MouseEvent, type: 'email' | 'whatsapp' | 'linkedin' | 'phone', candidate: any) => {
+const openContact = (e: React.MouseEvent, type: 'email' | 'whatsapp' | 'linkedin' | 'phone', candidate: Pick<Candidate, 'email' | 'name' | 'phone' | 'linkedin'>) => {
   e.stopPropagation() // Prevent row click
   
   switch (type) {
@@ -112,13 +113,33 @@ export default function Candidates() {
   const [shortlistedIds, setShortlistedIds] = useState<Set<string>>(new Set())
   const [emailSentIds, setEmailSentIds] = useState<Set<string>>(new Set())
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info'; visible: boolean }>({ message: '', type: 'success', visible: false })
-  const toastTimer = useRef<ReturnType<typeof setTimeout>>(null)
+  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [isReprocessing, setIsReprocessing] = useState(false)
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     setToast({ message, type, visible: true })
     toastTimer.current = setTimeout(() => setToast(prev => ({ ...prev, visible: false })), 4000)
   }, [])
+
+  const handleReprocessWithGemini = useCallback(async () => {
+    if (isReprocessing) return
+    setIsReprocessing(true)
+    showToast('Starting AI reprocessing... This may take a few minutes.', 'info')
+    try {
+      const res = await candidateApi.reprocessWithGemini()
+      const data = (res as any)?.data || res
+      const improved = data?.improved || 0
+      const processed = data?.processed || 0
+      showToast(`AI reprocessing complete: ${processed} analyzed, ${improved} scores improved`, 'success')
+      setTimeout(() => refetch(), 2000)
+    } catch (err: any) {
+      showToast(`Reprocess failed: ${err?.message || 'Unknown error'}`, 'error')
+    } finally {
+      setIsReprocessing(false)
+    }
+  }, [isReprocessing, refetch, showToast])
+
   const [filters, setFilters] = useState({
     minScore: 0,
     status: 'all',
@@ -133,6 +154,10 @@ export default function Candidates() {
     const categoryFromUrl = searchParams.get('category')
     if (categoryFromUrl) {
       setSelectedCategory(categoryFromUrl)
+    }
+    const statusFromUrl = searchParams.get('status')
+    if (statusFromUrl) {
+      setFilters(prev => ({ ...prev, status: statusFromUrl }))
     }
     setDisplayLimit(50) // Reset pagination on filter change
   }, [searchParams])
@@ -286,7 +311,9 @@ export default function Candidates() {
             <Users className="w-5 h-5 text-sky-300" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Candidates</h1>
+            <h1 className="text-2xl font-bold text-gray-900">
+              {filters.status !== 'all' ? `${filters.status} Candidates` : 'Candidates'}
+            </h1>
             <p className="text-sm text-gray-500">
               {loading ? 'Loading...' : (() => {
                 const hasActiveFilters = searchQuery || selectedCategory !== 'all' || filters.minScore > 0 || filters.status !== 'all' || filters.minExperience > 0 || dateRange.start || dateRange.end
@@ -316,6 +343,17 @@ export default function Candidates() {
           <Button variant="outline" onClick={refetch} disabled={loading}>
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
             <span className="ml-2">Refresh</span>
+          </Button>
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={handleReprocessWithGemini} 
+            disabled={isReprocessing}
+            className="border-indigo-200 text-indigo-600 hover:bg-indigo-50"
+            title="Reprocess poorly-scored candidates with Gemini AI"
+          >
+            {isReprocessing ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Star className="w-4 h-4 mr-1" />}
+            {isReprocessing ? 'Reprocessing...' : 'AI Reprocess'}
           </Button>
         </div>
       </div>
@@ -492,8 +530,8 @@ export default function Candidates() {
                       value={stats.avgScore} 
                       className="h-1.5"
                       indicatorClassName={
-                        stats.avgScore >= 70 ? 'bg-green-500' :
-                        stats.avgScore >= 50 ? 'bg-yellow-500' : 'bg-red-500'
+                        stats.avgScore >= 70 ? 'bg-emerald-500' :
+                        stats.avgScore >= 40 ? 'bg-amber-500' : 'bg-red-500'
                       }
                     />
                   </div>
@@ -611,23 +649,29 @@ export default function Candidates() {
                                     value={candidate.matchScore}
                                     className="w-14 h-1"
                                     indicatorClassName={
-                                      candidate.matchScore >= 70 ? 'bg-green-500' :
-                                      candidate.matchScore >= 50 ? 'bg-yellow-500' : 'bg-red-500'
+                                      candidate.matchScore >= 70 ? 'bg-emerald-500' :
+                                      candidate.matchScore >= 40 ? 'bg-amber-500' : 'bg-red-500'
                                     }
                                   />
                                 </div>
                               </TableCell>
                               <TableCell className="max-w-[140px]">
                                 <div className="flex flex-wrap gap-0.5 overflow-hidden">
-                                  {candidate.skills.slice(0, 2).map((skill) => (
-                                    <Badge key={skill} variant="outline" className="text-xs px-1 py-0 whitespace-nowrap" title={skill}>
-                                      {skill.length > 7 ? skill.slice(0, 7) + '..' : skill}
-                                    </Badge>
-                                  ))}
-                                  {candidate.skills.length > 2 && (
-                                    <Badge variant="secondary" className="text-xs px-1 py-0 whitespace-nowrap">
-                                      +{candidate.skills.length - 2}
-                                    </Badge>
+                                  {candidate.skills.length === 0 || (candidate.skills.length === 1 && candidate.skills[0].toLowerCase() === 'r') ? (
+                                    <span className="text-xs text-gray-400 italic">Pending AI</span>
+                                  ) : (
+                                    <>
+                                      {candidate.skills.slice(0, 2).map((skill) => (
+                                        <Badge key={skill} variant="outline" className="text-xs px-1 py-0 whitespace-nowrap" title={skill}>
+                                          {skill.length > 7 ? skill.slice(0, 7) + '..' : skill}
+                                        </Badge>
+                                      ))}
+                                      {candidate.skills.length > 2 && (
+                                        <Badge variant="secondary" className="text-xs px-1 py-0 whitespace-nowrap">
+                                          +{candidate.skills.length - 2}
+                                        </Badge>
+                                      )}
+                                    </>
                                   )}
                                 </div>
                               </TableCell>
@@ -692,17 +736,40 @@ export default function Candidates() {
                                   <button
                                     onClick={async (e) => {
                                       e.stopPropagation()
-                                      if (shortlistingIds.has(candidate.id) || shortlistedIds.has(candidate.id)) return
+                                      if (shortlistingIds.has(candidate.id)) return
+                                      const alreadyShortlisted = candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
                                       try {
                                         setShortlistingIds(prev => new Set(prev).add(candidate.id))
-                                        const res = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
-                                        setShortlistedIds(prev => new Set(prev).add(candidate.id))
-                                        const emailStatus = (res as any)?.data?.email_sent?.status || (res as any)?.email_sent?.status
-                                        if (emailStatus === 'queued') {
-                                          setEmailSentIds(prev => new Set(prev).add(candidate.id))
-                                          showToast(`✅ ${candidate.name} shortlisted — email sent to ${candidate.email || 'candidate'}`, 'success')
+                                        if (alreadyShortlisted) {
+                                          // Unshortlist
+                                          await candidateApi.updateStatus(candidate.id, 'Reviewed')
+                                          setShortlistedIds(prev => {
+                                            const next = new Set(prev)
+                                            next.delete(candidate.id)
+                                            return next
+                                          })
+                                          setEmailSentIds(prev => {
+                                            const next = new Set(prev)
+                                            next.delete(candidate.id)
+                                            return next
+                                          })
+                                          showToast(`${candidate.name} removed from shortlist`, 'info')
+                                          // Refresh candidates to update status column
+                                          refetch()
                                         } else {
-                                          showToast(`⭐ ${candidate.name} shortlisted`, 'info')
+                                          // Shortlist
+                                          const res = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+                                          setShortlistedIds(prev => new Set(prev).add(candidate.id))
+                                          const emailStatus = (res as any)?.data?.email_sent?.status || (res as any)?.email_sent?.status
+                                          if (emailStatus === 'queued' || emailStatus === 'success') {
+                                            setEmailSentIds(prev => new Set(prev).add(candidate.id))
+                                            showToast(`✅ ${candidate.name} shortlisted — email sent to ${candidate.email || 'candidate'}`, 'success')
+                                          } else if (emailStatus === 'error') {
+                                            showToast(`⭐ ${candidate.name} shortlisted — email failed`, 'error')
+                                          } else {
+                                            showToast(`⭐ ${candidate.name} shortlisted`, 'info')
+                                          }
+                                          refetch()
                                         }
                                       } catch (err) {
                                         console.error('Shortlist failed:', err)
@@ -717,7 +784,7 @@ export default function Candidates() {
                                     }}
                                     disabled={shortlistingIds.has(candidate.id)}
                                     className={`p-1 rounded-full transition-colors ${
-                                      candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
+                                      candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
                                         ? 'text-yellow-500 bg-yellow-50'
                                         : shortlistingIds.has(candidate.id)
                                           ? 'text-gray-300 opacity-50'
@@ -725,13 +792,13 @@ export default function Candidates() {
                                     }`}
                                     title={
                                       shortlistingIds.has(candidate.id) ? 'Shortlisting & sending email...' :
-                                      candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
+                                      candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
                                         ? (emailSentIds.has(candidate.id) ? 'Shortlisted — Email sent' : 'Shortlisted')
                                         : 'Shortlist & send email'
                                     }
                                   >
                                     <Star className="w-3.5 h-3.5" fill={
-                                      candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id) ? 'currentColor' : 'none'
+                                      candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id) ? 'currentColor' : 'none'
                                     } />
                                   </button>
                                   {emailSentIds.has(candidate.id) && (
@@ -746,6 +813,15 @@ export default function Candidates() {
                                   >
                                     <Download className="w-3.5 h-3.5" />
                                   </button>
+                                  {candidate.hasResume && (
+                                    <button
+                                      onClick={(e) => { e.stopPropagation(); downloadOriginalResume(candidate).catch(() => {}) }}
+                                      className="p-1 rounded-full hover:bg-emerald-100 text-emerald-600 transition-colors"
+                                      title="Download Original Resume"
+                                    >
+                                      <FileText className="w-3.5 h-3.5" />
+                                    </button>
+                                  )}
                                 </div>
                               </TableCell>
                             </TableRow>
@@ -847,19 +923,25 @@ export default function Candidates() {
                           value={candidate.matchScore ?? 50}
                           className="w-16 h-1.5"
                           indicatorClassName={
-                            (candidate.matchScore ?? 50) >= 70 ? 'bg-green-500' :
-                            (candidate.matchScore ?? 50) >= 50 ? 'bg-yellow-500' : 'bg-red-500'
+                            (candidate.matchScore ?? 50) >= 70 ? 'bg-emerald-500' :
+                            (candidate.matchScore ?? 50) >= 40 ? 'bg-amber-500' : 'bg-red-500'
                           }
                         />
                       </div>
                     </TableCell>
                     <TableCell className="max-w-[180px]">
                       <div className="flex flex-wrap gap-0.5 overflow-hidden">
-                        {candidate.skills.slice(0, 3).map((skill) => (
-                          <Badge key={skill} variant="outline" className="text-xs px-1.5 py-0 whitespace-nowrap" title={skill}>
-                            {skill.length > 10 ? skill.slice(0, 10) + '..' : skill}
-                          </Badge>
-                        ))}
+                        {candidate.skills.length === 0 || (candidate.skills.length === 1 && candidate.skills[0].toLowerCase() === 'r') ? (
+                          <span className="text-xs text-gray-400 italic">Pending AI analysis</span>
+                        ) : (
+                          <>
+                            {candidate.skills.slice(0, 3).map((skill) => (
+                              <Badge key={skill} variant="outline" className="text-xs px-1.5 py-0 whitespace-nowrap" title={skill}>
+                                {skill.length > 10 ? skill.slice(0, 10) + '..' : skill}
+                              </Badge>
+                            ))}
+                          </>
+                        )}
                         {candidate.skills.length > 3 && (
                           <Badge variant="secondary" className="text-xs px-1.5 py-0 whitespace-nowrap">
                             +{candidate.skills.length - 3}
@@ -887,18 +969,39 @@ export default function Candidates() {
                         <button
                           onClick={async (e) => {
                             e.stopPropagation()
-                            if (shortlistingIds.has(candidate.id) || shortlistedIds.has(candidate.id)) return
+                            if (shortlistingIds.has(candidate.id)) return
+                            const alreadyShortlisted = candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
                             try {
                               setShortlistingIds(prev => new Set(prev).add(candidate.id))
-                              const res = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
-                              setShortlistedIds(prev => new Set(prev).add(candidate.id))
-                              // Show email status toast
-                              const emailStatus = (res as any)?.data?.email_sent?.status || (res as any)?.email_sent?.status
-                              if (emailStatus === 'queued') {
-                                setEmailSentIds(prev => new Set(prev).add(candidate.id))
-                                showToast(`✅ ${candidate.name} shortlisted — email sent to ${candidate.email || 'candidate'}`, 'success')
+                              if (alreadyShortlisted) {
+                                // Unshortlist
+                                await candidateApi.updateStatus(candidate.id, 'Reviewed')
+                                setShortlistedIds(prev => {
+                                  const next = new Set(prev)
+                                  next.delete(candidate.id)
+                                  return next
+                                })
+                                setEmailSentIds(prev => {
+                                  const next = new Set(prev)
+                                  next.delete(candidate.id)
+                                  return next
+                                })
+                                showToast(`${candidate.name} removed from shortlist`, 'info')
+                                refetch()
                               } else {
-                                showToast(`⭐ ${candidate.name} shortlisted`, 'info')
+                                // Shortlist
+                                const res = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+                                setShortlistedIds(prev => new Set(prev).add(candidate.id))
+                                const emailStatus = (res as any)?.data?.email_sent?.status || (res as any)?.email_sent?.status
+                                if (emailStatus === 'queued' || emailStatus === 'success') {
+                                  setEmailSentIds(prev => new Set(prev).add(candidate.id))
+                                  showToast(`✅ ${candidate.name} shortlisted — email sent to ${candidate.email || 'candidate'}`, 'success')
+                                } else if (emailStatus === 'error') {
+                                  showToast(`⭐ ${candidate.name} shortlisted — email failed`, 'error')
+                                } else {
+                                  showToast(`⭐ ${candidate.name} shortlisted`, 'info')
+                                }
+                                refetch()
                               }
                             } catch (err) {
                               console.error('Shortlist failed:', err)
@@ -942,6 +1045,15 @@ export default function Candidates() {
                         >
                           <Download className="w-3.5 h-3.5" />
                         </button>
+                        {candidate.hasResume && (
+                          <button
+                            onClick={(e) => { e.stopPropagation(); downloadOriginalResume(candidate).catch(() => {}) }}
+                            className="p-1 rounded-full hover:bg-emerald-100 text-emerald-600 transition-colors"
+                            title="Download Original Resume"
+                          >
+                            <FileText className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
                     </TableCell>
                   </TableRow>

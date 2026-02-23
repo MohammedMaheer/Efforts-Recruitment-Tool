@@ -18,7 +18,7 @@ interface LiveStats {
 }
 
 interface UseRealTimeStatsOptions {
-  /** Polling interval in milliseconds (default: 10000 - 10 seconds) */
+  /** Polling interval in milliseconds (default: 30000 - 30 seconds) */
   interval?: number;
   /** Whether to enable polling (default: true) */
   enabled?: boolean;
@@ -27,7 +27,7 @@ interface UseRealTimeStatsOptions {
 }
 
 export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
-  const { interval = 10000, enabled = true, onStatsChange } = options;
+  const { interval = 30000, enabled = true, onStatsChange } = options;
   
   const [stats, setStats] = useState<LiveStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -93,8 +93,11 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
     // Initial fetch
     fetchStats();
 
-    // Setup polling
-    pollingRef.current = setInterval(fetchStats, interval);
+    // Setup polling — skip fetch when tab is hidden to save resources
+    pollingRef.current = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      fetchStats();
+    }, interval);
 
     return () => {
       if (pollingRef.current) {

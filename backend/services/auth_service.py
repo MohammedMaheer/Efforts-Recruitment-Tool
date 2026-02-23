@@ -5,12 +5,15 @@ Handles user registration, login, and JWT token management
 
 import sqlite3
 import os
+import logging
 from core.db_wrapper import create_connection, IS_POSTGRES, init_pg_schema
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from jose import JWTError, jwt
 import bcrypt as _bcrypt
+
+logger = logging.getLogger(__name__)
 
 # JWT Configuration - use a stable fallback key so tokens survive restarts
 # In production, ALWAYS set JWT_SECRET_KEY environment variable
@@ -176,7 +179,8 @@ class AuthService:
                 raise ValueError("An account with this email already exists")
             elif 'username' in str(e).lower():
                 raise ValueError("This username is already taken")
-            raise ValueError("An account with this email already exists")
+            logger.error(f"Registration failed: {type(e).__name__}: {e}")
+            raise ValueError("Registration failed. Please try again.")
         
         # Create access token
         token = self._create_access_token({"sub": user_id, "email": email, "username": username})

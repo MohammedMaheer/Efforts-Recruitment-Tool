@@ -61,11 +61,23 @@ class ResumeRankingModel:
         
         if model_file.exists() and scaler_file.exists():
             try:
+                # Safety: only load pickle files from our controlled model directory
+                model_file_resolved = model_file.resolve()
+                scaler_file_resolved = scaler_file.resolve()
+                model_dir_resolved = MODEL_PATH.resolve()
+                if not str(model_file_resolved).startswith(str(model_dir_resolved)):
+                    logger.warning("Model file path traversal detected, using default model")
+                    self._initialize_default_model()
+                    return
+                if not str(scaler_file_resolved).startswith(str(model_dir_resolved)):
+                    logger.warning("Scaler file path traversal detected, using default model")
+                    self._initialize_default_model()
+                    return
                 with open(model_file, 'rb') as f:
                     self.model = pickle.load(f)
                 with open(scaler_file, 'rb') as f:
                     self.scaler = pickle.load(f)
-                logger.info("âœ… Loaded trained ranking model")
+                logger.info("✅ Loaded trained ranking model")
             except Exception as e:
                 logger.warning(f"Could not load model: {e}")
                 self._initialize_default_model()

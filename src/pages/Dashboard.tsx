@@ -1,719 +1,282 @@
 import { motion } from 'framer-motion'
-import { Users, TrendingUp, Clock, ArrowUpRight, ArrowDownRight, Sparkles, Target, Zap, CheckCircle2, Calendar, Mail, RefreshCw, Loader2, Briefcase, Upload, X, FileText, CheckCircle, AlertCircle, Activity } from 'lucide-react'
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/Card'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
-import { Badge } from '@/components/ui/Badge'
-import { Progress } from '@/components/ui/Progress'
-import { Button } from '@/components/ui/Button'
-import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
 import { useNavigate } from 'react-router-dom'
-import { useAuthStore } from '@/store/authStore'
-import { useState, useMemo, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { useCandidates } from '@/hooks/useCandidates'
-import { useEmailSync } from '@/hooks/useEmailSync'
 import { useRealTimeStats } from '@/hooks/useRealTimeStats'
 import config from '@/config'
 import { authFetch } from '@/lib/authFetch'
+import {
+  CheckCircle2, XCircle, Star, Video,
+  Search, Eye, Calendar, Plus,
+  Upload, Loader2, X, FileText, CheckCircle, AlertCircle,
+} from 'lucide-react'
+import { Card, CardContent } from '@/components/ui/Card'
+import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
+import { toast } from '@/components/ui/Toast'
 
-// Category colors for visual distinction
-const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
-  'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'DevOps Engineer': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
-  'Cybersecurity': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
-  'QA / Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
-  'IT & Systems': { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
-  'Product Manager': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
-  'Design': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
-  'Project Management': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  'Business Analyst': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
-  'Consulting': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
-  'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
-  'Content & Communications': { bg: 'bg-lime-50', text: 'text-lime-700', border: 'border-lime-200' },
-  'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
-  'Finance': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
-  'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  'Legal': { bg: 'bg-stone-50', text: 'text-stone-700', border: 'border-stone-200' },
-  'Operations': { bg: 'bg-zinc-50', text: 'text-zinc-700', border: 'border-zinc-200' },
-  'Healthcare': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Education': { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
-  'Engineering': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'Customer Support': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Media & Creative': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
-  'Real Estate': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
-  'Hospitality': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
-  'General': { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' },
+interface SearchHistoryEntry {
+  id: string
+  _id?: string
+  query: string
+  description?: string
+  searched_at: string
+  result_count: number
+  top_results?: Array<{ name: string; score?: number; matchScore?: number }> | string
 }
 
-const getCategoryColor = (category: string) => {
-  return categoryColors[category] || categoryColors['General']
+interface UploadResult {
+  status: 'success' | 'error'
+  filename?: string
+  message?: string
 }
 
 export default function Dashboard() {
-  const { candidates, loading: _loading, error: _error, refetch, stats } = useCandidates({ 
-    autoFetch: true,
-    refreshInterval: 60000 // Refresh every minute
-  })
-  // Auto-refresh when email sync detects new candidates
-  useEmailSync(refetch, 30000)
-  const user = useAuthStore((state) => state.user)
   const navigate = useNavigate()
-  const [isSyncing, setIsSyncing] = useState(false)
+  const { candidates, refetch, stats } = useCandidates({ autoFetch: true, refreshInterval: 60000 })
+  const { stats: liveStats } = useRealTimeStats({ interval: 30000, enabled: true })
 
-  // Real-time stats with 30-second polling
-  const { stats: liveStats, lastUpdate: liveLastUpdate } = useRealTimeStats({
-    interval: 30000, // Poll every 30 seconds
-    enabled: true,
-    onStatsChange: (newStats) => {
-      // Auto-refresh candidate list when counts change
-      if (newStats.total_candidates !== stats.total) {
-        refetch();
-      }
-    }
-  });
-
-  // Calculate category stats first (needed by displayStats)
-  const categoryStats = useMemo(() => {
-    const groups: Record<string, { count: number; avgScore: number; topScore: number; subcategories: Record<string, number> }> = {}
-    candidates.forEach((candidate) => {
-      const category = candidate.jobCategory || 'General'
-      const subcategory = candidate.jobSubcategory || ''
-      if (!groups[category]) {
-        groups[category] = { count: 0, avgScore: 0, topScore: 0, subcategories: {} }
-      }
-      groups[category].count++
-      groups[category].avgScore += candidate.matchScore
-      if (candidate.matchScore > groups[category].topScore) {
-        groups[category].topScore = candidate.matchScore
-      }
-      if (subcategory) {
-        groups[category].subcategories[subcategory] = (groups[category].subcategories[subcategory] || 0) + 1
-      }
-    })
-    
-    // Calculate averages
-    Object.keys(groups).forEach((category) => {
-      groups[category].avgScore = Math.round(groups[category].avgScore / groups[category].count)
-    })
-    
-    return groups
-  }, [candidates]);
-
-  // Use live stats if available, fallback to cached stats
-  const displayStats = useMemo(() => ({
-    totalCandidates: liveStats?.total_candidates ?? stats.total,
-    strongMatches: liveStats?.strong_matches ?? stats.strong,
-    averageScore: liveStats?.average_score ?? stats.avgScore,
-    recentCount: liveStats?.new_24h ?? stats.recentCount,
-    categoryCount: liveStats?.category_count ?? Object.keys(categoryStats).length,
-  }), [liveStats, stats, categoryStats]);
-
-  // Upload state
+  const [pipeline, setPipeline] = useState({ selected: 0, rejected: 0, shortlisted: 0, interviewed: 0, total: 0 })
+  const [searches, setSearches] = useState<SearchHistoryEntry[]>([])
   const [showUploadModal, setShowUploadModal] = useState(false)
   const [isUploading, setIsUploading] = useState(false)
-  const [uploadResults, setUploadResults] = useState<any[]>([])
+  const [uploadResults, setUploadResults] = useState<UploadResult[]>([])
   const [dragActive, setDragActive] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Handle file upload
-  const handleFileUpload = useCallback(async (files: FileList | File[]) => {
-    const fileArray = Array.from(files)
-    if (fileArray.length === 0) return
+  const totalCandidates = liveStats?.total_candidates ?? stats.total
+  const storagePercent = Math.min(Math.round((totalCandidates / 10000) * 100), 100)
+  const searchQueryCount = searches.length
 
-    // Filter valid files
-    const validFiles = fileArray.filter(f => 
-      f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.docx')
-    )
-    
-    if (validFiles.length === 0) {
-      alert('Please upload PDF or DOCX files only.')
-      return
+  useEffect(() => {
+    const fetchData = async () => {
+      try {
+        const [pRes, sRes] = await Promise.all([
+          authFetch(`${config.apiUrl}/api/stats/pipeline`),
+          authFetch(`${config.apiUrl}/api/search-history?limit=10`),
+        ])
+        if (pRes.ok) setPipeline(await pRes.json())
+        if (sRes.ok) { const data = await sRes.json(); setSearches(data.history || []) }
+      } catch (err) {
+        console.error('Dashboard fetch error:', err)
+        toast.error('Load failed', 'Could not load dashboard data')
+      }
     }
+    fetchData()
+  }, [])
 
-    setIsUploading(true)
-    setUploadResults([])
-    setShowUploadModal(true)
-
+  const handleFileUpload = useCallback(async (files: FileList | File[]) => {
+    const validFiles = Array.from(files).filter(f => /\.(pdf|docx?)$/i.test(f.name))
+    if (!validFiles.length) { toast.warning('Invalid file type', 'Please upload PDF or DOCX files only.'); return }
+    setIsUploading(true); setUploadResults([]); setShowUploadModal(true)
     try {
       const formData = new FormData()
       validFiles.forEach(file => formData.append('files', file))
-
-      const response = await authFetch(`${config.apiUrl}/api/resumes/upload-multiple`, {
-        method: 'POST',
-        body: formData,
-      })
-
+      const response = await authFetch(`${config.apiUrl}/api/resumes/upload-multiple`, { method: 'POST', body: formData })
       if (response.ok) {
-        const data = await response.json()
-        setUploadResults(data.results || [])
-        // Refresh candidates list after upload
+        setUploadResults((await response.json()).results || [])
         setTimeout(() => refetch(), 1000)
       } else {
-        const error = await response.json()
-        setUploadResults([{ status: 'error', message: error.detail || 'Upload failed' }])
+        setUploadResults([{ status: 'error', message: (await response.json()).detail || 'Upload failed' }])
       }
     } catch (error: any) {
       setUploadResults([{ status: 'error', message: error.message || 'Network error' }])
-    } finally {
-      setIsUploading(false)
-    }
+    } finally { setIsUploading(false) }
   }, [refetch])
 
-  // Drag and drop handlers
   const handleDrag = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    if (e.type === 'dragenter' || e.type === 'dragover') {
-      setDragActive(true)
-    } else if (e.type === 'dragleave') {
-      setDragActive(false)
-    }
+    e.preventDefault(); e.stopPropagation()
+    setDragActive(e.type === 'dragenter' || e.type === 'dragover')
   }, [])
-
   const handleDrop = useCallback((e: React.DragEvent) => {
-    e.preventDefault()
-    e.stopPropagation()
-    setDragActive(false)
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFileUpload(e.dataTransfer.files)
-    }
+    e.preventDefault(); e.stopPropagation(); setDragActive(false)
+    if (e.dataTransfer.files?.length) handleFileUpload(e.dataTransfer.files)
   }, [handleFileUpload])
 
-  const openFileDialog = useCallback(() => {
-    fileInputRef.current?.click()
-  }, [])
-
-  const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files.length > 0) {
-      handleFileUpload(e.target.files)
-    }
-  }, [handleFileUpload])
-
-  // Instant sync - triggers immediate email check
-  const handleInstantSync = async () => {
-    setIsSyncing(true)
+  const fmtDate = (iso: string) => {
     try {
-      const response = await authFetch(`${config.apiUrl}/api/email/sync-now`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' }
-      })
-      
-      if (response.ok) {
-        // Wait a moment for processing then refresh candidates
-        setTimeout(() => {
-          refetch()
-        }, 2000)
-      }
-    } catch (error) {
-      console.error('Instant sync error:', error)
-    } finally {
-      setIsSyncing(false)
-    }
-  }
-
-  // Calculate previous week stats for comparison
-  const twoWeeksAgo = new Date()
-  twoWeeksAgo.setDate(twoWeeksAgo.getDate() - 14)
-  const oneWeekAgo = new Date()
-  oneWeekAgo.setDate(oneWeekAgo.getDate() - 7)
-  
-  const previousWeekUploads = candidates.filter((c) => {
-    const date = new Date(c.appliedDate)
-    return date >= twoWeeksAgo && date < oneWeekAgo
-  }).length
-
-  const uploadTrend = previousWeekUploads > 0 
-    ? Math.round(((stats.recentCount - previousWeekUploads) / previousWeekUploads) * 100)
-    : 0
-
-  const recentCandidates = candidates.slice(0, 5)
-
-  // Quick actions
-  const quickActions = [
-    {
-      icon: Sparkles,
-      title: 'AI Assistant',
-      description: 'Smart candidate search',
-      color: 'primary',
-      action: () => navigate('/ai-assistant')
-    },
-    {
-      icon: Zap,
-      title: 'Upload Resumes',
-      description: 'Add new candidates',
-      color: 'blue',
-      action: () => setShowUploadModal(true)
-    },
-    {
-      icon: Target,
-      title: 'View Shortlist',
-      description: 'Top candidates',
-      color: 'success',
-      action: () => navigate('/shortlist')
-    },
-    {
-      icon: Mail,
-      title: 'Email Sync',
-      description: 'Connect inbox',
-      color: 'warning',
-      action: () => navigate('/email-integration')
-    },
-    {
-      icon: Users,
-      title: 'All Candidates',
-      description: 'Browse pipeline',
-      color: 'primary',
-      action: () => navigate('/candidates')
-    },
-    {
-      icon: CheckCircle2,
-      title: 'Settings',
-      description: 'Account & profile',
-      color: 'blue',
-      action: () => navigate('/settings')
-    },
-  ]
-
-  const getCurrentGreeting = () => {
-    const hour = new Date().getHours()
-    if (hour < 12) return 'Good morning'
-    if (hour < 18) return 'Good afternoon'
-    return 'Good evening'
+      const d = new Date(iso)
+      return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' }) +
+        ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+    } catch { return iso }
   }
 
   return (
     <div className="space-y-6">
-      {/* Header with Greeting */}
-      <motion.div
-        initial={{ opacity: 0, y: -20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ duration: 0.3 }}
-        className="relative overflow-hidden"
-      >
-        <div className="absolute inset-0 bg-gradient-to-br from-slate-900 via-slate-800 to-sky-900 rounded-2xl" />
-        <div className="absolute inset-0 bg-dot-pattern opacity-[0.03] rounded-2xl" />
-        <div className="relative p-8 rounded-2xl">
-          <div className="flex items-center justify-between">
-            <div>
-              <div className="flex items-center gap-2 mb-2">
-                <Sparkles className="w-4 h-4 text-sky-300" />
-                <p className="text-sm font-medium text-sky-300">Dashboard Overview</p>
+      {/* ── Purple Gradient Top Card ── */}
+      <motion.div initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ duration: 0.3 }}>
+        <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-indigo-600 via-purple-600 to-violet-700 p-6 text-white shadow-xl">
+          <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNDAiIGhlaWdodD0iNDAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGNpcmNsZSBjeD0iMjAiIGN5PSIyMCIgcj0iMSIgZmlsbD0icmdiYSgyNTUsMjU1LDI1NSwwLjA1KSIvPjwvc3ZnPg==')] opacity-40" />
+          <div className="relative z-10">
+            <div className="flex items-center gap-2 mb-5">
+              <div className="w-7 h-7 bg-white/20 rounded-lg flex items-center justify-center">
+                <FileText className="w-4 h-4" />
               </div>
-              <h1 className="text-2xl font-bold text-white mb-1">
-                {getCurrentGreeting()}, {user?.firstName || user?.name?.split(' ')[0] || 'Recruiter'}!
-              </h1>
-              <p className="text-sm text-slate-300 mb-4">Here's what's happening with your recruitment today.</p>
-              <div className="flex items-center gap-3">
-                <motion.button
-                  onClick={() => navigate('/ai-assistant')}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-sky-500 hover:bg-sky-400 text-white rounded-xl shadow-lg shadow-sky-500/25 transition-all text-sm font-semibold"
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                >
-                  <Sparkles className="w-4 h-4" />
-                  Try AI Search
-                </motion.button>
-                <motion.button
-                  onClick={handleInstantSync}
-                  disabled={isSyncing}
-                  className="flex items-center gap-2 px-4 py-2.5 bg-emerald-500 hover:bg-emerald-400 text-white rounded-xl shadow-lg shadow-emerald-500/25 transition-all text-sm font-semibold disabled:opacity-50"
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                >
-                  {isSyncing ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <RefreshCw className="w-4 h-4" />
-                  )}
-                  Sync Emails
-                </motion.button>
-                <motion.button
-                  onClick={openFileDialog}
-                  className="flex items-center gap-2 px-4 py-2.5 border border-white/20 bg-white/10 backdrop-blur-sm text-white rounded-xl hover:bg-white/20 transition-all text-sm font-medium"
-                  whileHover={{ scale: 1.03 }}
-                  whileTap={{ scale: 0.97 }}
-                >
-                  <Upload className="w-4 h-4" />
-                  Upload Resumes
-                </motion.button>
-                {/* Hidden file input */}
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  accept=".pdf,.docx"
-                  multiple
-                  className="hidden"
-                  onChange={handleFileInputChange}
-                />
+              <h2 className="text-lg font-bold">All Recruitment Details</h2>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+              <div className="cursor-pointer hover:opacity-90 transition-opacity" onClick={() => navigate('/candidates')}>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-white/80">Candidates Storage</span>
+                  <span className="text-xs font-semibold bg-white/20 px-2 py-0.5 rounded-full">{storagePercent}%</span>
+                </div>
+                <div className="flex items-end gap-3 mb-2">
+                  <span className="text-3xl font-bold">{totalCandidates.toLocaleString()}</span>
+                  <span className="text-sm text-white/60 pb-1">of 10,000</span>
+                </div>
+                <div className="w-full h-2 bg-white/20 rounded-full overflow-hidden">
+                  <div className="h-full bg-white/80 rounded-full transition-all" style={{ width: `${storagePercent}%` }} />
+                </div>
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-sm font-medium text-white/80">Search Queries</span>
+                  <span className="text-xs font-semibold bg-white/20 px-2 py-0.5 rounded-full">{Math.min(Math.round((searchQueryCount / 1000) * 100), 100)}%</span>
+                </div>
+                <div className="flex items-end gap-3 mb-2">
+                  <span className="text-3xl font-bold">{searchQueryCount}</span>
+                  <span className="text-sm text-white/60 pb-1">of 1,000</span>
+                </div>
+                <div className="w-full h-2 bg-white/20 rounded-full overflow-hidden">
+                  <div className="h-full bg-white/80 rounded-full transition-all" style={{ width: `${Math.min((searchQueryCount / 1000) * 100, 100)}%` }} />
+                </div>
               </div>
             </div>
-            <motion.div
-              animate={{ 
-                scale: [1, 1.05, 1],
-                rotate: [0, 5, 0, -5, 0]
-              }}
-              transition={{ 
-                duration: 3,
-                repeat: Infinity,
-                repeatDelay: 2
-              }}
-              className="hidden lg:block cursor-pointer"
-              onClick={() => navigate('/candidates')}
-              whileHover={{ scale: 1.1 }}
-            >
-              <div className="w-16 h-16 bg-white/10 backdrop-blur-sm rounded-2xl flex items-center justify-center shadow-lg ring-1 ring-white/20">
-                <Users className="w-8 h-8 text-sky-300" />
-              </div>
-            </motion.div>
+
+            <div className="flex items-center justify-between mt-4 pt-3 border-t border-white/10">
+              <Badge className="bg-white/20 text-white border-0 text-xs px-3 py-1 font-semibold">ENTERPRISE</Badge>
+              <span className="text-xs text-white/50">
+                Last updated: {new Date().toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })}
+              </span>
+            </div>
           </div>
         </div>
       </motion.div>
 
-      {/* Stats Grid - Enhanced with Real-time Updates */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div
-          className="hover:-translate-y-1 transition-transform cursor-pointer"
-          onClick={() => navigate('/candidates')}
-        >
-          <Card className="hover:shadow-brand transition-all border border-gray-100 hover:border-sky-200 relative overflow-hidden group rounded-xl">
-            <div className="absolute inset-0 bg-gradient-to-br from-sky-500/5 to-blue-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <CardContent className="p-6 relative">
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-11 h-11 bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl flex items-center justify-center shadow-sm ring-1 ring-white/10">
-                  <Users className="w-5 h-5 text-sky-300" />
-                </div>
-                <div className="flex items-center gap-1">
-                  {liveStats && <Activity className="w-3 h-3 text-green-500 animate-pulse" />}
-                  <ArrowUpRight className="w-4 h-4 text-gray-400 group-hover:text-blue-600 transition-colors" />
-                </div>
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500 mb-0.5">Total Candidates</p>
-                <motion.p 
-                  key={displayStats.totalCandidates}
-                  initial={{ scale: 1.1, color: '#3b82f6' }}
-                  animate={{ scale: 1, color: '#111827' }}
-                  className="text-3xl font-bold"
-                >
-                  {displayStats.totalCandidates}
-                </motion.p>
-                <p className="text-xs text-gray-500 mt-2">
-                  {liveLastUpdate ? `Updated ${new Date(liveLastUpdate).toLocaleTimeString()}` : 'Click to view all'}
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+      {/* ── My Recruitment Dashboard ── */}
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-xl font-bold text-gray-900">My Recruitment Dashboard</h2>
+            <p className="text-sm text-gray-500">Track candidates and manage your recruitment pipeline</p>
+          </div>
+          <span className="text-xs text-gray-400">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</span>
         </div>
 
-        <div
-          className="hover:-translate-y-1 transition-transform cursor-pointer"
-          onClick={() => navigate('/ai-assistant')}
-        >
-          <Card className="hover:shadow-brand transition-all border border-gray-100 hover:border-sky-200 relative overflow-hidden group rounded-xl">
-            <div className="absolute inset-0 bg-gradient-to-br from-sky-500/5 to-indigo-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <CardContent className="p-6 relative">
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-11 h-11 bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl flex items-center justify-center shadow-sm ring-1 ring-white/10">
-                  <TrendingUp className="w-5 h-5 text-emerald-300" />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+          {[
+            { icon: CheckCircle2, label: 'Selected', sublabel: 'Ready to hire', count: pipeline.selected, color: 'text-green-500', bg: 'bg-green-50', status: 'Offered' },
+            { icon: XCircle, label: 'Rejected', sublabel: 'This month', count: pipeline.rejected, color: 'text-red-500', bg: 'bg-red-50', status: 'Rejected' },
+            { icon: Star, label: 'Shortlisted', sublabel: 'Awaiting review', count: pipeline.shortlisted, color: 'text-amber-500', bg: 'bg-amber-50', status: 'Shortlisted' },
+            { icon: Video, label: 'Interviewed', sublabel: 'Completed interviews', count: pipeline.interviewed, color: 'text-blue-500', bg: 'bg-blue-50', status: 'Interviewing' },
+          ].map((item) => (
+            <Card key={item.label} className="border border-gray-100 hover:shadow-md transition-shadow rounded-xl cursor-pointer" onClick={() => navigate(`/candidates?status=${item.status}`)}>
+              <CardContent className="p-5 text-center">
+                <div className={`w-10 h-10 ${item.bg} rounded-full flex items-center justify-center mx-auto mb-3`}>
+                  <item.icon className={`w-5 h-5 ${item.color}`} />
                 </div>
-                <Target className="w-4 h-4 text-blue-600" />
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500 mb-0.5">Avg Match Score</p>
-                <motion.p 
-                  key={displayStats.averageScore}
-                  initial={{ scale: 1.1, color: '#2563eb' }}
-                  animate={{ scale: 1, color: '#111827' }}
-                  className="text-3xl font-bold"
-                >
-                  {displayStats.averageScore}%
-                </motion.p>
-                <div className="mt-2">
-                  <Progress value={displayStats.averageScore} className="h-1.5" />
-                </div>
-                <p className="text-xs text-gray-500 mt-2">Search with AI</p>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        <div
-          className="hover:-translate-y-1 transition-transform cursor-pointer"
-          onClick={() => navigate('/candidates')}
-        >
-          <Card className="hover:shadow-brand transition-all border border-gray-100 hover:border-amber-200 relative overflow-hidden group rounded-xl">
-            <div className="absolute inset-0 bg-gradient-to-br from-amber-500/5 to-orange-500/5 opacity-0 group-hover:opacity-100 transition-opacity" />
-            <CardContent className="p-6 relative">
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-11 h-11 bg-gradient-to-br from-slate-800 to-slate-900 rounded-xl flex items-center justify-center shadow-sm ring-1 ring-white/10">
-                  <Clock className="w-5 h-5 text-amber-300" />
-                </div>
-                {uploadTrend !== 0 && (
-                  uploadTrend > 0 ? (
-                    <div className="flex items-center gap-1 text-success">
-                      <ArrowUpRight className="w-4 h-4" />
-                      <span className="text-xs font-semibold">+{uploadTrend}%</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-1 text-danger">
-                      <ArrowDownRight className="w-4 h-4" />
-                      <span className="text-xs font-semibold">{uploadTrend}%</span>
-                    </div>
-                  )
-                )}
-              </div>
-              <div>
-                <p className="text-xs font-medium text-gray-500 mb-0.5">New (24h)</p>
-                <motion.p 
-                  key={displayStats.recentCount}
-                  initial={{ scale: 1.1, color: '#f59e0b' }}
-                  animate={{ scale: 1, color: '#111827' }}
-                  className="text-3xl font-bold"
-                >
-                  {displayStats.recentCount}
-                </motion.p>
-                <p className="text-xs text-gray-500 mt-2">Upload more resumes</p>
-              </div>
-            </CardContent>
-          </Card>
+                <p className="text-3xl font-bold text-gray-900 mb-1">{item.count}</p>
+                <p className="text-sm font-semibold text-gray-700">{item.label}</p>
+                <p className="text-xs text-gray-400">{item.sublabel}</p>
+              </CardContent>
+            </Card>
+          ))}
         </div>
       </div>
 
-      {/* Quick Actions */}
-      <div>
-        <div className="flex items-center gap-2 mb-4">
-          <Zap className="w-5 h-5 text-sky-500" />
-          <h2 className="text-xl font-semibold text-gray-900">Quick Actions</h2>
-          <span className="text-xs text-gray-400 ml-2">Click to navigate</span>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {quickActions.map((action, index) => {
-            const Icon = action.icon
-            const actionColorMap: Record<string, { bg: string; text: string }> = {
-              primary: { bg: 'bg-sky-100', text: 'text-sky-600' },
-              blue:    { bg: 'bg-blue-100',    text: 'text-blue-600' },
-              success: { bg: 'bg-emerald-100',  text: 'text-emerald-600' },
-              warning: { bg: 'bg-amber-100',    text: 'text-amber-600' },
-            }
-            const colors = actionColorMap[action.color] || actionColorMap.primary
-            return (
-              <div key={index}>
-                <Card 
-                  className="cursor-pointer hover:shadow-brand transition-all border border-gray-100 hover:border-sky-200 group rounded-xl"
-                  onClick={action.action}
-                >
-                  <CardContent className="p-6">
-                    <div className="flex items-center gap-4">
-                      <div className={`w-12 h-12 ${colors.bg} rounded-xl flex items-center justify-center group-hover:scale-110 transition-transform`}>
-                        <Icon className={`w-6 h-6 ${colors.text}`} />
-                      </div>
-                      <div className="flex-1">
-                        <h3 className="font-semibold text-gray-900 mb-0.5">{action.title}</h3>
-                        <p className="text-sm text-gray-600">{action.description}</p>
-                      </div>
-                      <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-sky-600 group-hover:translate-x-1 group-hover:-translate-y-1 transition-all" />
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Category Breakdown */}
-      {Object.keys(categoryStats).length > 0 && (
-        <div>
-          <div className="flex items-center gap-2 mb-4">
-            <Briefcase className="w-5 h-5 text-sky-500" />
-            <h2 className="text-xl font-semibold text-gray-900">Candidates by Category</h2>
-            <span className="text-xs text-gray-400 ml-2">{Object.keys(categoryStats).length} categories</span>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
-            {Object.entries(categoryStats)
-              .sort(([, a], [, b]) => b.count - a.count)
-              .map(([category, stats]) => {
-                const colors = getCategoryColor(category)
-                return (
-                  <div key={category}>
-                    <Card 
-                      className={`cursor-pointer hover:shadow-medium transition-all border-2 ${colors.border} ${colors.bg} group`}
-                      onClick={() => navigate(`/candidates?category=${encodeURIComponent(category)}`)}
-                    >
-                      <CardContent className="p-4">
-                        <div className="flex items-center justify-between mb-3">
-                          <div className={`w-10 h-10 bg-white rounded-xl flex items-center justify-center border ${colors.border}`}>
-                            <Briefcase className={`w-5 h-5 ${colors.text}`} />
-                          </div>
-                          <Badge className={`${colors.bg} ${colors.text} border ${colors.border}`}>
-                            {stats.count}
-                          </Badge>
-                        </div>
-                        <h3 className={`font-semibold ${colors.text} mb-2 truncate`}>{category}</h3>
-                        <div className="space-y-2">
-                          {/* Show top subcategories */}
-                          {Object.keys(stats.subcategories).length > 0 && (
-                            <div className="flex flex-wrap gap-1 mb-1">
-                              {Object.entries(stats.subcategories)
-                                .sort(([, a], [, b]) => b - a)
-                                .slice(0, 2)
-                                .map(([sub, count]) => (
-                                  <span key={sub} className="text-[10px] px-1.5 py-0.5 rounded bg-white/70 text-gray-600 truncate max-w-[120px]">
-                                    {sub}: {count}
-                                  </span>
-                                ))}
-                              {Object.keys(stats.subcategories).length > 2 && (
-                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-white/70 text-gray-500">
-                                  +{Object.keys(stats.subcategories).length - 2}
-                                </span>
-                              )}
-                            </div>
-                          )}
-                          <div className="flex items-center justify-between text-sm">
-                            <span className="text-gray-600">Avg Score</span>
-                            <span className={`font-bold ${getMatchScoreColor(stats.avgScore)}`}>{stats.avgScore}%</span>
-                          </div>
-                          <Progress 
-                            value={stats.avgScore} 
-                            className="h-1.5"
-                            indicatorClassName={
-                              stats.avgScore >= 70 ? 'bg-green-500' :
-                              stats.avgScore >= 50 ? 'bg-yellow-500' : 'bg-red-500'
-                            }
-                          />
-                          <div className="flex items-center justify-between text-xs text-gray-500">
-                            <span>Top: {stats.topScore}%</span>
-                            <ArrowUpRight className="w-4 h-4 opacity-0 group-hover:opacity-100 transition-opacity" />
-                          </div>
-                        </div>
-                      </CardContent>
-                    </Card>
-                  </div>
-                )
-              })}
-          </div>
-        </div>
-      )}
-
-      {/* Recent Candidates - Enhanced */}
-      <div>
-        <Card className="border border-gray-100 rounded-xl">
-          <CardHeader className="border-b border-gray-100 bg-gradient-to-r from-gray-50/50 to-white">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-slate-800 rounded-xl flex items-center justify-center">
-                  <Users className="w-5 h-5 text-sky-300" />
-                </div>
-                <div>
-                  <CardTitle>Recent Candidates</CardTitle>
-                  <p className="text-sm text-gray-600 font-normal mt-0.5">Latest additions to your pipeline</p>
-                </div>
-              </div>
-              <button
-                onClick={() => navigate('/candidates')}
-                className="flex items-center gap-2 px-4 py-2 bg-slate-800 text-white rounded-xl hover:bg-slate-700 transition-colors text-sm font-medium hover:scale-105 active:scale-95"
-              >
-                View all
-                <ArrowUpRight className="w-4 h-4" />
-              </button>
+      {/* ── Bottom Row: Recent Searches + Schedule ── */}
+      <div className="grid grid-cols-1 lg:grid-cols-5 gap-6">
+        <Card className="lg:col-span-3 border border-gray-100 rounded-xl">
+          <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+            <div>
+              <h3 className="font-semibold text-gray-900">Recent Resume Searches</h3>
+              <p className="text-xs text-gray-500">Your latest search activities and results</p>
             </div>
-          </CardHeader>
+            <button onClick={() => navigate('/search-reports')} className="text-xs text-sky-600 hover:text-sky-700 font-medium flex items-center gap-1">
+              <Eye className="w-3.5 h-3.5" /> View All
+            </button>
+          </div>
           <CardContent className="p-0">
-            {recentCandidates.length === 0 ? (
-              <div className="p-12 text-center">
-                <div className="w-20 h-20 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                  <Users className="w-10 h-10 text-gray-400" />
-                </div>
-                <h3 className="text-lg font-semibold text-gray-900 mb-2">No candidates yet</h3>
-                <p className="text-gray-600 mb-4">Start by uploading resumes or connecting your email</p>
-                <button
-                  onClick={openFileDialog}
-                  className="px-6 py-2 bg-slate-800 text-white rounded-xl hover:bg-slate-700 transition-colors text-sm font-medium hover:scale-105 active:scale-95"
-                >
-                  Upload Resumes
-                </button>
+            {searches.length === 0 ? (
+              <div className="p-8 text-center">
+                <Search className="w-10 h-10 text-gray-300 mx-auto mb-3" />
+                <p className="text-sm text-gray-500 mb-2">No searches yet</p>
+                <Button size="sm" onClick={() => navigate('/ai-assistant')}>Start Searching</Button>
               </div>
             ) : (
-              <div className="divide-y divide-gray-100">
-                {recentCandidates.map((candidate) => (
-                  <div
-                    key={candidate.id}
-                    className="p-4 hover:bg-gray-50/80 cursor-pointer transition-all group"
-                    onClick={() => navigate(`/candidates/${candidate.id}`)}
-                  >
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-4 flex-1">
-                        <div>
-                          <Avatar className="w-10 h-10 border-2 border-white shadow-sm">
-                            <AvatarImage
-                              src={`https://api.dicebear.com/7.x/initials/svg?seed=${candidate.name}`}
-                            />
-                            <AvatarFallback className="text-sm font-semibold">{candidate.name.charAt(0)}</AvatarFallback>
-                          </Avatar>
-                        </div>
-                        <div className="flex-1">
-                          <h4 className="font-semibold text-gray-900 text-sm group-hover:text-sky-600 transition-colors">
-                            {candidate.name}
-                          </h4>
-                          <div className="flex items-center gap-2 mt-1">
-                            <p className="text-sm text-gray-600 flex items-center gap-2">
-                              <Calendar className="w-3 h-3" />
-                              {candidate.location}
-                            </p>
-                            {candidate.jobCategory && (
-                              <Badge 
-                                className={`text-xs ${getCategoryColor(candidate.jobCategory).bg} ${getCategoryColor(candidate.jobCategory).text} border ${getCategoryColor(candidate.jobCategory).border}`}
-                              >
-                                {candidate.jobCategory}
-                              </Badge>
-                            )}
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-xs text-gray-500 border-b border-gray-100">
+                      <th className="text-left px-5 py-3 font-medium">SEARCH QUERY</th>
+                      <th className="text-center px-3 py-3 font-medium">RESULTS</th>
+                      <th className="text-left px-3 py-3 font-medium">DATE & TIME</th>
+                      <th className="text-center px-3 py-3 font-medium">ACTIONS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {searches.slice(0, 5).map((s) => (
+                      <tr key={s.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
+                        <td className="px-5 py-3">
+                          <div className="flex items-start gap-2">
+                            <Search className="w-3.5 h-3.5 text-gray-400 mt-0.5 flex-shrink-0" />
+                            <div className="min-w-0">
+                              <p className="font-medium text-gray-900 truncate max-w-[260px]">{s.query}</p>
+                              <p className="text-xs text-gray-400 truncate max-w-[260px]">{s.description}</p>
+                            </div>
                           </div>
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-6">
-                        <div className="text-right">
-                          <p className={`text-xl font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
-                            {(candidate.matchScore ?? 50).toFixed(1)}%
-                          </p>
-                          <p className="text-xs text-gray-500 mt-1">Match Score</p>
-                        </div>
-                        <Badge
-                          className={`px-3 py-1 ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}
-                        >
-                          {candidate.status}
-                        </Badge>
-                        <ArrowUpRight className="w-5 h-5 text-gray-400 group-hover:text-sky-600 group-hover:translate-x-1 group-hover:-translate-y-1 transition-all" />
+                        </td>
+                        <td className="px-3 py-3 text-center">
+                          <Badge className="bg-green-50 text-green-700 border-green-200 text-xs">{s.result_count} matches</Badge>
+                        </td>
+                        <td className="px-3 py-3 text-xs text-gray-500">{fmtDate(s.searched_at)}</td>
+                        <td className="px-3 py-3 text-center">
+                          <button onClick={() => navigate('/ai-assistant')} className="text-xs text-sky-600 hover:text-sky-700 font-medium">View Results</button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-2 border border-gray-100 rounded-xl">
+          <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Calendar className="w-4 h-4 text-sky-500" />
+              <h3 className="font-semibold text-gray-900">Schedule</h3>
+            </div>
+            <button onClick={() => navigate('/ai-assistant')} title="Schedule via AI Assistant" className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors">
+              <Plus className="w-4 h-4 text-gray-500" />
+            </button>
+          </div>
+          <CardContent className="p-4">
+            <p className="text-xs font-medium text-gray-500 mb-3">Upcoming Events</p>
+            {candidates.filter(c => c.status === 'Shortlisted' || c.status === 'Interviewing').length === 0 ? (
+              <div className="text-center py-6">
+                <Calendar className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                <p className="text-sm text-gray-400">No upcoming events</p>
+                <p className="text-xs text-gray-400 mt-1">Schedule interviews from AI Assistant</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {candidates
+                  .filter(c => c.status === 'Shortlisted' || c.status === 'Interviewing')
+                  .slice(0, 4)
+                  .map((c) => (
+                    <div key={c.id} className="flex items-start gap-3 p-3 rounded-lg bg-gray-50 hover:bg-gray-100 transition-colors cursor-pointer" onClick={() => navigate(`/candidates/${c.id}`)}>
+                      <div className={`w-2 h-2 rounded-full mt-1.5 flex-shrink-0 ${c.status === 'Shortlisted' ? 'bg-amber-400' : 'bg-blue-400'}`} />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-gray-900 truncate">{c.status === 'Interviewing' ? 'Decision' : 'Follow-up'}: {c.name}</p>
+                        <p className="text-xs text-gray-500 truncate">{c.jobCategory}</p>
+                        <p className="text-xs text-gray-400 mt-0.5">{c.appliedDate ? new Date(c.appliedDate).toLocaleDateString() : ''}</p>
                       </div>
                     </div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {candidate.skills.slice(0, 4).map((skill) => (
-                        <Badge 
-                          key={skill} 
-                          variant="outline" 
-                          className="text-[11px] px-1.5 py-0 hover:bg-sky-50 hover:border-sky-300 transition-colors cursor-pointer"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            navigate(`/candidates?search=${skill}`)
-                          }}
-                        >
-                          {skill}
-                        </Badge>
-                      ))}
-                      {candidate.skills.length > 4 && (
-                        <Badge 
-                          variant="outline" 
-                          className="text-[11px] bg-gray-50 cursor-pointer hover:bg-gray-100"
-                          onClick={(e) => {
-                            e.stopPropagation()
-                            navigate(`/candidates/${candidate.id}`)
-                          }}
-                        >
-                          +{candidate.skills.length - 4} more
-                        </Badge>
-                      )}
-                    </div>
-                  </div>
-                ))}
+                  ))}
               </div>
             )}
           </CardContent>
@@ -723,144 +286,49 @@ export default function Dashboard() {
       {/* Upload Modal */}
       {showUploadModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => { setShowUploadModal(false); setUploadResults([]) }}>
-          <div 
-            className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] overflow-hidden"
-            onClick={(e) => e.stopPropagation()}
-          >
-            {/* Modal Header */}
+          <div className="bg-white rounded-2xl shadow-2xl max-w-lg w-full max-h-[80vh] overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between p-6 border-b border-gray-200">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 bg-sky-100 rounded-xl flex items-center justify-center">
-                  <Upload className="w-5 h-5 text-sky-600" />
-                </div>
-                <div>
-                  <h2 className="text-xl font-bold text-gray-900">Upload Resumes</h2>
-                  <p className="text-sm text-gray-500">PDF or DOCX files</p>
-                </div>
+                <div className="w-10 h-10 bg-sky-100 rounded-xl flex items-center justify-center"><Upload className="w-5 h-5 text-sky-600" /></div>
+                <div><h2 className="text-xl font-bold text-gray-900">Upload Resumes</h2><p className="text-sm text-gray-500">PDF or DOCX files</p></div>
               </div>
-              <button
-                onClick={() => {
-                  setShowUploadModal(false)
-                  setUploadResults([])
-                }}
-                className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
-              >
-                <X className="w-5 h-5 text-gray-500" />
-              </button>
+              <button onClick={() => { setShowUploadModal(false); setUploadResults([]) }} className="p-2 hover:bg-gray-100 rounded-lg"><X className="w-5 h-5 text-gray-500" /></button>
             </div>
-
-            {/* Modal Content */}
             <div className="p-6">
               {isUploading ? (
-                <div className="flex flex-col items-center justify-center py-12">
+                <div className="flex flex-col items-center py-12">
                   <Loader2 className="w-12 h-12 text-sky-500 animate-spin mb-4" />
                   <p className="text-lg font-medium text-gray-900">Processing resumes...</p>
-                  <p className="text-sm text-gray-500">AI is analyzing the candidates</p>
                 </div>
               ) : uploadResults.length > 0 ? (
                 <div className="space-y-4">
-                  <div className="flex items-center gap-2 mb-4">
-                    <CheckCircle className="w-5 h-5 text-green-600" />
-                    <span className="font-medium text-gray-900">
-                      {uploadResults.filter(r => r.status === 'success').length} of {uploadResults.length} uploaded successfully
-                    </span>
-                  </div>
+                  <div className="flex items-center gap-2"><CheckCircle className="w-5 h-5 text-green-600" /><span className="font-medium">{uploadResults.filter(r => r.status === 'success').length} uploaded</span></div>
                   <div className="max-h-60 overflow-y-auto space-y-2">
-                    {uploadResults.map((result, idx) => (
-                      <div 
-                        key={idx}
-                        className={`p-3 rounded-lg border ${
-                          result.status === 'success' 
-                            ? 'bg-green-50 border-green-200' 
-                            : 'bg-red-50 border-red-200'
-                        }`}
-                      >
+                    {uploadResults.map((r, i) => (
+                      <div key={i} className={`p-3 rounded-lg border ${r.status === 'success' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
                         <div className="flex items-start gap-3">
-                          {result.status === 'success' ? (
-                            <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0 mt-0.5" />
-                          ) : (
-                            <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-                          )}
-                          <div className="flex-1 min-w-0">
-                            <p className="font-medium text-gray-900 truncate">
-                              {result.filename || 'Unknown file'}
-                            </p>
-                            {result.status === 'success' && result.candidate && (
-                              <div className="mt-1 text-sm text-gray-600">
-                                <span className="font-medium">{result.candidate.name}</span>
-                                <span className="mx-2">•</span>
-                                <span className={getMatchScoreColor(result.candidate.matchScore)}>
-                                  {result.candidate.matchScore?.toFixed(1)}% match
-                                </span>
-                                <span className="mx-2">•</span>
-                                <span>{result.candidate.jobCategory}</span>
-                              </div>
-                            )}
-                            {result.status === 'error' && (
-                              <p className="text-sm text-red-600">{result.message}</p>
-                            )}
-                          </div>
+                          {r.status === 'success' ? <CheckCircle className="w-5 h-5 text-green-600" /> : <AlertCircle className="w-5 h-5 text-red-600" />}
+                          <p className="font-medium truncate">{r.filename || 'Unknown'}</p>
                         </div>
                       </div>
                     ))}
                   </div>
-                  <div className="flex gap-3 pt-4 border-t border-gray-200">
-                    <Button
-                      onClick={() => {
-                        setUploadResults([])
-                        openFileDialog()
-                      }}
-                      variant="outline"
-                      className="flex-1"
-                    >
-                      <Upload className="w-4 h-4 mr-2" />
-                      Upload More
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        setShowUploadModal(false)
-                        setUploadResults([])
-                        navigate('/candidates')
-                      }}
-                      className="flex-1"
-                    >
-                      View Candidates
-                    </Button>
-                  </div>
+                  <Button onClick={() => { setUploadResults([]); setShowUploadModal(false) }} className="w-full">Done</Button>
                 </div>
               ) : (
-                <div
-                  onDragEnter={handleDrag}
-                  onDragLeave={handleDrag}
-                  onDragOver={handleDrag}
-                  onDrop={handleDrop}
-                  onClick={openFileDialog}
-                  className={`
-                    border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all
-                    ${dragActive 
-                      ? 'border-sky-500 bg-sky-50' 
-                      : 'border-gray-300 hover:border-sky-400 hover:bg-gray-50'
-                    }
-                  `}
+                <div onDragEnter={handleDrag} onDragLeave={handleDrag} onDragOver={handleDrag} onDrop={handleDrop} onClick={() => fileInputRef.current?.click()}
+                  className={`border-2 border-dashed rounded-xl p-12 text-center cursor-pointer transition-all ${dragActive ? 'border-sky-500 bg-sky-50' : 'border-gray-300 hover:border-sky-400'}`}
                 >
-                  <div className="w-16 h-16 bg-sky-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <FileText className="w-8 h-8 text-sky-600" />
-                  </div>
-                  <p className="text-lg font-medium text-gray-900 mb-2">
-                    {dragActive ? 'Drop files here' : 'Drag & drop resumes here'}
-                  </p>
-                  <p className="text-sm text-gray-500 mb-4">
-                    or click to browse your files
-                  </p>
-                  <p className="text-xs text-gray-400">
-                    Supports PDF and DOCX • Multiple files allowed
-                  </p>
+                  <div className="w-16 h-16 bg-sky-100 rounded-full flex items-center justify-center mx-auto mb-4"><Upload className="w-8 h-8 text-sky-600" /></div>
+                  <p className="text-lg font-medium text-gray-900 mb-2">{dragActive ? 'Drop files here' : 'Drop files here or click to browse'}</p>
+                  <p className="text-sm text-gray-500">Support for PDF, DOC, DOCX files (max 100MB per file)</p>
                 </div>
               )}
             </div>
           </div>
         </div>
       )}
+      <input ref={fileInputRef} type="file" accept=".pdf,.doc,.docx" multiple className="hidden" onChange={(e) => e.target.files && handleFileUpload(e.target.files)} />
     </div>
   )
 }

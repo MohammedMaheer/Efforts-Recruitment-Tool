@@ -230,6 +230,20 @@ class DatabaseService:
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_jd_category ON job_descriptions(category)")
             cursor.execute("CREATE INDEX IF NOT EXISTS idx_jd_count ON job_descriptions(candidate_count DESC)")
             
+            # Search history — track AI searches for reports page
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS search_history (
+                    id TEXT PRIMARY KEY,
+                    query TEXT NOT NULL,
+                    description TEXT,
+                    result_count INTEGER DEFAULT 0,
+                    top_results TEXT,
+                    searched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    user_id TEXT
+                )
+            """)
+            cursor.execute("CREATE INDEX IF NOT EXISTS idx_search_date ON search_history(searched_at DESC)")
+            
             conn.commit()
         
         logger.info("✅ Database initialized with optimized indexes")
@@ -447,7 +461,7 @@ class DatabaseService:
                 education_data = '[]'
             
             cursor.execute("""
-                INSERT OR REPLACE INTO candidates (
+                INSERT OR IGNORE INTO candidates (
                     id, email, email_hash, name, phone, location, 
                     skills, experience, education, summary, work_history,
                     linkedin, status, match_score, job_category, job_subcategory,
@@ -581,6 +595,119 @@ class DatabaseService:
             conn.close()
 
     # ---- helpers for smart value comparison ----
+
+    def deduplicate_candidates(self) -> Dict:
+        """Find and merge duplicate candidates (same email, different case → different IDs).
+        Keeps the record with the most data, merges the other into it, then deactivates the dupe."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            # Find emails that appear more than once (case-insensitive)
+            cursor.execute("""
+                SELECT LOWER(TRIM(email)) as norm_email, GROUP_CONCAT(id) as ids, COUNT(*) as cnt
+                FROM candidates WHERE is_active = 1
+                GROUP BY LOWER(TRIM(email))
+                HAVING cnt > 1
+            """)
+            dupes = cursor.fetchall()
+            merged_count = 0
+            for norm_email, ids_str, cnt in dupes:
+                ids = ids_str.split(',')
+                # Get all duplicate rows
+                placeholders = ','.join(['?'] * len(ids))
+                cursor.execute(f"SELECT * FROM candidates WHERE id IN ({placeholders})", ids)
+                rows = cursor.fetchall()
+                candidates = [self._row_to_candidate(r, check_resume=False) for r in rows]
+                
+                # Pick the one with the most data (highest matchScore, then most skills, then most recent)
+                candidates.sort(key=lambda c: (
+                    c.get('matchScore', 0),
+                    len(c.get('skills', [])),
+                    c.get('resume_text', '') or '',
+                    c.get('last_updated', '') or ''
+                ), reverse=True)
+                
+                keep = candidates[0]
+                # Generate the canonical ID (lowercase email md5)
+                canonical_id = hashlib.md5(norm_email.encode()).hexdigest()
+                
+                # Merge all duplicates into the keeper
+                for dupe in candidates[1:]:
+                    keep = self.smart_merge_candidate(keep, dupe)
+                    # Copy resume if the keeper doesn't have one but dupe does
+                    try:
+                        cursor.execute("SELECT 1 FROM resumes WHERE candidate_id = ?", (keep['id'],))
+                        keeper_has_resume = cursor.fetchone() is not None
+                        if not keeper_has_resume:
+                            cursor.execute("SELECT * FROM resumes WHERE candidate_id = ?", (dupe['id'],))
+                            dupe_resume = cursor.fetchone()
+                            if dupe_resume:
+                                cursor.execute("""
+                                    INSERT OR REPLACE INTO resumes (candidate_id, filename, content_type, file_data, uploaded_at)
+                                    VALUES (?, ?, ?, ?, ?)
+                                """, (canonical_id, dupe_resume[1], dupe_resume[2], dupe_resume[3], dupe_resume[4]))
+                    except Exception:
+                        pass
+                    # Deactivate the duplicate
+                    cursor.execute("UPDATE candidates SET is_active = 0 WHERE id = ?", (dupe['id'],))
+                
+                # If keeper ID != canonical ID, we need to update it
+                if keep['id'] != canonical_id:
+                    old_id = keep['id']
+                    # Update resumes FK
+                    cursor.execute("UPDATE resumes SET candidate_id = ? WHERE candidate_id = ?", (canonical_id, old_id))
+                    # Delete old row, insert with canonical ID
+                    cursor.execute("DELETE FROM candidates WHERE id = ?", (old_id,))
+                    keep['id'] = canonical_id
+                    keep['email'] = norm_email
+                
+                # Update the keeper with merged data
+                self._update_candidate_row(cursor, keep)
+                merged_count += 1
+            
+            conn.commit()
+            return {'duplicates_found': len(dupes), 'merged': merged_count}
+        finally:
+            conn.close()
+    
+    def _update_candidate_row(self, cursor, candidate: Dict):
+        """Update or insert a candidate row using all merged data."""
+        education_data = candidate.get('education', [])
+        if isinstance(education_data, list):
+            education_data = json.dumps(education_data)
+        cursor.execute("""
+            INSERT OR REPLACE INTO candidates (
+                id, email, email_hash, name, phone, location, 
+                skills, experience, education, summary, work_history,
+                linkedin, status, match_score, job_category, job_subcategory,
+                applied_date, last_updated, raw_email_subject, is_active,
+                certifications, languages, resume_text
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+        """, (
+            candidate['id'],
+            candidate.get('email', ''),
+            self.email_to_hash(candidate.get('email', '')),
+            candidate.get('name', ''),
+            candidate.get('phone', ''),
+            candidate.get('location', ''),
+            json.dumps(candidate.get('skills', [])),
+            candidate.get('experience', 0),
+            education_data,
+            candidate.get('summary', ''),
+            json.dumps(candidate.get('workHistory', [])),
+            candidate.get('linkedin', ''),
+            candidate.get('status', 'New'),
+            candidate.get('matchScore', 45),
+            candidate.get('job_category', candidate.get('jobCategory', 'General')),
+            candidate.get('job_subcategory', candidate.get('jobSubcategory', '')),
+            candidate.get('appliedDate', ''),
+            candidate.get('last_updated', datetime.now().isoformat()),
+            candidate.get('raw_email_subject', ''),
+            json.dumps(candidate.get('certifications', [])),
+            json.dumps(candidate.get('languages', [])),
+            candidate.get('resume_text', ''),
+        ))
+
     @staticmethod
     def _is_meaningful(value) -> bool:
         """Return True when *value* carries real information."""
@@ -715,19 +842,24 @@ class DatabaseService:
         conn = self.get_connection_raw()
         try:
             cursor = conn.cursor()
-            query = "SELECT * FROM candidates WHERE is_active = 1"
+            query = "SELECT c.*, CASE WHEN r.candidate_id IS NOT NULL THEN 1 ELSE 0 END AS has_resume_flag FROM candidates c LEFT JOIN resumes r ON c.id = r.candidate_id WHERE c.is_active = 1"
             params = []
             if filters:
                 if filters.get('min_experience'):
-                    query += " AND experience >= ?"
+                    query += " AND c.experience >= ?"
                     params.append(filters['min_experience'])
                 if filters.get('job_category'):
-                    query += " AND job_category = ?"
+                    query += " AND c.job_category = ?"
                     params.append(filters['job_category'])
-            query += " ORDER BY match_score DESC"
+            query += " ORDER BY c.match_score DESC LIMIT 5000"
             cursor.execute(query, params)
             rows = cursor.fetchall()
-            return [self._row_to_candidate(row, check_resume=False) for row in rows]
+            candidates = []
+            for row in rows:
+                c = self._row_to_candidate(row[:-1], check_resume=False)
+                c['hasResume'] = bool(row[-1])
+                candidates.append(c)
+            return candidates
         finally:
             conn.close()
 
@@ -843,6 +975,18 @@ class DatabaseService:
         finally:
             conn.close()
 
+    def _qualify_where(self, where_clause: str) -> str:
+        """Prefix bare column names with 'c.' for use in JOIN queries."""
+        import re
+        # Columns that appear in WHERE filters — prefix with c. if not already qualified
+        cols = ['is_active', 'job_subcategory', 'job_category', 'match_score',
+                'experience', 'name', 'email', 'skills', 'last_updated']
+        result = where_clause
+        for col in cols:
+            # Use word boundaries to avoid partial replacements (e.g. job_category inside job_subcategory)
+            result = re.sub(rf'(?<!\w)(?<!c\.){col}(?!\w)', f'c.{col}', result)
+        return result
+
     def get_candidates_paginated(self, page: int = 1, limit: int = 50, filters: Dict = None):
         """Get candidates with pagination, ranked by AI score within job categories"""
         offset = (page - 1) * limit
@@ -881,15 +1025,22 @@ class DatabaseService:
             cursor.execute(f"SELECT COUNT(*) FROM candidates {where_clause}", params)
             total_count = cursor.fetchone()[0]
             
-            # Get paginated data
-            query = f"SELECT * FROM candidates {where_clause}"
-            query += " ORDER BY job_category ASC, match_score DESC, last_updated DESC LIMIT ? OFFSET ?"
+            # Get paginated data — include hasResume via LEFT JOIN (avoids N+1 queries)
+            qualified_where = self._qualify_where(where_clause)
+            query = f"""SELECT c.*, CASE WHEN r.candidate_id IS NOT NULL THEN 1 ELSE 0 END AS has_resume_flag
+                        FROM candidates c LEFT JOIN resumes r ON c.id = r.candidate_id
+                        {qualified_where}"""
+            query += " ORDER BY c.job_category ASC, c.match_score DESC, c.last_updated DESC LIMIT ? OFFSET ?"
             data_params = params + [limit, offset]
             
             cursor.execute(query, data_params)
             rows = cursor.fetchall()
             
-            candidates = [self._row_to_candidate(row) for row in rows]
+            candidates = []
+            for row in rows:
+                c = self._row_to_candidate(row[:-1], check_resume=False)
+                c['hasResume'] = bool(row[-1])
+                candidates.append(c)
             return candidates, total_count
         finally:
             conn.close()
@@ -925,10 +1076,13 @@ class DatabaseService:
             total_count = cursor.fetchone()[0]
 
             # Minimal columns — skip education, workHistory, summary, resume_text, ai_analysis
-            cols = ("id, name, email, phone, location, skills, experience, "
-                    "match_score, status, job_category, job_subcategory, applied_date, linkedin")
-            query = f"SELECT {cols} FROM candidates {where_clause}"
-            query += " ORDER BY match_score DESC, last_updated DESC LIMIT ? OFFSET ?"
+            # Include hasResume via LEFT JOIN for efficient check
+            cols = ("c.id, c.name, c.email, c.phone, c.location, c.skills, c.experience, "
+                    "c.match_score, c.status, c.job_category, c.job_subcategory, c.applied_date, c.linkedin, "
+                    "CASE WHEN r.candidate_id IS NOT NULL THEN 1 ELSE 0 END AS has_resume_flag")
+            qualified_where = self._qualify_where(where_clause)
+            query = f"SELECT {cols} FROM candidates c LEFT JOIN resumes r ON c.id = r.candidate_id {qualified_where}"
+            query += " ORDER BY c.match_score DESC, c.last_updated DESC LIMIT ? OFFSET ?"
             cursor.execute(query, params + [limit, offset])
             rows = cursor.fetchall()
 
@@ -954,7 +1108,7 @@ class DatabaseService:
                         'jobSubcategory': row[10] or '',
                         'appliedDate': row[11] or '',
                         'linkedin': row[12] or '',
-                        'hasResume': False,
+                        'hasResume': bool(row[13]),  # from LEFT JOIN
                         'summary': '',
                         'education': [],
                         'workHistory': [],
@@ -1105,73 +1259,74 @@ class DatabaseService:
     def get_statistics(self) -> Dict:
         """Get database statistics for monitoring"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        # Total candidates
-        cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1")
-        total = cursor.fetchone()[0]
-        
-        # By category
-        cursor.execute("""
-            SELECT job_category, COUNT(*), AVG(match_score), MAX(match_score)
-            FROM candidates 
-            WHERE is_active = 1 
-            GROUP BY job_category
-        """)
-        categories = {}
-        for row in cursor.fetchall():
-            categories[row[0] or 'General'] = {
-                'count': row[1],
-                'avg_score': round(row[2] or 0, 1),
-                'max_score': round(row[3] or 0, 1)
+        try:
+            cursor = conn.cursor()
+            
+            # Total candidates
+            cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1")
+            total = cursor.fetchone()[0]
+            
+            # By category
+            cursor.execute("""
+                SELECT job_category, COUNT(*), AVG(match_score), MAX(match_score)
+                FROM candidates 
+                WHERE is_active = 1 
+                GROUP BY job_category
+            """)
+            categories = {}
+            for row in cursor.fetchall():
+                categories[row[0] or 'General'] = {
+                    'count': row[1],
+                    'avg_score': round(row[2] or 0, 1),
+                    'max_score': round(row[3] or 0, 1)
+                }
+            
+            # By subcategory within each category
+            cursor.execute("""
+                SELECT job_category, job_subcategory, COUNT(*)
+                FROM candidates 
+                WHERE is_active = 1 AND job_subcategory IS NOT NULL AND job_subcategory != ''
+                GROUP BY job_category, job_subcategory
+            """)
+            subcategory_stats = {}
+            for row in cursor.fetchall():
+                cat = row[0] or 'General'
+                sub = row[1] or 'Other'
+                if cat not in subcategory_stats:
+                    subcategory_stats[cat] = {}
+                subcategory_stats[cat][sub] = row[2]
+            
+            # Recent (last 24 hours)
+            cursor.execute("""
+                SELECT COUNT(*) FROM candidates 
+                WHERE is_active = 1 AND last_updated > datetime('now', '-1 day')
+            """)
+            recent = cursor.fetchone()[0]
+            
+            return {
+                'total_candidates': total,
+                'categories': categories,
+                'subcategories': subcategory_stats,
+                'recent_24h': recent
             }
-        
-        # By subcategory within each category
-        cursor.execute("""
-            SELECT job_category, job_subcategory, COUNT(*)
-            FROM candidates 
-            WHERE is_active = 1 AND job_subcategory IS NOT NULL AND job_subcategory != ''
-            GROUP BY job_category, job_subcategory
-        """)
-        subcategory_stats = {}
-        for row in cursor.fetchall():
-            cat = row[0] or 'General'
-            sub = row[1] or 'Other'
-            if cat not in subcategory_stats:
-                subcategory_stats[cat] = {}
-            subcategory_stats[cat][sub] = row[2]
-        
-        # Recent (last 24 hours)
-        cursor.execute("""
-            SELECT COUNT(*) FROM candidates 
-            WHERE is_active = 1 AND last_updated > datetime('now', '-1 day')
-        """)
-        recent = cursor.fetchone()[0]
-        
-        conn.close()
-        
-        return {
-            'total_candidates': total,
-            'categories': categories,
-            'subcategories': subcategory_stats,
-            'recent_24h': recent
-        }
+        finally:
+            conn.close()
     
     def get_new_candidates_since(self, since_date: str) -> List[Dict]:
         """Get only NEW candidates since specific date (incremental processing)"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT * FROM candidates 
-            WHERE last_updated > ? AND is_active = 1
-            ORDER BY last_updated DESC
-        """, (since_date,))
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        return [self._row_to_candidate(row) for row in rows]
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM candidates 
+                WHERE last_updated > ? AND is_active = 1
+                ORDER BY last_updated DESC
+                LIMIT 5000
+            """, (since_date,))
+            rows = cursor.fetchall()
+            return [self._row_to_candidate(row) for row in rows]
+        finally:
+            conn.close()
     
     def mark_email_processed(self, message_id: str, candidate_id: str, action: str):
         """Track processed emails to prevent reprocessing"""
@@ -1218,6 +1373,144 @@ class DatabaseService:
         except Exception:
             return 0
     
+    def get_all_processed_message_ids(self) -> set:
+        """Return set of all processed email message_ids for fast cross-verify lookup."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT message_id FROM email_processing_log")
+            return {row[0] for row in cursor.fetchall()}
+        except Exception:
+            return set()
+        finally:
+            conn.close()
+
+    def clear_processing_log_since(self, since_date: str) -> int:
+        """Delete email_processing_log entries processed on or after since_date (ISO format).
+        Returns count of deleted entries. This allows re-processing of previously skipped emails."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM email_processing_log WHERE processed_at >= ?", (since_date,))
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
+    def clear_no_candidate_entries(self) -> int:
+        """Delete all email_processing_log entries with action='no-candidate'.
+        Allows re-processing emails that previously yielded no candidate."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM email_processing_log WHERE action = 'no-candidate'")
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
+    def clear_all_blocked_entries(self) -> int:
+        """Delete ALL blocked/failed entries from email_processing_log.
+        This includes no-candidate, blocked-bad-name, blocked-system-email,
+        blocked-indeed-relay. Keeps successfully processed entries (inserted/updated)."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "DELETE FROM email_processing_log WHERE action NOT IN ('inserted', 'updated')"
+            )
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
+    def clear_orphaned_processing_entries(self) -> int:
+        """Delete processing log entries where action='inserted'/'updated' but 
+        the referenced candidate no longer exists in the candidates table.
+        This handles the case where candidates were lost during DB restore."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            # Find orphaned entries: marked as inserted/updated but candidate_id 
+            # doesn't exist in candidates table
+            cursor.execute("""
+                DELETE FROM email_processing_log 
+                WHERE action IN ('inserted', 'updated')
+                AND candidate_id != ''
+                AND candidate_id IS NOT NULL
+                AND candidate_id NOT IN (SELECT id FROM candidates)
+            """)
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
+    def clear_all_processing_entries(self) -> int:
+        """Nuclear option: Delete ALL entries from email_processing_log.
+        Forces complete re-processing of every email in the inbox."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM email_processing_log")
+            deleted = cursor.rowcount
+            conn.commit()
+            return deleted
+        except Exception:
+            return 0
+        finally:
+            conn.close()
+
+    def get_all_candidate_emails(self) -> list:
+        """Return list of (id, email) tuples for all active candidates."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, email FROM candidates WHERE is_active = 1 OR is_active IS NULL")
+            return [(row[0], row[1]) for row in cursor.fetchall() if row[1]]
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
+    def get_all_resume_candidate_ids(self) -> set:
+        """Return set of candidate_ids that already have a resume stored."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT candidate_id FROM resumes")
+            return {row[0] for row in cursor.fetchall()}
+        except Exception:
+            return set()
+        finally:
+            conn.close()
+
+    def get_candidate_message_ids(self) -> list:
+        """Return list of (message_id, candidate_id) for emails that produced a candidate."""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT message_id, candidate_id FROM email_processing_log "
+                "WHERE candidate_id != '' AND action IN ('inserted', 'updated')"
+            )
+            return [(row[0], row[1]) for row in cursor.fetchall()]
+        except Exception:
+            return []
+        finally:
+            conn.close()
+
     def get_sync_metadata(self, key: str) -> Optional[str]:
         """Get a persisted sync metadata value (e.g. last_email_sync_time)"""
         conn = self.get_connection_raw()
@@ -1442,14 +1735,17 @@ class DatabaseService:
         
         # Check if resume exists (optional to avoid N+1 queries)
         if check_resume:
+            conn = None
             try:
                 conn = self.get_connection_raw()
                 cursor = conn.cursor()
                 cursor.execute("SELECT 1 FROM resumes WHERE candidate_id = ?", (row[0],))
                 candidate['hasResume'] = cursor.fetchone() is not None
-                conn.close()
             except Exception:
                 pass
+            finally:
+                if conn:
+                    conn.close()
         
         return candidate
     
@@ -1512,55 +1808,152 @@ class DatabaseService:
         Optimizes token usage - doesn't reprocess 10,000s
         """
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT c.* FROM candidates c
-            LEFT JOIN ai_score_cache a ON c.id = a.candidate_id AND a.job_id = ?
-            WHERE c.is_active = 1 AND a.candidate_id IS NULL
-            ORDER BY c.last_updated DESC
-        """, (job_id,))
-        
-        rows = cursor.fetchall()
-        conn.close()
-        
-        return [self._row_to_candidate(row) for row in rows]
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT c.* FROM candidates c
+                LEFT JOIN ai_score_cache a ON c.id = a.candidate_id AND a.job_id = ?
+                WHERE c.is_active = 1 AND a.candidate_id IS NULL
+                ORDER BY c.last_updated DESC
+            """, (job_id,))
+            
+            rows = cursor.fetchall()
+            return [self._row_to_candidate(row) for row in rows]
+        finally:
+            conn.close()
     
     def save_resume(self, candidate_id: str, filename: str, file_data: bytes, content_type: str = 'application/pdf'):
         """Save resume file to database"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            INSERT OR REPLACE INTO resumes (candidate_id, filename, content_type, file_data, uploaded_at)
-            VALUES (?, ?, ?, ?, ?)
-        """, (candidate_id, filename, content_type, file_data, datetime.now().isoformat()))
-        
-        conn.commit()
-        conn.close()
-        logger.info(f"📄 Saved resume for candidate {candidate_id}: {filename}")
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT OR REPLACE INTO resumes (candidate_id, filename, content_type, file_data, uploaded_at)
+                VALUES (?, ?, ?, ?, ?)
+            """, (candidate_id, filename, content_type, file_data, datetime.now().isoformat()))
+            
+            conn.commit()
+            logger.info(f"📄 Saved resume for candidate {candidate_id}: {filename}")
+        finally:
+            conn.close()
     
     def get_resume(self, candidate_id: str) -> Optional[Dict]:
         """Get resume file from database"""
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
-        cursor.execute("""
-            SELECT filename, content_type, file_data, uploaded_at
-            FROM resumes WHERE candidate_id = ?
-        """, (candidate_id,))
-        
-        row = cursor.fetchone()
-        conn.close()
-        
-        if row:
-            return {
-                'filename': row[0],
-                'content_type': row[1],
-                'file_data': row[2],
-                'uploaded_at': row[3]
-            }
-        return None
+        try:
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT filename, content_type, file_data, uploaded_at
+                FROM resumes WHERE candidate_id = ?
+            """, (candidate_id,))
+            
+            row = cursor.fetchone()
+            
+            if row:
+                return {
+                    'filename': row[0],
+                    'content_type': row[1],
+                    'file_data': row[2],
+                    'uploaded_at': row[3]
+                }
+            return None
+        finally:
+            conn.close()
+
+    # ── Search History ──────────────────────────────────────────────────
+    def save_search(self, search_id: str, query: str, description: str, result_count: int, top_results: list, user_id: str = ""):
+        """Save a search to history"""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO search_history (id, query, description, result_count, top_results, searched_at, user_id)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (search_id, query, description, result_count, json.dumps(top_results), datetime.now().isoformat(), user_id))
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Error saving search: {e}")
+        finally:
+            conn.close()
+
+    def get_search_history(self, limit: int = 50) -> list:
+        """Get recent search history"""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            # Ensure table exists (migration for existing DBs)
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS search_history (
+                    id TEXT PRIMARY KEY,
+                    query TEXT NOT NULL,
+                    description TEXT,
+                    result_count INTEGER DEFAULT 0,
+                    top_results TEXT,
+                    searched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    user_id TEXT
+                )
+            """)
+            cursor.execute("""
+                SELECT id, query, description, result_count, top_results, searched_at
+                FROM search_history ORDER BY searched_at DESC LIMIT ?
+            """, (limit,))
+            rows = cursor.fetchall()
+            results = []
+            for row in rows:
+                top = []
+                try:
+                    top = json.loads(row[4]) if row[4] else []
+                except Exception:
+                    pass
+                results.append({
+                    'id': row[0],
+                    'query': row[1],
+                    'description': row[2] or '',
+                    'result_count': row[3],
+                    'top_results': top,
+                    'searched_at': row[5],
+                })
+            return results
+        except Exception as e:
+            logger.error(f"Error getting search history: {e}")
+            return []
+        finally:
+            conn.close()
+
+    def clear_search_history(self):
+        """Clear all search history"""
+        conn = self.get_connection_raw()
+        try:
+            conn.execute("DELETE FROM search_history")
+            conn.commit()
+        except Exception as e:
+            logger.error(f"Error clearing search history: {e}")
+        finally:
+            conn.close()
+
+    # ── Pipeline Status Counts ──────────────────────────────────────────
+    def get_pipeline_counts(self) -> dict:
+        """Get candidate counts by status for pipeline dashboard"""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT status, COUNT(*) FROM candidates
+                WHERE is_active = 1
+                GROUP BY status
+            """)
+            counts = {}
+            for row in cursor.fetchall():
+                counts[row[0] or 'New'] = row[1]
+            return counts
+        except Exception as e:
+            logger.error(f"Error getting pipeline counts: {e}")
+            return {}
+        finally:
+            conn.close()
 
 # Singleton
 _db_service = None

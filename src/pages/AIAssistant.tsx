@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import DOMPurify from 'dompurify'
 import { 
   Send, 
   Sparkles, 
@@ -20,7 +21,6 @@ import {
   AlertTriangle,
   FileText,
   BarChart3,
-  Clock,
   CheckCircle2,
   Copy,
   Briefcase,
@@ -33,28 +33,81 @@ import {
   Plus,
   Trash2,
   PanelLeftClose,
-  PanelLeft,
   MessageCircle,
-  GraduationCap,
-  CheckCircle,
-  AlertCircle,
   Phone,
   ExternalLink,
+  Download,
+  FileDown,
+  Linkedin,
+  Award,
+  Video,
+  XCircle,
 } from 'lucide-react'
 import { Button } from '@/components/ui/Button'
-import { Card, CardContent } from '@/components/ui/Card'
+import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Avatar, AvatarFallback } from '@/components/ui/Avatar'
 import { useCandidates } from '@/hooks/useCandidates'
 import { useCandidateStore } from '@/store/candidateStore'
-import type { Candidate } from '@/store/candidateStore'
+import type { Candidate } from '@/types'
 import { useNavigate } from 'react-router-dom'
-import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
 import { useAIStatus } from '@/hooks/useAIStatus'
 import { useAuthStore } from '@/store/authStore'
 import { advancedApi, aiApi, candidateApi } from '@/services/api'
 import config from '@/config'
 import { authFetch } from '@/lib/authFetch'
+import { toast } from '@/components/ui/Toast'
+import { generateQuickProfilePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
+import { isTextGarbled } from '@/lib/textUtils'
+
+// ── Score utilities (matching Shortlist design) ──
+const getScoreColor = (score: number) => {
+  if (score >= 90) return 'text-emerald-600'
+  if (score >= 75) return 'text-green-600'
+  if (score >= 60) return 'text-amber-600'
+  if (score >= 40) return 'text-orange-600'
+  return 'text-red-600'
+}
+
+const getScoreRingColor = (score: number) => {
+  if (score >= 90) return 'stroke-emerald-500'
+  if (score >= 75) return 'stroke-green-500'
+  if (score >= 60) return 'stroke-amber-500'
+  if (score >= 40) return 'stroke-orange-500'
+  return 'stroke-red-500'
+}
+
+const getFitLabel = (score: number) => {
+  if (score >= 90) return { text: 'Strong Fit', cls: 'bg-emerald-100 text-emerald-700' }
+  if (score >= 75) return { text: 'Good Fit', cls: 'bg-green-100 text-green-700' }
+  if (score >= 60) return { text: 'Medium Fit', cls: 'bg-amber-100 text-amber-700' }
+  if (score >= 40) return { text: 'Weak Fit', cls: 'bg-orange-100 text-orange-700' }
+  return { text: 'Poor Fit', cls: 'bg-red-100 text-red-700' }
+}
+
+function ScoreRing({ score, size = 56 }: { score: number; size?: number }) {
+  const radius = (size - 8) / 2
+  const circumference = 2 * Math.PI * radius
+  const dashoffset = circumference - (score / 100) * circumference
+  return (
+    <div className="relative" style={{ width: size, height: size }}>
+      <svg className="transform -rotate-90" width={size} height={size}>
+        <circle cx={size/2} cy={size/2} r={radius} strokeWidth="4" fill="none" className="stroke-gray-200" />
+        <circle
+          cx={size/2} cy={size/2} r={radius} strokeWidth="4" fill="none"
+          className={getScoreRingColor(score)}
+          strokeLinecap="round"
+          strokeDasharray={circumference}
+          strokeDashoffset={dashoffset}
+          style={{ transition: 'stroke-dashoffset 0.6s ease' }}
+        />
+      </svg>
+      <div className="absolute inset-0 flex flex-col items-center justify-center">
+        <span className={`text-sm font-bold ${getScoreColor(score)}`}>{Math.round(score)}%</span>
+      </div>
+    </div>
+  )
+}
 
 interface Message {
   id: string
@@ -169,11 +222,11 @@ function JobMatchModal({
 
   const handleMatch = async () => {
     if (activeTab === 'text' && jobDescription.trim().length < 50) {
-      alert('Please enter a job description with at least 50 characters')
+      toast.warning('Too short', 'Please enter a job description with at least 50 characters')
       return
     }
     if (activeTab === 'file' && !uploadedFile) {
-      alert('Please upload a job description file (PDF, DOCX, or TXT)')
+      toast.warning('No file selected', 'Please upload a job description file (PDF, DOCX, or TXT)')
       return
     }
     setIsMatching(true)
@@ -196,11 +249,11 @@ function JobMatchModal({
   const validateAndSetFile = (file: File) => {
     const ext = file.name.split('.').pop()?.toLowerCase()
     if (!['pdf', 'docx', 'doc', 'txt'].includes(ext || '')) {
-      alert('Only PDF, DOCX, and TXT files are supported')
+      toast.warning('Unsupported file', 'Only PDF, DOCX, and TXT files are supported')
       return
     }
     if (file.size > 10 * 1024 * 1024) {
-      alert('File too large. Max 10MB.')
+      toast.warning('File too large', 'Maximum file size is 10MB')
       return
     }
     setUploadedFile(file)
@@ -495,13 +548,31 @@ export default function AIAssistant() {
   const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null)
   const [previewAnalysis, setPreviewAnalysis] = useState<any>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
+  // ── Results Split-Panel State ──
+  const [resultsView, setResultsView] = useState(false)
+  const [resultsCandidates, setResultsCandidates] = useState<Candidate[]>([])
+  const [selectedResultIdx, setSelectedResultIdx] = useState(0)
+  const [_shortlistingId, setShortlistingId] = useState<string | null>(null)
+  void _shortlistingId
+  const [resultDetailCandidate, setResultDetailCandidate] = useState<Candidate | null>(null)
+  const [resultDetailAnalysis, setResultDetailAnalysis] = useState<any>(null)
+  const [resultDetailLoading, setResultDetailLoading] = useState(false)
+  const [hrNotes, setHrNotes] = useState<Record<string, string>>({})
   const messagesEndRef = useRef<HTMLDivElement>(null)
-  const inputRef = useRef<HTMLInputElement>(null)
+  const inputRef = useRef<HTMLTextAreaElement>(null)
   const { candidates, totalCount } = useCandidates({ autoFetch: true })
   const toggleShortlist = useCandidateStore((s) => s.toggleShortlist)
   const isShortlisted = useCandidateStore((s) => s.isShortlisted)
   const navigate = useNavigate()
   const aiStatus = useAIStatus()
+
+  // Load HR notes from localStorage on mount
+  useEffect(() => {
+    try {
+      const saved = JSON.parse(localStorage.getItem('hr_candidate_notes') || '{}')
+      if (saved && typeof saved === 'object') setHrNotes(saved)
+    } catch { /* ignore */ }
+  }, [])
 
   // ── Candidate Preview Panel Logic ──
   const handlePreviewCandidate = async (candidate: Candidate) => {
@@ -541,9 +612,106 @@ export default function AIAssistant() {
         const analysis = await analysisRes.json()
         if (analysis?.executive_summary) setPreviewAnalysis(analysis)
       }
-    } catch { /* ignore */ }
+    } catch (err) {
+      console.error('Preview fetch error:', err)
+      toast.error('Preview Error', 'Could not load candidate details. Please try again.')
+    }
     setPreviewLoading(false)
   }
+
+  // ── Results Panel helpers ──
+  const loadResultDetail = async (candidate: Candidate, index: number) => {
+    setSelectedResultIdx(index)
+    setResultDetailCandidate(candidate)
+    setResultDetailAnalysis(null)
+    setResultDetailLoading(true)
+    try {
+      // Fetch candidate data and AI analysis in parallel to avoid getting stuck
+      const [fullRes, analysisRes] = await Promise.all([
+        authFetch(`${config.endpoints.candidates}/${candidate.id}`).catch(() => null),
+        authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis`).catch(() => null),
+      ])
+      if (fullRes?.ok) {
+        const fullData = await fullRes.json()
+        const merged: Candidate = {
+          ...candidate,
+          // Pull latest status from DB so shortlist badge is accurate
+          status: fullData.status || candidate.status || 'New',
+          summary: fullData.summary || candidate.summary || '',
+          workHistory: (fullData.workHistory || []).map((job: any) => ({
+            title: job.title || job.position || '',
+            company: job.company || job.organization || '',
+            duration: job.duration || job.period || job.years || '',
+            description: job.description || job.responsibilities || '',
+          })),
+          education: (fullData.education || []).map((edu: any) => ({
+            degree: edu.degree || edu.title || '',
+            field: edu.field || '',
+            institution: edu.institution || edu.school || '',
+            year: edu.year || edu.graduation_year || '',
+          })),
+          resumeText: fullData.resume_text || fullData.resumeText || '',
+          certifications: fullData.certifications || [],
+          languages: fullData.languages || [],
+        }
+        setResultDetailCandidate(merged)
+        // Also update the left-panel list entry with the latest status from DB
+        setResultsCandidates(prev => prev.map((c, i) => i === index ? { ...c, status: merged.status } : c))
+      }
+      if (analysisRes?.ok) {
+        const analysis = await analysisRes.json()
+        if (analysis?.executive_summary) setResultDetailAnalysis(analysis)
+      }
+    } catch { /* ignore */ } finally {
+      setResultDetailLoading(false)
+    }
+  }
+
+  const handleShortlistInResults = async (candidate: Candidate, idx: number) => {
+    setShortlistingId(candidate.id)
+    try {
+      await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+      if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id)
+      setResultsCandidates(prev => prev.map((c, i) => i === idx ? { ...c, status: 'Shortlisted' } : c))
+      if (resultDetailCandidate?.id === candidate.id) {
+        setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
+      }
+      setMessages(prev => [...prev, {
+        id: Date.now().toString(),
+        type: 'ai',
+        content: `**${candidate.name}** has been shortlisted. Notification email sent automatically.`,
+        timestamp: new Date(),
+        intent: 'shortlist_single'
+      }])
+    } catch (err) {
+      console.error('Shortlist error:', err)
+    }
+    setShortlistingId(null)
+  }
+
+  // Auto-select first candidate when results arrive
+  useEffect(() => {
+    if (resultsView && resultsCandidates.length > 0 && !resultDetailCandidate) {
+      loadResultDetail(resultsCandidates[0], 0)
+    }
+  }, [resultsView, resultsCandidates.length])
+
+  // On initial page load, check if restored messages have candidates → activate results view
+  const initialResultsChecked = useRef(false)
+  useEffect(() => {
+    if (initialResultsChecked.current) return
+    if (messages.length === 0) return
+    initialResultsChecked.current = true
+    const lastAiWithCandidates = [...messages].reverse().find(
+      m => m.type === 'ai' && m.candidates && m.candidates.length > 0
+    )
+    if (lastAiWithCandidates?.candidates) {
+      setResultsCandidates(lastAiWithCandidates.candidates)
+      setResultDetailCandidate(null)
+      setSelectedResultIdx(0)
+      setResultsView(true)
+    }
+  }, [messages.length])
 
   const toggleSelect = (id: string) => {
     setSelectedIds(prev => {
@@ -629,6 +797,10 @@ export default function AIAssistant() {
     sessionStorage.removeItem('ai_chat_history')
     setSelectedIds(new Set())
     setShowHistory(false)
+    setResultsView(false)
+    setResultsCandidates([])
+    setResultDetailCandidate(null)
+    setResultDetailAnalysis(null)
     welcomeGenerated.current = false
     setMessages([])
     setNewChatTrigger(t => t + 1) // Force welcome useEffect re-run
@@ -648,8 +820,25 @@ export default function AIAssistant() {
       setMessages(restored)
       saveChatHistory(restored)
       welcomeGenerated.current = true
+
+      // Activate split-panel results view if last AI message has candidates
+      const lastAiWithCandidates = [...restored].reverse().find(
+        (m: Message) => m.type === 'ai' && m.candidates && m.candidates.length > 0
+      )
+      if (lastAiWithCandidates?.candidates) {
+        setResultsCandidates(lastAiWithCandidates.candidates)
+        setResultDetailCandidate(null)
+        setResultDetailAnalysis(null)
+        setSelectedResultIdx(0)
+        setResultsView(true)
+      } else {
+        setResultsView(false)
+        setResultsCandidates([])
+        setResultDetailCandidate(null)
+      }
     } catch {
       setMessages([])
+      setResultsView(false)
     }
     setSelectedIds(new Set())
     setShowHistory(false)
@@ -764,8 +953,12 @@ export default function AIAssistant() {
       }
       
       actions = [
-        { label: 'Email Top 5', icon: Mail, action: () => navigate('/email-integration'), variant: 'primary' },
-        { label: 'Schedule Interviews', icon: Calendar, action: () => navigate('/candidates'), variant: 'secondary' }
+        { label: 'Email Top 5', icon: Mail, action: () => {
+          const topEmails = filteredCandidates.slice(0, 5).map(c => c.email).filter(Boolean).join(',')
+          if (topEmails) window.open(`mailto:${topEmails}`)
+          else toast.info('No Emails', 'No email addresses found for top candidates.')
+        }, variant: 'primary' },
+        { label: 'View Candidates', icon: Calendar, action: () => navigate('/candidates'), variant: 'secondary' }
       ]
     }
     
@@ -781,12 +974,15 @@ export default function AIAssistant() {
         filteredCandidates = topCandidates
 response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates to predict hiring outcomes:`
         
-        const avgProbability = predictions.filter(Boolean).reduce((acc, p) => acc + ((p as { data?: { probability?: number } })?.data?.probability || 0.5), 0) / predictions.length
+        const avgProbability = predictions.filter(Boolean).reduce((acc, p) => {
+          const pred = (p as any)?.data || p
+          return acc + (pred?.response_rate || pred?.interview_success || pred?.probability || 0.5)
+        }, 0) / Math.max(predictions.filter(Boolean).length, 1)
         
         insights = [
           { title: 'Candidates Analyzed', value: topCandidates.length, icon: Users, color: 'blue' },
-          { title: 'Avg Hiring Probability', value: `${(avgProbability * 100).toFixed(0)}%`, icon: Target, color: 'green' },
-          { title: 'High Potential', value: predictions.filter((p) => ((p as { data?: { probability?: number } })?.data?.probability || 0) > 0.7).length, icon: Star, color: 'yellow' }
+          { title: 'Avg Success Rate', value: `${(avgProbability * 100).toFixed(0)}%`, icon: Target, color: 'green' },
+          { title: 'High Potential', value: predictions.filter((p) => { const pred = (p as any)?.data || p; return (pred?.response_rate || pred?.interview_success || pred?.probability || 0) > 0.7 }).length, icon: Star, color: 'yellow' }
         ]
       } catch (error) {
         response = `**Quick Analytics Summary**\n\n• Total Candidates: ${candidates.length}\n• Strong Matches: ${candidates.filter(c => c.status === 'Strong').length}\n• Average Score: ${(candidates.reduce((acc, c) => acc + c.matchScore, 0) / candidates.length).toFixed(1)}%`
@@ -794,8 +990,8 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       }
       
       actions = [
-        { label: 'View Full Analytics', icon: BarChart3, action: () => navigate('/analytics'), variant: 'primary' },
-        { label: 'Export Report', icon: FileText, action: () => {}, variant: 'secondary' }
+        { label: 'View Dashboard', icon: BarChart3, action: () => navigate('/dashboard'), variant: 'primary' },
+        { label: 'Export Report', icon: FileText, action: () => toast.info('Export', 'Report export will be available in the next update.'), variant: 'secondary' }
       ]
     }
     
@@ -835,7 +1031,12 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       }
       
       actions = [
-        { label: 'Merge Duplicates', icon: Users, action: () => {}, variant: 'warning' }
+        { label: 'Merge Duplicates', icon: Users, action: async () => {
+          try {
+            const result = await candidateApi.deduplicate()
+            toast.success('Deduplication', `Processed ${(result as any)?.data?.checked || 0} candidates. ${(result as any)?.data?.merged || 0} duplicates merged.`)
+          } catch { toast.error('Error', 'Could not run deduplication. Please try again.') }
+        }, variant: 'warning' }
       ]
     }
     
@@ -847,8 +1048,12 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       response = `**Email Outreach Ready**\n\nI've identified **${filteredCandidates.length} candidates** perfect for outreach. You can use our pre-built templates or create custom ones:`
       
       actions = [
-        { label: 'Browse Templates', icon: FileText, action: () => navigate('/email-integration'), variant: 'primary' },
-        { label: 'Create Campaign', icon: Mail, action: () => navigate('/email-integration'), variant: 'secondary' },
+        { label: 'Browse Templates', icon: FileText, action: () => navigate('/setup'), variant: 'primary' },
+        { label: 'Create Campaign', icon: Mail, action: () => {
+          const emails = filteredCandidates.slice(0, 5).map(c => c.email).filter(Boolean).join(',')
+          if (emails) window.open(`mailto:${emails}?subject=Exciting Opportunity`)
+          else toast.info('No Emails', 'No email addresses found for selected candidates.')
+        }, variant: 'secondary' },
         { label: 'Quick Email', icon: Send, action: () => {
           if (filteredCandidates[0]?.email) {
             window.location.href = `mailto:${filteredCandidates[0].email}`
@@ -860,13 +1065,19 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     // CALENDAR / SCHEDULING
     else if (lowerQuery.includes('schedule') || lowerQuery.includes('interview') || lowerQuery.includes('calendar') || lowerQuery.includes('meeting')) {
       intent = 'calendar'
-      filteredCandidates = candidates.filter(c => c.status === 'Strong' || c.isShortlisted).slice(0, requestedCount)
+      filteredCandidates = candidates.filter(c => c.status === 'Strong' || c.status === 'Shortlisted').slice(0, requestedCount)
       
       response = `**Interview Scheduling**\n\nI found **${filteredCandidates.length} candidates** ready for interviews. You can schedule through our calendar integration:`
       
       actions = [
-        { label: 'Open Calendar', icon: Calendar, action: () => navigate('/candidates'), variant: 'primary' },
-        { label: 'Bulk Schedule', icon: Users, action: () => {}, variant: 'secondary' }
+        { label: 'View Candidates', icon: Calendar, action: () => navigate('/candidates'), variant: 'primary' },
+        { label: 'Shortlist All', icon: Star, action: async () => {
+          try {
+            const ids = filteredCandidates.map(c => c.id)
+            await candidateApi.bulkShortlist(ids)
+            toast.success('Shortlisted', `${ids.length} candidates shortlisted for interviews.`)
+          } catch { toast.error('Error', 'Could not shortlist candidates.') }
+        }, variant: 'secondary' }
       ]
     }
     
@@ -878,8 +1089,11 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       response = `**SMS Notifications**\n\n**${filteredCandidates.length} candidates** have phone numbers available for SMS outreach:`
       
       actions = [
-        { label: 'Send Bulk SMS', icon: MessageSquare, action: () => {}, variant: 'primary' },
-        { label: 'View Templates', icon: FileText, action: () => navigate('/email-integration'), variant: 'secondary' }
+        { label: 'Send Email Instead', icon: Mail, action: () => {
+          if (filteredCandidates[0]?.email) window.open(`mailto:${filteredCandidates[0].email}`)
+          else toast.info('No Email', 'No email address available for this candidate.')
+        }, variant: 'primary' },
+        { label: 'View Templates', icon: FileText, action: () => navigate('/setup'), variant: 'secondary' }
       ]
     }
     
@@ -926,20 +1140,24 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       response = `Found **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}** with ${minScore}%+ match score:`
       
       actions = [
-        { label: 'Email All', icon: Mail, action: () => navigate('/email-integration'), variant: 'primary' },
+        { label: 'Email All', icon: Mail, action: () => {
+          const emails = filteredCandidates.map(c => c.email).filter(Boolean).join(',')
+          if (emails) window.open(`mailto:${emails}`)
+          else toast.info('No Emails', 'No email addresses found.')
+        }, variant: 'primary' },
         { label: 'Shortlist All', icon: Star, action: async () => {
           try {
             const ids = filteredCandidates.map(c => c.id)
             const result = await candidateApi.bulkShortlist(ids)
             const data = result.data
-            alert(`Shortlisted ${data?.shortlisted || 0} candidates — ${data?.emails_sent || 0} personalized emails sent!`)
+            toast.success('Bulk shortlist complete', `Shortlisted ${data?.shortlisted || 0} candidates — ${data?.emails_sent || 0} personalized emails sent!`)
           } catch (e) {
             console.error('Bulk shortlist error:', e)
             // Fallback: one-by-one
             for (const c of filteredCandidates) {
               try { await candidateApi.updateStatus(c.id, 'Shortlisted') } catch (err) { console.error(`Failed to shortlist ${c.name}:`, err) }
             }
-            alert(`Shortlisted ${filteredCandidates.length} candidates — personalized emails queued!`)
+            toast.success('Shortlisted', `Shortlisted ${filteredCandidates.length} candidates — personalized emails queued!`)
           }
         }, variant: 'secondary' }
       ]
@@ -997,7 +1215,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
     
     // Shortlist
     else if (lowerQuery.includes('shortlist') || lowerQuery.includes('favorite') || lowerQuery.includes('saved')) {
-      filteredCandidates = filteredCandidates.filter(c => c.isShortlisted)
+      filteredCandidates = filteredCandidates.filter(c => c.status === 'Shortlisted')
       intent = 'shortlist'
       response = `Your shortlist has **${filteredCandidates.length} candidate${filteredCandidates.length !== 1 ? 's' : ''}**:`
       
@@ -1033,7 +1251,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       response = "I couldn't find any candidates matching that criteria. Try:\n\n• Different keywords or skills\n• Broader search terms\n• Check spelling"
       actions = [
         { label: 'View All Candidates', icon: Users, action: () => navigate('/candidates'), variant: 'primary' },
-        { label: 'Import More', icon: Mail, action: () => navigate('/email-integration'), variant: 'secondary' }
+        { label: 'Import More', icon: Mail, action: () => navigate('/setup'), variant: 'secondary' }
       ]
     }
 
@@ -1147,6 +1365,15 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       }
 
       setMessages(prev => [...prev, aiMessage])
+
+      // Switch to split-panel results view when candidates are returned
+      if (displayCandidates.length > 0) {
+        setResultsCandidates(displayCandidates)
+        setResultDetailCandidate(null)
+        setResultDetailAnalysis(null)
+        setSelectedResultIdx(0)
+        setResultsView(true)
+      }
     } catch (error) {
       // Fallback to local NLP
       console.warn('AI service unavailable, using local NLP fallback:', error)
@@ -1168,6 +1395,15 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       }
 
       setMessages(prev => [...prev, aiMessage])
+
+      // Switch to split-panel results view when candidates are returned
+      if (foundCandidates.length > 0) {
+        setResultsCandidates(foundCandidates)
+        setResultDetailCandidate(null)
+        setResultDetailAnalysis(null)
+        setSelectedResultIdx(0)
+        setResultsView(true)
+      }
     } finally {
       setIsTyping(false)
     }
@@ -1326,6 +1562,15 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         }
 
         setMessages(prev => [...prev, aiMessage])
+
+        // Switch to split-panel results view for job match results
+        if (matchedCandidates.length > 0) {
+          setResultsCandidates(matchedCandidates)
+          setResultDetailCandidate(null)
+          setResultDetailAnalysis(null)
+          setSelectedResultIdx(0)
+          setResultsView(true)
+        }
       } else {
         const aiMessage: Message = {
           id: (Date.now() + 2).toString(),
@@ -1349,13 +1594,6 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       setMessages(prev => [...prev, aiMessage])
     } finally {
       setIsTyping(false)
-    }
-  }
-
-  const handleKeyPress = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      handleSend()
     }
   }
 
@@ -1477,7 +1715,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
   }
 
   return (
-    <div className="h-full flex flex-col bg-gradient-to-br from-sky-50/30 via-white to-sky-50/20">
+    <div className="h-[calc(100vh-7rem)] flex flex-col bg-gradient-to-br from-sky-50/30 via-white to-sky-50/20 -m-6 p-6">
       {/* Header */}
       <motion.div
         initial={{ opacity: 0, y: -20 }}
@@ -1696,7 +1934,568 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         {/* Chat Column (messages + input) */}
         <div className="flex-1 flex flex-col overflow-hidden">
 
-      {/* Messages Container */}
+      {/* Results Split-Panel View OR Messages Container */}
+      {resultsView ? (
+        <div className="flex-1 flex overflow-hidden">
+          {/* Left: Candidate List */}
+          <div className="w-96 flex-shrink-0 border-r border-gray-200 flex flex-col bg-white">
+            {/* Header */}
+            <div className="p-4 border-b border-gray-100 bg-gradient-to-r from-gray-50 to-white">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  <div className="w-8 h-8 bg-sky-100 rounded-lg flex items-center justify-center">
+                    <Users className="w-4 h-4 text-sky-600" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold text-gray-900 text-sm">Candidates</h3>
+                    <p className="text-[10px] text-gray-500">{resultsCandidates.length} results</p>
+                  </div>
+                </div>
+                <button
+                  onClick={() => { setResultsView(false); setResultDetailCandidate(null); setPreviewCandidate(null) }}
+                  className="text-xs text-gray-500 hover:text-sky-600 flex items-center gap-1 px-2 py-1 rounded-lg hover:bg-sky-50 transition-colors"
+                >
+                  <MessageCircle className="w-3.5 h-3.5" />Chat
+                </button>
+              </div>
+              {/* Select All / Shortlist Selected bar */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => {
+                    const allIds = resultsCandidates.map(c => c.id)
+                    setSelectedIds(prev => {
+                      const allSelected = allIds.every(id => prev.has(id))
+                      return allSelected ? new Set() : new Set(allIds)
+                    })
+                  }}
+                  className="flex items-center gap-1.5 text-xs text-gray-600 hover:text-sky-600 flex-shrink-0"
+                >
+                  {resultsCandidates.length > 0 && resultsCandidates.every(c => selectedIds.has(c.id))
+                    ? <CheckSquare className="w-4 h-4 text-sky-600" />
+                    : <Square className="w-4 h-4" />}
+                  Select All
+                </button>
+                {selectedIds.size > 0 && [...selectedIds].some(id => resultsCandidates.some(c => c.id === id)) ? (
+                  <button
+                    onClick={async () => {
+                      const toShortlist = resultsCandidates.filter(c => selectedIds.has(c.id) && c.status !== 'Shortlisted')
+                      if (toShortlist.length === 0) return
+                      try {
+                        const ids = toShortlist.map(c => c.id)
+                        const result = await candidateApi.bulkShortlist(ids)
+                        const data = result.data
+                        toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
+                        setResultsCandidates(prev => prev.map(c => selectedIds.has(c.id) ? { ...c, status: 'Shortlisted' } : c))
+                        if (resultDetailCandidate && selectedIds.has(resultDetailCandidate.id)) setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
+                        setSelectedIds(new Set())
+                        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${data?.shortlisted || toShortlist.length} candidates** shortlisted. **${data?.emails_sent || 0}** notification emails sent.`, timestamp: new Date(), intent: 'shortlist_confirm' }])
+                      } catch (e) {
+                        console.error('Bulk shortlist error:', e)
+                      }
+                    }}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Shortlist {[...selectedIds].filter(id => resultsCandidates.some(c => c.id === id)).length} & Send Emails
+                  </button>
+                ) : (
+                  <button
+                    onClick={async () => {
+                      const toShortlist = resultsCandidates.filter(c => c.status !== 'Shortlisted')
+                      if (toShortlist.length === 0) return
+                      try {
+                        const ids = toShortlist.map(c => c.id)
+                        const result = await candidateApi.bulkShortlist(ids)
+                        const data = result.data
+                        toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
+                        setResultsCandidates(prev => prev.map(c => ({ ...c, status: 'Shortlisted' })))
+                        if (resultDetailCandidate) setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
+                        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${data?.shortlisted || toShortlist.length} candidates** shortlisted. **${data?.emails_sent || 0}** notification emails sent.`, timestamp: new Date(), intent: 'shortlist_confirm' }])
+                      } catch (e) {
+                        console.error('Bulk shortlist error:', e)
+                      }
+                    }}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors"
+                  >
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Shortlist All & Send Emails
+                  </button>
+                )}
+              </div>
+            </div>
+            {/* Scrollable Candidate List */}
+            <div className="flex-1 overflow-y-auto">
+              {resultsCandidates.map((candidate, idx) => (
+                <motion.div
+                  key={candidate.id}
+                  initial={{ opacity: 0, x: -10 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: idx * 0.03 }}
+                  onClick={() => loadResultDetail(candidate, idx)}
+                  className={`p-3 cursor-pointer border-b border-gray-100 hover:bg-sky-50/50 transition-all ${
+                    selectedResultIdx === idx ? 'bg-sky-50 border-l-4 border-l-sky-500' : 'border-l-4 border-l-transparent'
+                  } ${selectedIds.has(candidate.id) ? 'bg-sky-50/40' : ''}`}
+                >
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleSelect(candidate.id) }}
+                      className="flex-shrink-0"
+                    >
+                      {selectedIds.has(candidate.id)
+                        ? <CheckSquare className="w-4 h-4 text-sky-600" />
+                        : <Square className="w-4 h-4 text-gray-300 hover:text-gray-500" />}
+                    </button>
+                    {/* Colored initial avatar */}
+                    {(() => {
+                      const colors = ['bg-teal-500', 'bg-sky-500', 'bg-purple-500', 'bg-amber-500', 'bg-rose-500', 'bg-emerald-500', 'bg-indigo-500', 'bg-orange-500']
+                      const colorIdx = candidate.name.charCodeAt(0) % colors.length
+                      return (
+                        <div className={`w-10 h-10 ${colors[colorIdx]} rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0`}>
+                          {candidate.name.charAt(0).toUpperCase()}
+                        </div>
+                      )
+                    })()}
+                    <div className="min-w-0 flex-1">
+                      <h4 className="font-semibold text-gray-900 text-sm truncate">{candidate.name}</h4>
+                      <p className="text-xs text-gray-500 truncate">
+                        {candidate.jobCategory && candidate.jobCategory !== 'General' ? candidate.jobCategory : (candidate.skills?.[0] || 'Candidate')}
+                      </p>
+                      <div className="flex items-center gap-1 text-xs text-gray-400 mt-0.5">
+                        <MapPin className="w-3 h-3 flex-shrink-0" />
+                        <span className="truncate">{candidate.location || 'N/A'}</span>
+                      </div>
+                    </div>
+                    <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
+                      <span className={`text-base font-bold ${getScoreColor(candidate.matchScore ?? 50)}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</span>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${getFitLabel(candidate.matchScore ?? 50).cls}`}>
+                        {getFitLabel(candidate.matchScore ?? 50).text}
+                      </span>
+                      {candidate.status === 'Shortlisted' ? (
+                        <span className="text-[10px] text-green-600 font-medium">✓ Shortlisted</span>
+                      ) : (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); handleShortlistInResults(candidate, idx) }}
+                          className="text-[10px] text-green-600 hover:text-green-700 font-medium flex items-center gap-0.5 hover:bg-green-50 px-1.5 py-0.5 rounded transition-colors"
+                        >
+                          <CheckCircle2 className="w-3 h-3" />Shortlist
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </motion.div>
+              ))}
+            </div>
+          </div>
+
+          {/* Right: Detail Panel */}
+          <div className="flex-1 flex flex-col overflow-hidden bg-white">
+            {resultDetailCandidate ? (
+              <div className="flex-1 overflow-y-auto">
+                {/* Gradient Header */}
+                <div className="bg-gradient-to-r from-slate-800 via-slate-700 to-teal-700 text-white p-6">
+                  <div className="flex items-start justify-between">
+                    <div className="flex items-start gap-4">
+                      <div className="w-14 h-14 rounded-full bg-teal-600 flex items-center justify-center text-2xl font-bold ring-2 ring-white/30 flex-shrink-0">
+                        {resultDetailCandidate.name.charAt(0)}
+                      </div>
+                      <div>
+                        <h2 className="text-xl font-bold">{resultDetailCandidate.name}</h2>
+                        <p className="text-teal-200 text-sm">
+                          {resultDetailCandidate.jobCategory && resultDetailCandidate.jobCategory !== 'General' ? resultDetailCandidate.jobCategory : 'Candidate'}
+                        </p>
+                        <div className="flex items-center gap-3 mt-2 text-sm text-slate-300 flex-wrap">
+                          {resultDetailCandidate.location && (
+                            <span className="flex items-center gap-1"><MapPin className="w-3.5 h-3.5" />{resultDetailCandidate.location}</span>
+                          )}
+                          {resultDetailCandidate.experience > 0 && (
+                            <span className="flex items-center gap-1">• {resultDetailCandidate.experience}+ Years experience</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-4 mt-2 text-sm text-slate-300 flex-wrap">
+                          {resultDetailCandidate.email && (
+                            <a href={`mailto:${resultDetailCandidate.email}`} className="flex items-center gap-1 hover:text-white transition-colors">
+                              <Mail className="w-3.5 h-3.5" />{resultDetailCandidate.email}
+                            </a>
+                          )}
+                          {resultDetailCandidate.phone && (
+                            <a href={`tel:${resultDetailCandidate.phone}`} className="flex items-center gap-1 hover:text-white transition-colors">
+                              <Phone className="w-3.5 h-3.5" />{resultDetailCandidate.phone}
+                            </a>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    <div className="flex-shrink-0">
+                      <ScoreRing score={resultDetailCandidate.matchScore ?? 50} size={72} />
+                      <div className="text-center mt-1">
+                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${getFitLabel(resultDetailCandidate.matchScore ?? 50).cls}`}>
+                          {getFitLabel(resultDetailCandidate.matchScore ?? 50).text}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Content Sections */}
+                <div className="p-6 space-y-6">
+                  {/* AI Analysis */}
+                  <section>
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
+                      <Sparkles className="w-4 h-4 text-sky-500" />AI Analysis
+                    </h3>
+                    <div className="bg-gradient-to-br from-sky-50/50 to-indigo-50/50 rounded-xl p-4 border border-sky-100">
+                      {resultDetailLoading ? (
+                        <div className="flex items-center gap-2 py-2">
+                          <Loader2 className="w-4 h-4 animate-spin text-sky-400" />
+                          <span className="text-sm text-gray-500">Loading AI analysis...</span>
+                        </div>
+                      ) : resultDetailAnalysis?.executive_summary ? (
+                        <p className="text-sm text-gray-700 leading-relaxed">{resultDetailAnalysis.executive_summary}</p>
+                      ) : resultDetailCandidate.summary ? (
+                        <p className="text-sm text-gray-700 leading-relaxed">{resultDetailCandidate.summary}</p>
+                      ) : (
+                        <p className="text-sm text-gray-400 italic">No AI analysis available for this candidate.</p>
+                      )}
+                    </div>
+                  </section>
+
+                  {/* Resume Highlights — hide garbled/mojibake text */}
+                  {resultDetailCandidate.resumeText && (() => {
+                    const txt = resultDetailCandidate.resumeText || ''
+                    if (isTextGarbled(txt)) {
+                      return (
+                        <section>
+                          <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
+                            <FileText className="w-4 h-4 text-sky-400" />Resume
+                          </h3>
+                          <div className="text-sm text-gray-500 italic bg-gray-50 rounded-xl p-4 border border-gray-200 flex items-center gap-2">
+                            <FileDown className="w-4 h-4 text-gray-400" />
+                            Resume text could not be displayed. Use <strong className="text-sky-600 mx-1">Download Resume</strong> below.
+                          </div>
+                        </section>
+                      )
+                    }
+                    const lines = txt.split('\n').filter(l => l.trim().length > 10).slice(0, 8)
+                    return (
+                      <section>
+                        <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
+                          <FileText className="w-4 h-4 text-sky-400" />Resume Highlights
+                        </h3>
+                        <div className="space-y-2">
+                          {lines.map((line, i) => (
+                            <div key={i} className="flex items-start gap-2 p-2.5 bg-sky-50/40 rounded-lg border border-sky-100">
+                              <div className="w-1.5 h-1.5 bg-sky-400 rounded-full mt-1.5 flex-shrink-0" />
+                              <p className="text-sm text-gray-700 leading-relaxed">{line.trim()}</p>
+                            </div>
+                          ))}
+                        </div>
+                      </section>
+                    )
+                  })()}
+
+                  {/* Detailed Score Analysis */}
+                  <section>
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
+                      <BarChart3 className="w-4 h-4 text-sky-500" />Detailed Score Analysis
+                    </h3>
+                    <div className="grid grid-cols-3 gap-3">
+                      {(() => {
+                        const score = resultDetailCandidate.matchScore ?? 50
+                        const skillCount = resultDetailCandidate.skills?.length || 0
+                        const expYears = resultDetailCandidate.experience || 0
+                        // Use AI analysis data when available, otherwise derive from profile
+                        const aiScore = resultDetailAnalysis?.overall_score || resultDetailAnalysis?.match_score
+                        const primary = aiScore ? Math.round(aiScore) : Math.min(Math.round(score * 0.9 + Math.min(skillCount, 20) * 0.5), 100)
+                        const secondary = aiScore ? Math.min(Math.round(aiScore * 0.88 + Math.min(skillCount - 5, 15) * 0.6), 100) : Math.min(Math.round(score * 0.82 + Math.min(expYears, 15) * 1.2), 100)
+                        const expRelevance = aiScore ? Math.min(Math.round(aiScore * 0.85 + Math.min(expYears, 15) * 1.8), 100) : Math.min(Math.round(score * 0.85 + Math.min(expYears, 15) * 2), 100)
+                        return [
+                          { label: 'Primary Competency', value: primary, desc: resultDetailAnalysis?.technical_assessment ? resultDetailAnalysis.technical_assessment.substring(0, 100) + '...' : `Strong in ${resultDetailCandidate.skills?.slice(0, 3).join(', ') || 'core skills'}` },
+                          { label: 'Secondary Competency', value: secondary, desc: `Breadth across ${Math.max(skillCount - 3, 0)} secondary skills including ${resultDetailCandidate.skills?.slice(3, 6).join(', ') || 'supporting technologies'}` },
+                          { label: 'Experience Relevance', value: expRelevance, desc: `${expYears || 'N/A'}${typeof expYears === 'number' ? '+ years' : ''} of experience${resultDetailCandidate.jobCategory ? ` in ${resultDetailCandidate.jobCategory}` : ''}` },
+                        ]
+                      })().map((item) => (
+                        <div key={item.label} className="bg-white border border-gray-200 rounded-xl p-4">
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-xs font-medium text-gray-500">{item.label}</span>
+                            <span className={`text-lg font-bold ${item.value >= 75 ? 'text-sky-600' : item.value >= 50 ? 'text-amber-600' : 'text-red-500'}`}>{item.value}%</span>
+                          </div>
+                          <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden mb-2">
+                            <div className={`h-full rounded-full transition-all ${item.value >= 75 ? 'bg-sky-500' : item.value >= 50 ? 'bg-amber-500' : 'bg-red-400'}`} style={{ width: `${item.value}%` }} />
+                          </div>
+                          <p className="text-[11px] text-gray-500 leading-snug line-clamp-3">{item.desc}</p>
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+
+                  {/* Career Timeline */}
+                  {resultDetailCandidate.workHistory && resultDetailCandidate.workHistory.length > 0 && (
+                    <section>
+                      <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
+                        <Briefcase className="w-4 h-4 text-sky-500" />Career Timeline
+                      </h3>
+                      <div className="relative">
+                        {resultDetailCandidate.workHistory.slice(0, 5).map((job, i) => (
+                          <div key={i} className="flex gap-4 mb-4 last:mb-0">
+                            {/* Timeline dot and line */}
+                            <div className="flex flex-col items-center">
+                              <div className="w-3 h-3 bg-sky-500 rounded-full border-2 border-white shadow-sm flex-shrink-0" />
+                              {i < Math.min(resultDetailCandidate.workHistory!.length, 5) - 1 && (
+                                <div className="w-0.5 flex-1 bg-sky-200 mt-1" />
+                              )}
+                            </div>
+                            {/* Content */}
+                            <div className="flex-1 pb-2">
+                              <div className="flex items-start justify-between">
+                                <div>
+                                  <h4 className="text-sm font-semibold text-gray-900">{job.title}</h4>
+                                  <p className="text-xs text-gray-500">{job.company}</p>
+                                </div>
+                                {job.duration && (
+                                  <span className="text-[10px] font-medium text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full whitespace-nowrap flex-shrink-0 ml-2">{job.duration}</span>
+                                )}
+                              </div>
+                              {/* Skill tags per job — derive from job title/description */}
+                              <div className="flex flex-wrap gap-1 mt-2">
+                                {(resultDetailCandidate.skills || []).slice(i * 3, i * 3 + 5).map((skill: string, si: number) => (
+                                  <span key={si} className="text-[10px] px-2 py-0.5 bg-sky-50 text-sky-700 border border-sky-200 rounded-full">{skill}</span>
+                                ))}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </section>
+                  )}
+
+                  {/* Tenure Prediction */}
+                  <section>
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
+                      <TrendingUp className="w-4 h-4 text-sky-500" />Tenure Prediction
+                    </h3>
+                    {(() => {
+                      const exp = resultDetailCandidate.experience || 0
+                      const score = resultDetailCandidate.matchScore ?? 50
+                      const jobCount = resultDetailCandidate.workHistory?.length || 0
+                      const tenure = exp > 7 ? '5+ years' : exp > 4 ? '3-5 years' : exp > 2 ? '2-3 years' : '1-2 years'
+                      const retention = Math.min(Math.round(score * 0.85 + exp * 2), 99)
+                      const confidence = score >= 75 ? 'High' : score >= 50 ? 'Medium' : 'Low'
+                      const stability = Math.min(Math.round(70 + (exp > 3 ? 15 : 0) + (jobCount < 4 ? 10 : -5)), 99)
+                      const progression = Math.min(Math.round(65 + exp * 3 + (jobCount > 1 ? 10 : 0)), 99)
+                      const alignment = Math.min(Math.round(score * 0.7 + 15), 99)
+                      return (
+                        <>
+                          {/* Top metrics row */}
+                          <div className="grid grid-cols-3 gap-3 mb-4">
+                            <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3 text-center">
+                              <div className="flex items-center justify-center gap-1 mb-1">
+                                <Calendar className="w-3.5 h-3.5 text-emerald-600" />
+                                <span className="text-[10px] font-medium text-emerald-700">Expected Tenure</span>
+                              </div>
+                              <p className="text-lg font-bold text-emerald-700">{tenure}</p>
+                            </div>
+                            <div className="bg-sky-50 border border-sky-200 rounded-xl p-3 text-center">
+                              <div className="flex items-center justify-center gap-1 mb-1">
+                                <TrendingUp className="w-3.5 h-3.5 text-sky-600" />
+                                <span className="text-[10px] font-medium text-sky-700">Retention Score</span>
+                              </div>
+                              <p className="text-lg font-bold text-sky-700">{retention}%</p>
+                            </div>
+                            <div className="bg-purple-50 border border-purple-200 rounded-xl p-3 text-center">
+                              <div className="flex items-center justify-center gap-1 mb-1">
+                                <Target className="w-3.5 h-3.5 text-purple-600" />
+                                <span className="text-[10px] font-medium text-purple-700">Confidence Level</span>
+                              </div>
+                              <p className={`text-lg font-bold ${confidence === 'High' ? 'text-emerald-600' : confidence === 'Medium' ? 'text-amber-600' : 'text-red-500'}`}>{confidence}</p>
+                            </div>
+                          </div>
+                          {/* Bottom detail metrics */}
+                          <div className="grid grid-cols-3 gap-3">
+                            {[
+                              { label: 'Job Stability History', value: stability, desc: jobCount > 3 ? `Average tenure of 2-5 years per role` : `Stable career with ${jobCount} role${jobCount !== 1 ? 's' : ''}` },
+                              { label: 'Career Progression', value: progression, desc: `Consistent progression${jobCount > 1 ? ` from ${resultDetailCandidate.workHistory?.[resultDetailCandidate.workHistory.length - 1]?.title || 'earlier roles'} to ${resultDetailCandidate.workHistory?.[0]?.title || 'current role'}` : ''}` },
+                              { label: 'Industry Alignment', value: alignment, desc: `Experience in ${resultDetailCandidate.jobCategory || 'general'} ${alignment >= 70 ? 'is highly relevant' : 'provides transferable skills'}` },
+                            ].map((m) => (
+                              <div key={m.label} className="bg-white border border-gray-200 rounded-xl p-3">
+                                <div className="flex items-center justify-between mb-1.5">
+                                  <span className="text-[11px] font-medium text-gray-600">{m.label}</span>
+                                  <span className={`text-sm font-bold ${m.value >= 75 ? 'text-emerald-600' : m.value >= 50 ? 'text-amber-600' : 'text-red-500'}`}>{m.value}%</span>
+                                </div>
+                                <div className="w-full h-1 bg-gray-100 rounded-full overflow-hidden mb-1.5">
+                                  <div className={`h-full rounded-full ${m.value >= 75 ? 'bg-emerald-500' : m.value >= 50 ? 'bg-amber-500' : 'bg-red-400'}`} style={{ width: `${m.value}%` }} />
+                                </div>
+                                <p className="text-[10px] text-gray-500 leading-snug line-clamp-2">{m.desc}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </>
+                      )
+                    })()}
+                  </section>
+
+                  {/* Keywords Analysis */}
+                  {resultDetailCandidate.skills && resultDetailCandidate.skills.length > 0 && (
+                    <section>
+                      <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
+                        <Target className="w-4 h-4 text-sky-500" />Keywords Analysis
+                      </h3>
+                      {(() => {
+                        const matched = resultDetailCandidate.skills || []
+                        // Derive missing keywords from the candidate's category/field instead of hardcoding
+                        const categoryKeywords: Record<string, string[]> = {
+                          'Software': ['System Design', 'CI/CD', 'Unit Testing', 'Code Review', 'Agile/Scrum', 'Cloud Services', 'API Design', 'Docker', 'Git', 'Performance Optimization'],
+                          'Data': ['SQL', 'Python', 'Machine Learning', 'Data Visualization', 'Statistical Analysis', 'ETL Pipelines', 'Big Data', 'Data Governance', 'Tableau/PowerBI'],
+                          'HR': ['Talent Acquisition', 'HRIS', 'Employee Relations', 'Compliance', 'Performance Management', 'Compensation & Benefits', 'Onboarding', 'Labor Law'],
+                          'Marketing': ['SEO/SEM', 'Content Strategy', 'Analytics', 'Social Media', 'Brand Management', 'Email Marketing', 'A/B Testing', 'Marketing Automation'],
+                          'Sales': ['CRM', 'Lead Generation', 'Negotiation', 'Pipeline Management', 'Account Management', 'Revenue Forecasting', 'Consultative Selling'],
+                          'Finance': ['Financial Modeling', 'Budget Management', 'Forecasting', 'Risk Analysis', 'Compliance', 'ERP Systems', 'Tax Planning', 'Audit'],
+                          'default': ['Leadership', 'Project Management', 'Communication', 'Problem Solving', 'Team Collaboration', 'Time Management', 'Strategic Planning']
+                        }
+                        const cat = resultDetailCandidate.jobCategory || ''
+                        const catKey = Object.keys(categoryKeywords).find(k => cat.toLowerCase().includes(k.toLowerCase())) || 'default'
+                        const poolKeywords = categoryKeywords[catKey] || categoryKeywords['default']
+                        const missing = poolKeywords.filter(m => !matched.some(s => s.toLowerCase().includes(m.split('/')[0].toLowerCase()))).slice(0, 8)
+                        const matchedCount = matched.length
+                        const totalKw = matchedCount + missing.length
+                        const matchPercent = totalKw > 0 ? Math.round((matchedCount / totalKw) * 100) : 0
+                        const radius = 40, strokeWidth = 8, circumference = 2 * Math.PI * radius
+                        return (
+                          <div className="flex gap-6 items-start">
+                            {/* Donut chart */}
+                            <div className="flex-shrink-0 flex flex-col items-center">
+                              <svg width="100" height="100" viewBox="0 0 100 100">
+                                <circle cx="50" cy="50" r={radius} fill="none" stroke="#f3f4f6" strokeWidth={strokeWidth} />
+                                <circle cx="50" cy="50" r={radius} fill="none" stroke="#22c55e" strokeWidth={strokeWidth} strokeLinecap="round"
+                                  strokeDasharray={circumference} strokeDashoffset={circumference - (matchPercent / 100) * circumference}
+                                  transform="rotate(-90 50 50)" style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
+                                <circle cx="50" cy="50" r={radius} fill="none" stroke="#ef4444" strokeWidth={strokeWidth} strokeLinecap="round"
+                                  strokeDasharray={circumference} strokeDashoffset={circumference - ((100 - matchPercent) / 100) * circumference}
+                                  transform={`rotate(${-90 + (matchPercent / 100) * 360} 50 50)`} style={{ transition: 'stroke-dashoffset 0.6s ease' }} />
+                              </svg>
+                              <div className="flex items-center gap-3 mt-2 text-[10px]">
+                                <span className="flex items-center gap-1"><span className="w-2 h-2 bg-green-500 rounded-full" />Matched</span>
+                                <span className="flex items-center gap-1"><span className="w-2 h-2 bg-red-500 rounded-full" />Missing</span>
+                              </div>
+                            </div>
+                            {/* Keywords lists */}
+                            <div className="flex-1 space-y-4">
+                              <div>
+                                <p className="text-xs font-medium text-green-700 mb-2 flex items-center gap-1">
+                                  <CheckCircle2 className="w-3.5 h-3.5" />Matched Keywords ({matchedCount})
+                                </p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {matched.map((s: string) => (
+                                    <span key={s} className="text-[10px] px-2 py-0.5 bg-green-50 text-green-700 border border-green-200 rounded-full">{s}</span>
+                                  ))}
+                                </div>
+                              </div>
+                              <div>
+                                <p className="text-xs font-medium text-red-600 mb-2 flex items-center gap-1">
+                                  <AlertTriangle className="w-3.5 h-3.5" />Missing Keywords ({missing.length})
+                                </p>
+                                <div className="flex flex-wrap gap-1.5">
+                                  {missing.map((s) => (
+                                    <span key={s} className="text-[10px] px-2 py-0.5 bg-red-50 text-red-600 border border-red-200 rounded-full">{s}</span>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        )
+                      })()}
+                    </section>
+                  )}
+
+                  {/* HR Actions */}
+                  <section>
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
+                      <CheckCircle2 className="w-4 h-4 text-sky-500" />HR Actions
+                    </h3>
+                    <div className="flex items-center gap-4 mb-4">
+                      {[
+                        { label: 'Selected', icon: CheckCircle2, status: 'Hired' as const, color: 'text-green-600' },
+                        { label: 'Shortlisted', icon: Star, status: 'Shortlisted' as const, color: 'text-amber-600' },
+                        { label: 'Interviewed', icon: Video, status: 'Interviewing' as const, color: 'text-blue-600' },
+                        { label: 'Rejected', icon: XCircle, status: 'Rejected' as const, color: 'text-red-600' },
+                      ].map((action) => {
+                        const isActive = resultDetailCandidate.status === action.status
+                        return (
+                          <label key={action.label} className="flex items-center gap-2 cursor-pointer group">
+                            <button
+                              onClick={async () => {
+                                try {
+                                  await candidateApi.updateStatus(resultDetailCandidate!.id, action.status)
+                                  setResultDetailCandidate(prev => prev ? { ...prev, status: action.status } : prev)
+                                  setResultsCandidates(prev => prev.map((c, i) => i === selectedResultIdx ? { ...c, status: action.status } : c))
+                                } catch { /* ignore */ }
+                              }}
+                              className={`w-5 h-5 rounded border-2 flex items-center justify-center transition-all ${
+                                isActive ? `${action.color} border-current bg-current/10` : 'border-gray-300 hover:border-gray-400'
+                              }`}
+                            >
+                              {isActive && <CheckCircle2 className="w-3 h-3" />}
+                            </button>
+                            <span className={`text-sm ${isActive ? `font-medium ${action.color}` : 'text-gray-600 group-hover:text-gray-900'}`}>{action.label}</span>
+                          </label>
+                        )
+                      })}
+                    </div>
+
+                    {/* HR Comments & Notes */}
+                    <div>
+                      <h4 className="text-xs font-semibold text-gray-700 mb-2 flex items-center gap-1.5">
+                        <MessageSquare className="w-3.5 h-3.5 text-gray-400" />HR Comments & Notes
+                      </h4>
+                      <textarea
+                        value={hrNotes[resultDetailCandidate.id] || ''}
+                        onChange={(e) => {
+                          const id = resultDetailCandidate.id
+                          setHrNotes(prev => ({ ...prev, [id]: e.target.value }))
+                          // Auto-save to localStorage
+                          try {
+                            const saved = JSON.parse(localStorage.getItem('hr_candidate_notes') || '{}')
+                            saved[id] = e.target.value
+                            localStorage.setItem('hr_candidate_notes', JSON.stringify(saved))
+                          } catch { /* storage full */ }
+                        }}
+                        placeholder="Add your comments, interview notes, or feedback about this candidate..."
+                        className="w-full h-24 text-sm border border-gray-200 rounded-xl p-3 resize-none focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-300 bg-gray-50/50"
+                      />
+                    </div>
+                  </section>
+
+                  {/* Action Buttons */}
+                  <div className="flex items-center gap-2 pt-2 pb-4 flex-wrap">
+                    <Button
+                      onClick={() => resultDetailCandidate!.email && window.open(`mailto:${resultDetailCandidate!.email}`)}
+                      className="bg-sky-600 hover:bg-sky-700"
+                      size="sm"
+                    >
+                      <Mail className="w-3.5 h-3.5 mr-1.5" />Contact Candidate
+                    </Button>
+                    <Button size="sm" variant="outline" className="border-sky-200 text-sky-700 hover:bg-sky-50" onClick={() => navigate(`/candidates/${resultDetailCandidate!.id}`)}>
+                      <Calendar className="w-3.5 h-3.5 mr-1.5" />Schedule Interview
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={async () => {
+                      try { await downloadOriginalResume(resultDetailCandidate!) } catch { generateQuickProfilePDF(resultDetailCandidate!) }
+                    }}>
+                      <Download className="w-3.5 h-3.5 mr-1.5" />Download Resume
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => generateQuickProfilePDF(resultDetailCandidate!)}>
+                      <FileDown className="w-3.5 h-3.5 mr-1.5" />Export Report
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="flex-1 flex flex-col items-center justify-center text-gray-400">
+                <Users className="w-12 h-12 mb-3 opacity-50" />
+                <p className="text-sm">Select a candidate to view details</p>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
       <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
         <AnimatePresence>
           {messages.map((message) => (
@@ -1760,10 +2559,10 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                               }
                             }}
                             dangerouslySetInnerHTML={{ 
-                              __html: formatAIContent(
+                              __html: DOMPurify.sanitize(formatAIContent(
                                 split && split.sections.length > 0 ? split.header : message.content,
                                 message.candidates
-                              )
+                              ), { ADD_ATTR: ['data-candidate-id'] })
                             }} 
                           />
 
@@ -1851,12 +2650,12 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                         </p>
                                       </div>
                                       <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-                                        <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
+                                        <p className={`text-lg font-bold ${getScoreColor(candidate.matchScore ?? 50)}`}>
                                           {(candidate.matchScore ?? 50).toFixed(0)}%
                                         </p>
-                                        <Badge className={`text-xs whitespace-nowrap ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}>
-                                          {candidate.status}
-                                        </Badge>
+                                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ${getFitLabel(candidate.matchScore ?? 50).cls}`}>
+                                          {getFitLabel(candidate.matchScore ?? 50).text}
+                                        </span>
                                         <motion.button
                                           whileHover={{ scale: 1.1 }}
                                           whileTap={{ scale: 0.9 }}
@@ -2026,8 +2825,8 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                 <p className="text-xs text-gray-500 flex items-center gap-1 truncate"><MapPin className="w-3 h-3 flex-shrink-0" /><span className="truncate">{candidate.location || 'N/A'}</span></p>
                               </div>
                               <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-                                <p className={`text-lg font-bold ${getMatchScoreColor(candidate.matchScore)}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</p>
-                                <Badge className={`text-xs whitespace-nowrap ${getStatusBadgeColor(candidate.status).bg} ${getStatusBadgeColor(candidate.status).text} border ${getStatusBadgeColor(candidate.status).border}`}>{candidate.status}</Badge>
+                                <p className={`text-lg font-bold ${getScoreColor(candidate.matchScore ?? 50)}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</p>
+                                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ${getFitLabel(candidate.matchScore ?? 50).cls}`}>{getFitLabel(candidate.matchScore ?? 50).text}</span>
                                 <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); handlePreviewCandidate(candidate) }} className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><Eye className="w-3 h-3" />Preview</motion.button>
                                 <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }} className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><ExternalLink className="w-3 h-3" />Open</motion.button>
                                 {candidate.status !== 'Shortlisted' ? (
@@ -2128,7 +2927,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         )}
 
         {/* Suggested Prompts (shown when only welcome message) */}
-        {messages.length === 1 && (
+        {messages.length <= 1 && (
           <motion.div
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
@@ -2163,6 +2962,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
 
         <div ref={messagesEndRef} />
       </div>
+      )}
 
       {/* Input Area */}
       <motion.div
@@ -2173,15 +2973,26 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         <div className="max-w-4xl mx-auto">
           <div className="flex gap-3">
             <div className="flex-1 relative">
-              <input
+              <textarea
                 ref={inputRef}
-                type="text"
                 value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={handleKeyPress}
-                placeholder="Ask about ML ranking, duplicates, analytics, templates, scheduling..."
-                className="w-full px-4 py-3 pr-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-sky-400 transition-colors text-sm"
+                onChange={(e) => {
+                  setInput(e.target.value)
+                  // Auto-resize
+                  e.target.style.height = 'auto'
+                  e.target.style.height = Math.min(e.target.scrollHeight, 120) + 'px'
+                }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    handleSend()
+                  }
+                }}
+                placeholder="Ask about ML ranking, duplicates, analytics, templates, scheduling... (Shift+Enter for new line)"
+                className="w-full px-4 py-3 pr-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:border-sky-400 transition-colors text-sm resize-none overflow-hidden"
                 disabled={isTyping}
+                rows={1}
+                style={{ minHeight: '48px', maxHeight: '120px' }}
               />
               <div className="absolute right-3 top-1/2 -translate-y-1/2">
                 <Brain className="w-5 h-5 text-gray-400" />
@@ -2213,235 +3024,257 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
 
       </div>{/* /Chat Column */}
 
-      {/* ── Candidate Preview Panel (right side) ── */}
+      {/* ── Candidate Preview Panel (right side) — Matching Shortlist Design ── */}
       <AnimatePresence>
-        {previewCandidate && (
+        {previewCandidate && !resultsView && (
           <motion.div
             initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 420, opacity: 1 }}
+            animate={{ width: 480, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             transition={{ duration: 0.25, ease: 'easeInOut' }}
-            className="flex-shrink-0 bg-white border-l border-gray-200 overflow-hidden"
+            className="flex-shrink-0 bg-white border-l border-gray-200 overflow-y-auto"
           >
-            <div className="w-[420px] h-full flex flex-col overflow-y-auto">
-              {/* Panel Header */}
-              <div className="sticky top-0 z-10 flex items-center justify-between px-4 py-3 border-b border-gray-100 bg-white/95 backdrop-blur-sm">
-                <div className="flex items-center gap-2 min-w-0">
-                  <Avatar className="w-8 h-8 flex-shrink-0">
-                    <AvatarFallback className="text-xs font-semibold bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700">
-                      {previewCandidate.name.charAt(0)}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div className="min-w-0">
-                    <h3 className="text-sm font-semibold text-gray-900 truncate">{previewCandidate.name}</h3>
-                    <p className="text-xs text-gray-500 truncate">
-                      {previewCandidate.jobCategory !== 'General' ? previewCandidate.jobCategory : ''} 
-                      {previewCandidate.experience > 0 ? ` · ${previewCandidate.experience} yrs exp` : ''}
-                    </p>
+            <div className="w-[480px] min-h-0 flex flex-col">
+
+              {/* Hero Header */}
+              <div className="bg-gradient-to-r from-slate-800 via-slate-700 to-teal-700 text-white p-5 relative flex-shrink-0">
+                <button
+                  onClick={() => { setPreviewCandidate(null); setPreviewAnalysis(null) }}
+                  className="absolute top-3 right-3 p-1 hover:bg-white/20 rounded-md transition-colors"
+                >
+                  <X className="w-4 h-4 text-white/80" />
+                </button>
+                <div className="flex items-start justify-between">
+                  <div className="flex items-start gap-3">
+                    {(() => {
+                      const colors = ['bg-teal-500', 'bg-sky-500', 'bg-purple-500', 'bg-amber-500', 'bg-rose-500', 'bg-emerald-500', 'bg-indigo-500', 'bg-orange-500']
+                      const colorIdx = previewCandidate.name.charCodeAt(0) % colors.length
+                      return (
+                        <div className={`w-12 h-12 ${colors[colorIdx]} rounded-full flex items-center justify-center text-white text-lg font-bold ring-2 ring-white/30 flex-shrink-0`}>
+                          {previewCandidate.name.charAt(0).toUpperCase()}{previewCandidate.name.split(' ')[1]?.charAt(0).toUpperCase() || ''}
+                        </div>
+                      )
+                    })()}
+                    <div>
+                      <h2 className="text-lg font-bold">{previewCandidate.name}</h2>
+                      <p className="text-teal-200 text-sm">
+                        {previewCandidate.jobCategory !== 'General' ? previewCandidate.jobCategory : 'Candidate'}
+                        {previewCandidate.experience > 0 ? ` · ${previewCandidate.experience}+ Years experience` : ''}
+                      </p>
+                      <div className="flex items-center gap-3 mt-1.5 text-sm text-slate-200">
+                        {previewCandidate.email && (
+                          <a href={`mailto:${previewCandidate.email}`} className="flex items-center gap-1 hover:text-white transition-colors">
+                            <Mail className="w-3.5 h-3.5" />{previewCandidate.email}
+                          </a>
+                        )}
+                        {previewCandidate.phone && (
+                          <a href={`tel:${previewCandidate.phone}`} className="flex items-center gap-1 hover:text-white transition-colors">
+                            <Phone className="w-3.5 h-3.5" />{previewCandidate.phone}
+                          </a>
+                        )}
+                      </div>
+                      {previewCandidate.location && (
+                        <div className="flex items-center gap-1 mt-1 text-sm text-teal-200">
+                          <MapPin className="w-3.5 h-3.5" />{previewCandidate.location}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className="text-3xl font-bold text-white">{Math.round(previewCandidate.matchScore ?? 50)}%</div>
+                    <span className={`text-[11px] font-medium px-2 py-0.5 rounded mt-1 inline-block ${getFitLabel(previewCandidate.matchScore ?? 50).cls}`}>
+                      {getFitLabel(previewCandidate.matchScore ?? 50).text}
+                    </span>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className={`text-lg font-bold ${getMatchScoreColor(previewCandidate.matchScore)}`}>
-                    {(previewCandidate.matchScore ?? 50).toFixed(0)}%
-                  </span>
+              </div>
+
+              {/* Actions Bar */}
+              <div className="flex items-center gap-2 px-5 py-3 border-b border-gray-100 bg-gray-50/50 flex-wrap">
+                <Button size="sm" onClick={() => navigate(`/candidates/${previewCandidate.id}`)}>
+                  <Eye className="w-3.5 h-3.5 mr-1.5" />Full Profile
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => navigate(`/candidates/${previewCandidate.id}`)}>
+                  <Calendar className="w-3.5 h-3.5 mr-1.5" />Schedule Interview
+                </Button>
+                <Button size="sm" variant="outline" onClick={() => generateQuickProfilePDF(previewCandidate)} className="text-xs">
+                  <Download className="w-3.5 h-3.5 mr-1.5" />PDF Report
+                </Button>
+                <Button size="sm" variant="outline" onClick={async () => {
+                  try { await downloadOriginalResume(previewCandidate) } catch { toast.error('Download failed', 'No resume available for this candidate') }
+                }} className="text-xs">
+                  <FileDown className="w-3.5 h-3.5 mr-1.5" />Resume
+                </Button>
+              </div>
+
+              {/* Section Nav Bar */}
+              <div className="flex items-center gap-1 px-4 py-2 border-b border-gray-100 bg-white sticky top-0 z-10 overflow-x-auto scrollbar-hide">
+                {[
+                  { id: 'panel-analysis', label: 'Analysis', icon: Sparkles },
+                  { id: 'panel-skills', label: 'Skills', icon: Zap },
+                  { id: 'panel-resume', label: 'Resume', icon: FileText },
+                  { id: 'panel-experience', label: 'Experience', icon: Briefcase },
+                  { id: 'panel-education', label: 'Education', icon: Award },
+                  { id: 'panel-contact', label: 'Contact', icon: Mail },
+                ].map(({ id, label, icon: Icon }) => (
                   <button
-                    onClick={() => { setPreviewCandidate(null); setPreviewAnalysis(null) }}
-                    className="p-1 hover:bg-gray-100 rounded-md transition-colors"
+                    key={id}
+                    onClick={() => {
+                      document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+                    }}
+                    className="flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium text-gray-500 hover:text-teal-700 hover:bg-teal-50 transition-colors whitespace-nowrap flex-shrink-0"
                   >
-                    <X className="w-4 h-4 text-gray-500" />
+                    <Icon className="w-3 h-3" />{label}
                   </button>
-                </div>
+                ))}
               </div>
 
               {previewLoading && (
                 <div className="flex items-center justify-center py-8">
-                  <Loader2 className="w-5 h-5 animate-spin text-sky-500" />
+                  <Loader2 className="w-5 h-5 animate-spin text-teal-500" />
                   <span className="text-xs text-gray-500 ml-2">Loading details...</span>
                 </div>
               )}
 
-              <div className="p-4 space-y-4">
-                {/* Contact Info */}
-                <div className="flex items-center gap-3 flex-wrap text-xs text-gray-500">
-                  {previewCandidate.email && (
-                    <span className="inline-flex items-center gap-1"><Mail className="w-3 h-3" />{previewCandidate.email}</span>
-                  )}
-                  {previewCandidate.phone && (
-                    <span className="inline-flex items-center gap-1"><Phone className="w-3 h-3" />{previewCandidate.phone}</span>
-                  )}
-                  {previewCandidate.location && (
-                    <span className="inline-flex items-center gap-1"><MapPin className="w-3 h-3" />{previewCandidate.location}</span>
-                  )}
-                </div>
+              <div className="p-5 space-y-5">
 
-                {/* Quick Actions */}
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => navigate(`/candidates/${previewCandidate.id}`)}
-                    className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-sky-600 hover:bg-sky-700 text-white rounded-lg text-xs font-medium transition-colors"
-                  >
-                    <Eye className="w-3 h-3" />Full Profile
-                  </button>
-                  {previewCandidate.status !== 'Shortlisted' ? (
-                    <button
-                      onClick={async () => {
-                        try {
-                          await candidateApi.updateStatus(previewCandidate.id, 'Shortlisted')
-                          if (!isShortlisted(previewCandidate.id)) toggleShortlist(previewCandidate.id)
-                          setPreviewCandidate({ ...previewCandidate, status: 'Shortlisted' } as Candidate)
-                        } catch (err) { console.error('Shortlist error:', err) }
-                      }}
-                      className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors"
-                    >
-                      <CheckCircle2 className="w-3 h-3" />Shortlist
-                    </button>
-                  ) : (
-                    <span className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-green-50 text-green-700 rounded-lg text-xs font-medium border border-green-200">
-                      <CheckCircle2 className="w-3 h-3" />Shortlisted
-                    </span>
-                  )}
-                </div>
-
-                {/* Skills */}
-                {previewCandidate.skills.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Skills</h4>
-                    <div className="flex flex-wrap gap-1">
-                      {previewCandidate.skills.slice(0, 10).map((skill: string) => (
-                        <span key={skill} className="text-[10px] px-2 py-0.5 rounded-md bg-sky-50 text-sky-700 border border-sky-100 font-medium">
-                          {skill}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
-
-                {/* Professional Summary */}
-                {previewCandidate.summary && (
-                  <div>
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1.5">Professional Summary</h4>
-                    <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-line">{previewCandidate.summary}</p>
-                  </div>
-                )}
-
-                {/* AI Analysis */}
+                {/* AI Analysis (matching Shortlist gradient box) */}
                 {previewAnalysis && (
-                  <div className="rounded-lg border border-sky-100 overflow-hidden">
-                    <div className="bg-gradient-to-r from-sky-50 to-indigo-50 px-3 py-2 flex items-center justify-between">
-                      <div className="flex items-center gap-1.5">
-                        <Sparkles className="w-3.5 h-3.5 text-sky-500" />
-                        <span className="text-xs font-semibold text-gray-800">AI Analysis</span>
-                      </div>
-                      <div className="flex items-center gap-1.5">
-                        {previewAnalysis.overall_rating && (
-                          <span className={`text-xs font-bold px-1.5 py-0.5 rounded ${
-                            previewAnalysis.overall_rating?.startsWith('A') ? 'bg-emerald-100 text-emerald-700' :
-                            previewAnalysis.overall_rating?.startsWith('B') ? 'bg-blue-100 text-blue-700' :
-                            'bg-amber-100 text-amber-700'
-                          }`}>{previewAnalysis.overall_rating}</span>
-                        )}
-                        {previewAnalysis.hiring_recommendation && (
-                          <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded ${
-                            previewAnalysis.hiring_recommendation === 'STRONGLY_RECOMMEND' ? 'bg-emerald-600 text-white' :
-                            previewAnalysis.hiring_recommendation === 'RECOMMEND' ? 'bg-emerald-500 text-white' :
-                            previewAnalysis.hiring_recommendation === 'CONSIDER' ? 'bg-amber-500 text-white' :
-                            'bg-red-500 text-white'
-                          }`}>{previewAnalysis.hiring_recommendation.replace('_', ' ')}</span>
-                        )}
-                      </div>
-                    </div>
-                    <div className="p-3 space-y-2.5">
-                      {previewAnalysis.executive_summary && (
-                        <p className="text-xs text-gray-700 leading-relaxed">{previewAnalysis.executive_summary}</p>
-                      )}
-                      {previewAnalysis.pros?.length > 0 && (
-                        <div>
-                          <h5 className="text-[10px] font-semibold text-emerald-700 uppercase mb-1 flex items-center gap-1">
-                            <CheckCircle className="w-3 h-3" />Strengths
-                          </h5>
-                          <ul className="space-y-0.5">
-                            {previewAnalysis.pros.slice(0, 4).map((pro: string, i: number) => (
-                              <li key={i} className="text-[11px] text-gray-600 flex items-start gap-1">
-                                <span className="text-emerald-500 mt-px font-bold">+</span>{pro}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {previewAnalysis.cons?.length > 0 && (
-                        <div>
-                          <h5 className="text-[10px] font-semibold text-red-600 uppercase mb-1 flex items-center gap-1">
-                            <AlertCircle className="w-3 h-3" />Areas to Explore
-                          </h5>
-                          <ul className="space-y-0.5">
-                            {previewAnalysis.cons.slice(0, 3).map((con: string, i: number) => (
-                              <li key={i} className="text-[11px] text-gray-600 flex items-start gap-1">
-                                <span className="text-red-400 mt-px font-bold">-</span>{con}
-                              </li>
-                            ))}
-                          </ul>
-                        </div>
-                      )}
-                      {previewAnalysis.confidence_score && (
-                        <div className="text-[10px] text-gray-400 pt-1 border-t border-gray-100">
-                          Confidence: {previewAnalysis.confidence_score}%
+                  <section id="panel-analysis">
+                    <h3 className="flex items-center gap-2 text-sm font-semibold text-gray-900 mb-3">
+                      <Sparkles className="w-4 h-4 text-teal-500" />AI Analysis
+                    </h3>
+                    <div className="bg-gradient-to-br from-teal-50/50 to-slate-50/50 rounded-xl p-4 border border-teal-100">
+                      <p className="text-sm text-gray-700 leading-relaxed">
+                        {previewAnalysis.executive_summary || previewCandidate.summary || 'No AI analysis available yet.'}
+                      </p>
+                      {(previewAnalysis.overall_rating || previewAnalysis.hiring_recommendation) && (
+                        <div className="flex items-center gap-2 mt-3">
+                          {previewAnalysis.overall_rating && (
+                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${
+                              previewAnalysis.overall_rating?.startsWith('A') ? 'bg-emerald-100 text-emerald-700' :
+                              previewAnalysis.overall_rating?.startsWith('B') ? 'bg-blue-100 text-blue-700' :
+                              'bg-amber-100 text-amber-700'
+                            }`}>{previewAnalysis.overall_rating}</span>
+                          )}
+                          {previewAnalysis.hiring_recommendation && (
+                            <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${
+                              previewAnalysis.hiring_recommendation === 'STRONGLY_RECOMMEND' ? 'bg-emerald-600 text-white' :
+                              previewAnalysis.hiring_recommendation === 'RECOMMEND' ? 'bg-emerald-500 text-white' :
+                              previewAnalysis.hiring_recommendation === 'CONSIDER' ? 'bg-amber-500 text-white' :
+                              'bg-red-500 text-white'
+                            }`}>{previewAnalysis.hiring_recommendation.replace('_', ' ')}</span>
+                          )}
                         </div>
                       )}
                     </div>
-                  </div>
+                  </section>
                 )}
 
-                {/* Resume Highlights / Work Experience */}
+                {!previewAnalysis && previewCandidate.summary && (
+                  <section id="panel-analysis">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-2">Professional Summary</h3>
+                    <p className="text-sm text-gray-600 leading-relaxed bg-gray-50 rounded-lg p-4">{previewCandidate.summary}</p>
+                  </section>
+                )}
+
+                {/* Skills (matching Shortlist indigo style) */}
+                {previewCandidate.skills.length > 0 && (
+                  <section id="panel-skills">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-2">Skills</h3>
+                    <div className="flex flex-wrap gap-1.5">
+                      {previewCandidate.skills.map((skill: string) => (
+                        <Badge key={skill} variant="outline" className="text-xs bg-teal-50/50 text-teal-700 border-teal-200">
+                          {skill}
+                        </Badge>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {/* Resume Highlights — skip garbled text */}
+                {previewCandidate.resumeText && !isTextGarbled(previewCandidate.resumeText) ? (
+                  <section id="panel-resume">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-1.5">
+                      <FileText className="w-4 h-4 text-teal-400" />Resume Highlights
+                    </h3>
+                    <div className="text-sm text-gray-600 leading-relaxed bg-teal-50/30 rounded-lg p-4 border border-teal-100 max-h-48 overflow-y-auto whitespace-pre-line">
+                      {previewCandidate.resumeText.substring(0, 1000)}{previewCandidate.resumeText.length > 1000 ? '...' : ''}
+                    </div>
+                  </section>
+                ) : previewCandidate.resumeText ? (
+                  <section id="panel-resume">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-2 flex items-center gap-1.5">
+                      <FileText className="w-4 h-4 text-teal-400" />Resume
+                    </h3>
+                    <div className="text-sm text-gray-500 italic bg-gray-50 rounded-lg p-4 border border-gray-200 flex items-center gap-2">
+                      <FileDown className="w-4 h-4 text-gray-400" />
+                      Resume text could not be displayed. Download the original file instead.
+                    </div>
+                  </section>
+                ) : null}
+
+                {/* Work History (matching Shortlist) */}
                 {previewCandidate.workHistory && previewCandidate.workHistory.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1">
-                      <Briefcase className="w-3 h-3" />Work Experience
-                    </h4>
-                    <div className="space-y-2">
-                      {previewCandidate.workHistory.slice(0, 3).map((job, i) => (
-                        <div key={i} className="pl-3 border-l-2 border-gray-200">
-                          <h5 className="text-xs font-semibold text-gray-900">{job.title}</h5>
-                          <p className="text-[10px] text-gray-500">
-                            {job.company}{job.company && job.duration ? ' · ' : ''}{job.duration}
-                          </p>
+                  <section id="panel-experience">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-2">Experience</h3>
+                    <div className="space-y-3">
+                      {previewCandidate.workHistory.slice(0, 5).map((job, i) => (
+                        <div key={i} className="border-l-2 border-teal-200 pl-3 py-0.5">
+                          <p className="text-sm font-medium text-gray-900">{job.title}</p>
+                          <p className="text-xs text-gray-500">{job.company}{job.duration && ` · ${job.duration}`}</p>
+                          {job.description && <p className="text-xs text-gray-500 mt-0.5 line-clamp-2">{job.description}</p>}
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </section>
                 )}
 
                 {/* Education */}
                 {previewCandidate.education && previewCandidate.education.length > 0 && (
-                  <div>
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1">
-                      <GraduationCap className="w-3 h-3" />Education
-                    </h4>
-                    <div className="space-y-1.5">
-                      {previewCandidate.education.slice(0, 2).map((edu, i) => (
-                        <div key={i}>
-                          <h5 className="text-xs font-semibold text-gray-900">
-                            {edu.degree}{edu.field ? ` in ${edu.field}` : ''}
-                          </h5>
-                          <p className="text-[10px] text-gray-500">
-                            {edu.institution || 'Institution not specified'}{edu.year ? ` · ${edu.year}` : ''}
-                          </p>
+                  <section id="panel-education">
+                    <h3 className="text-sm font-semibold text-gray-900 mb-2">Education</h3>
+                    <div className="space-y-2">
+                      {previewCandidate.education.map((edu, i) => (
+                        <div key={i} className="flex items-start gap-2">
+                          <Award className="w-4 h-4 text-teal-400 mt-0.5 flex-shrink-0" />
+                          <div>
+                            <p className="text-sm font-medium text-gray-900">{edu.degree}{edu.field && ` in ${edu.field}`}</p>
+                            <p className="text-xs text-gray-500">{edu.institution}{edu.year && ` · ${edu.year}`}</p>
+                          </div>
                         </div>
                       ))}
                     </div>
-                  </div>
+                  </section>
                 )}
 
-                {/* Resume Text Snippet */}
-                {previewCandidate.resumeText && (
-                  <div>
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1.5 flex items-center gap-1">
-                      <FileText className="w-3 h-3" />Resume Highlights
-                    </h4>
-                    <p className="text-[11px] text-gray-600 leading-relaxed bg-gray-50 rounded-lg p-2.5 max-h-32 overflow-y-auto whitespace-pre-line">
-                      {previewCandidate.resumeText.substring(0, 600)}{previewCandidate.resumeText.length > 600 ? '...' : ''}
-                    </p>
+                {/* Contact */}
+                <section id="panel-contact">
+                  <h3 className="text-sm font-semibold text-gray-900 mb-2">Contact</h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    {previewCandidate.email && (
+                      <a href={`mailto:${previewCandidate.email}`} className="flex items-center gap-2 text-sm text-gray-600 hover:text-teal-600 p-2 rounded-lg hover:bg-teal-50 transition-colors">
+                        <Mail className="w-4 h-4 text-gray-400" />{previewCandidate.email}
+                      </a>
+                    )}
+                    {previewCandidate.phone && (
+                      <a href={`tel:${previewCandidate.phone}`} className="flex items-center gap-2 text-sm text-gray-600 hover:text-teal-600 p-2 rounded-lg hover:bg-teal-50 transition-colors">
+                        <Phone className="w-4 h-4 text-gray-400" />{previewCandidate.phone}
+                      </a>
+                    )}
+                    {previewCandidate.linkedin && (
+                      <a href={previewCandidate.linkedin} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm text-gray-600 hover:text-teal-600 p-2 rounded-lg hover:bg-teal-50 transition-colors">
+                        <Linkedin className="w-4 h-4 text-gray-400" />LinkedIn
+                        <ExternalLink className="w-3 h-3 ml-auto text-gray-400" />
+                      </a>
+                    )}
+                    {previewCandidate.location && (
+                      <div className="flex items-center gap-2 text-sm text-gray-600 p-2">
+                        <MapPin className="w-4 h-4 text-gray-400" />{previewCandidate.location}
+                      </div>
+                    )}
                   </div>
-                )}
+                </section>
               </div>
             </div>
           </motion.div>

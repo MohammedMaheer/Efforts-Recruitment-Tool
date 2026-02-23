@@ -1,47 +1,8 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import type { Candidate } from '@/types'
 
-export interface Candidate {
-  id: string
-  name: string
-  email: string
-  phone: string
-  location: string
-  experience: number
-  matchScore: number
-  status: 'Strong' | 'Partial' | 'Reject' | 'Shortlisted' | 'Rejected' | 'New' | 'Reviewed' | 'Interviewing' | 'Offered' | 'Hired' | 'Withdrawn'
-  skills: string[]
-  resumeUrl: string
-  appliedDate: string
-  avatar?: string
-  summary: string
-  isShortlisted?: boolean
-  hasResume?: boolean
-  jobCategory: string
-  jobSubcategory?: string
-  linkedin?: string
-  education: {
-    degree: string
-    field?: string
-    institution: string
-    year: string
-  }[]
-  workHistory: {
-    title: string
-    company: string
-    duration: string
-    description: string
-  }[]
-  evaluation?: {
-    strengths: string[]
-    gaps: string[]
-    recommendation: string
-  }
-  certifications?: string[]
-  languages?: string[]
-  resumeText?: string
-  aiAnalysis?: any
-}
+// Re-export Candidate from canonical source
+export type { Candidate }
 
 interface CandidateState {
   candidates: Candidate[]
@@ -53,7 +14,7 @@ interface CandidateState {
   setCandidates: (candidates: Candidate[]) => void
 }
 
-export const useCandidateStore = create<CandidateState>()(persist((set, get) => ({
+export const useCandidateStore = create<CandidateState>()((set, get) => ({
   candidates: [],
   shortlistedIds: [],
   addCandidate: (candidate) =>
@@ -72,4 +33,4 @@ export const useCandidateStore = create<CandidateState>()(persist((set, get) => 
     })),
   isShortlisted: (id) => get().shortlistedIds.includes(id),
   setCandidates: (candidates: Candidate[]) => set({ candidates }),
-}), { name: 'candidate-storage', partialize: (state) => ({ shortlistedIds: state.shortlistedIds }) }))
+}))

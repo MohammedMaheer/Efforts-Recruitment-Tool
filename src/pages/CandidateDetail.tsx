@@ -1,9 +1,10 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import {
   ArrowLeft,
   Download,
+  FileDown,
   Star,
   Mail,
   Phone,
@@ -28,16 +29,17 @@ import {
 import { useCandidates } from '@/hooks/useCandidates'
 import { useCandidateStore } from '@/store/candidateStore'
 import { useNotificationStore } from '@/store/notificationStore'
-import { useAuthStore } from '@/store/authStore'
 import { candidateApi } from '@/services/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
+import { Avatar, AvatarFallback } from '@/components/ui/Avatar'
 import { Progress } from '@/components/ui/Progress'
 import { getMatchScoreColor } from '@/lib/utils'
 import config from '@/config'
 import { authFetch } from '@/lib/authFetch'
-import { generateCandidatePDF } from '@/lib/pdfGenerator'
+import { generateCandidatePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
+import { isTextGarbled } from '@/lib/textUtils'
+import { toast } from '@/components/ui/Toast'
 
 // Category colors for visual distinction
 const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
@@ -81,18 +83,18 @@ export default function CandidateDetail() {
   const toggleShortlist = useCandidateStore((state) => state.toggleShortlist)
   const addNotification = useNotificationStore((state) => state.addNotification)
 
-  const [aiAnalysis, setAiAnalysis] = useState<any>(null)
+  const [aiAnalysis, setAiAnalysis] = useState<Record<string, any> | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [isShortlisting, setIsShortlisting] = useState(false)
-  const [fullCandidateData, setFullCandidateData] = useState<any>(null)
+  const [fullCandidateData, setFullCandidateData] = useState<Record<string, any> | null>(null)
   const [fullDataLoading, setFullDataLoading] = useState(true)
   const [showCalendarPicker, setShowCalendarPicker] = useState(false)
   const [interviewDate, setInterviewDate] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 3); return d.toISOString().slice(0, 16)
   })
 
-  const lightCandidate = candidates.find((c) => c.id === id)
+  const lightCandidate = useMemo(() => candidates.find((c) => c.id === id), [candidates, id])
 
   // Fetch full candidate data (light endpoint omits workHistory/education/summary)
   useEffect(() => {
@@ -156,15 +158,91 @@ export default function CandidateDetail() {
     }
   })()
 
+  const handleAIAnalysis = useCallback(async () => {
+    if (!candidate) return
+    
+    setIsAnalyzing(true)
+    setAnalysisError(null)
+    
+    try {
+      // Use the new detailed AI analysis endpoint
+      const response = await authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis${aiAnalysis ? '?refresh=true' : ''}`)
+
+      if (!response.ok) {
+        if (response.status === 503) {
+          throw new Error('AI service not configured. Please ensure Ollama is running.')
+        }
+        throw new Error('Failed to analyze candidate')
+      }
+
+      const analysis = await response.json()
+      setAiAnalysis(analysis)
+      
+      addNotification({
+        type: 'success',
+        title: 'AI Analysis Complete',
+        message: `Detailed assessment generated for ${candidate.name}`,
+      })
+    } catch (error: any) {
+      console.error('AI Analysis error:', error)
+      setAnalysisError(error.message || 'Failed to analyze candidate')
+      
+      // Fallback to simple analysis — derive grade AND recommendation from score
+      const fallbackScore = candidate.matchScore
+      // Consistent grade derivation
+      const deriveGrade = (s: number) => {
+        if (s >= 90) return { rating: 'A+', rec: 'STRONGLY_RECOMMEND' }
+        if (s >= 80) return { rating: 'A', rec: 'STRONGLY_RECOMMEND' }
+        if (s >= 70) return { rating: 'A-', rec: 'RECOMMEND' }
+        if (s >= 60) return { rating: 'B+', rec: 'RECOMMEND' }
+        if (s >= 50) return { rating: 'B', rec: 'CONSIDER' }
+        if (s >= 40) return { rating: 'B-', rec: 'CONSIDER' }
+        return { rating: 'C+', rec: 'REVIEW' }
+      }
+      const { rating: fbRating, rec: fbRec } = deriveGrade(fallbackScore)
+      setAiAnalysis({
+        executive_summary: `${candidate.name} has a ${fallbackScore}% match score with ${candidate.experience || 0} years of experience. Their skill set includes ${candidate.skills.slice(0, 5).join(', ')}. A more detailed AI assessment is recommended when the AI service becomes available.`,
+        technical_assessment: `The candidate lists ${candidate.skills.length} skills: ${candidate.skills.slice(0, 8).join(', ')}. These should be validated through technical assessment.`,
+        experience_assessment: `${candidate.name} reports ${candidate.experience || 0} years of professional experience. Career progression details should be explored during the interview process.`,
+        pros: ['Profile submitted and in active pipeline', `Lists ${candidate.skills.length} relevant skills`, `${candidate.experience || 0} years of experience`],
+        cons: ['Detailed AI analysis unavailable - manual review recommended'],
+        hiring_recommendation: fbRec,
+        hiring_recommendation_rationale: fallbackScore >= 80 ? 'Strong candidate profile. Interview recommended to confirm fit.' : fallbackScore >= 60 ? 'Promising candidate. Further assessment recommended.' : 'Automated analysis was limited. A manual review is recommended.',
+        confidence_score: fallbackScore || 50,
+        overall_rating: fbRating,
+        source: 'profile-based',
+        isFallback: true
+      })
+    } finally {
+      setIsAnalyzing(false)
+    }
+  }, [candidate, aiAnalysis, addNotification])
+
   // Auto-load cached AI analysis on page load
+  const [autoTriggered, setAutoTriggered] = useState(false)
   useEffect(() => {
     if (candidate?.id) {
       authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis`)
         .then(r => r.ok ? r.json() : null)
-        .then(data => { if (data?.executive_summary) setAiAnalysis(data) })
+        .then(data => {
+          if (data?.executive_summary) {
+            setAiAnalysis(data)
+          } else {
+            // Mark for auto-trigger — handled by a separate effect to avoid stale closure
+            setAutoTriggered(true)
+          }
+        })
         .catch(() => {})
     }
   }, [candidate?.id])
+
+  // Separate effect for auto-triggering AI analysis — avoids stale closure on handleAIAnalysis
+  useEffect(() => {
+    if (autoTriggered && candidate && !aiAnalysis && !isAnalyzing) {
+      setAutoTriggered(false)
+      handleAIAnalysis()
+    }
+  }, [autoTriggered, candidate, aiAnalysis, isAnalyzing, handleAIAnalysis])
 
   const handleToggleShortlist = async () => {
     if (!candidate) return
@@ -177,13 +255,16 @@ export default function CandidateDetail() {
         const result = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
         toggleShortlist(candidate.id)
         
-        const emailSent = result?.data?.email_sent?.status === 'success'
+        const emailStatus = result?.data?.email_sent?.status
+        const emailSent = emailStatus === 'success' || emailStatus === 'queued'
         addNotification({
           type: 'success',
           title: 'Added to Shortlist',
           message: emailSent 
             ? `${candidate.name} shortlisted — notification email sent!`
-            : `${candidate.name} added to your shortlist`,
+            : emailStatus === 'error'
+              ? `${candidate.name} shortlisted — email failed: ${result?.data?.email_sent?.message || 'unknown error'}`
+              : `${candidate.name} added to your shortlist`,
           actionUrl: '/shortlist'
         })
       } else {
@@ -253,55 +334,6 @@ export default function CandidateDetail() {
     window.location.href = `mailto:${candidate.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
   }
 
-  const handleAIAnalysis = async () => {
-    if (!candidate) return
-    
-    setIsAnalyzing(true)
-    setAnalysisError(null)
-    
-    try {
-      // Use the new detailed AI analysis endpoint
-      const response = await authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis${aiAnalysis ? '?refresh=true' : ''}`)
-
-      if (!response.ok) {
-        if (response.status === 503) {
-          throw new Error('AI service not configured. Please ensure Ollama is running.')
-        }
-        throw new Error('Failed to analyze candidate')
-      }
-
-      const analysis = await response.json()
-      setAiAnalysis(analysis)
-      
-      addNotification({
-        type: 'success',
-        title: 'AI Analysis Complete',
-        message: `Detailed assessment generated for ${candidate.name}`,
-      })
-    } catch (error: any) {
-      console.error('AI Analysis error:', error)
-      setAnalysisError(error.message || 'Failed to analyze candidate')
-      
-      // Fallback to simple analysis
-      const fallbackScore = candidate.matchScore
-      setAiAnalysis({
-        executive_summary: `${candidate.name} has a ${fallbackScore}% match score with ${candidate.experience || 0} years of experience. Their skill set includes ${candidate.skills.slice(0, 5).join(', ')}. A more detailed AI assessment is recommended when the AI service becomes available.`,
-        technical_assessment: `The candidate lists ${candidate.skills.length} skills: ${candidate.skills.slice(0, 8).join(', ')}. These should be validated through technical assessment.`,
-        experience_assessment: `${candidate.name} reports ${candidate.experience || 0} years of professional experience. Career progression details should be explored during the interview process.`,
-        pros: ['Profile submitted and in active pipeline', `Lists ${candidate.skills.length} relevant skills`, `${candidate.experience || 0} years of experience`],
-        cons: ['Detailed AI analysis unavailable - manual review recommended'],
-        hiring_recommendation: 'CONSIDER',
-        hiring_recommendation_rationale: 'Automated analysis was limited. A manual review and interview is recommended to fully assess fit.',
-        confidence_score: fallbackScore || 50,
-        overall_rating: fallbackScore >= 70 ? 'B+' : fallbackScore >= 50 ? 'B' : 'C+',
-        source: 'profile-based',
-        isFallback: true
-      })
-    } finally {
-      setIsAnalyzing(false)
-    }
-  }
-
   const [showRejectConfirm, setShowRejectConfirm] = useState(false)
 
   const handleRejectCandidate = async () => {
@@ -350,10 +382,10 @@ export default function CandidateDetail() {
     )
   }
 
-  const shortlisted = isShortlisted(candidate.id)
+  // Use backend status as source of truth (survives page refresh), with in-memory store as fallback
+  const shortlisted = candidate.status === 'Shortlisted' || isShortlisted(candidate.id)
 
   const scoreColor = candidate.matchScore >= 80 ? 'text-emerald-600' : candidate.matchScore >= 60 ? 'text-blue-600' : candidate.matchScore >= 40 ? 'text-amber-600' : 'text-red-500'
-  const scoreBg = candidate.matchScore >= 80 ? 'from-emerald-500 to-emerald-600' : candidate.matchScore >= 60 ? 'from-blue-500 to-blue-600' : candidate.matchScore >= 40 ? 'from-amber-500 to-amber-600' : 'from-red-500 to-red-600'
   const catColor = getCategoryColor(candidate.jobCategory || 'General')
 
   return (
@@ -478,10 +510,10 @@ export default function CandidateDetail() {
                     variant="outline" 
                     onClick={handleToggleShortlist} 
                     disabled={isShortlisting}
-                    className={`text-xs h-8 ${shortlisted ? 'border-yellow-300 bg-yellow-50 text-yellow-700' : ''}`}
+                    className={`text-xs h-8 ${shortlisted ? 'border-yellow-300 bg-yellow-50 text-yellow-700 hover:bg-red-50 hover:border-red-300 hover:text-red-700' : ''}`}
                   >
                     {isShortlisting ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Star className={`w-3.5 h-3.5 mr-1 ${shortlisted ? 'fill-yellow-400 text-yellow-500' : ''}`} />}
-                    {isShortlisting ? '...' : shortlisted ? 'Saved' : 'Shortlist'}
+                    {isShortlisting ? '...' : shortlisted ? 'Unshortlist' : 'Shortlist'}
                   </Button>
                 </div>
               </div>
@@ -670,7 +702,7 @@ export default function CandidateDetail() {
               <div className="p-5">
                 <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-3">Skills & Expertise</h3>
                 <div className="flex flex-wrap gap-1.5">
-                  {candidate.skills.map((skill) => (
+                  {candidate.skills.map((skill: string) => (
                     <span key={skill} className="text-[11px] px-2 py-0.5 rounded-md font-medium bg-sky-50 text-sky-700 border border-sky-100">
                       {skill}
                     </span>
@@ -693,7 +725,7 @@ export default function CandidateDetail() {
                       {[1,2,3].map(i => <div key={i} className="pl-5"><div className="h-3 bg-gray-200 rounded w-3/4 mb-1.5" /><div className="h-2.5 bg-gray-200 rounded w-1/2" /></div>)}
                     </div>
                   ) : candidate.workHistory && candidate.workHistory.length > 0 ? (
-                    candidate.workHistory.map((job, index) => (
+                    candidate.workHistory.map((job: any, index: number) => (
                       <div key={index} className="relative pl-5 pb-4 last:pb-0 border-l border-gray-200 last:border-l-transparent">
                         <div className="absolute left-0 top-1 w-2 h-2 -translate-x-[5px] rounded-full bg-slate-800 ring-2 ring-white" />
                         <h4 className="text-sm font-semibold text-gray-900">{job.title}</h4>
@@ -728,7 +760,7 @@ export default function CandidateDetail() {
                       {[1,2].map(i => <div key={i}><div className="h-3 bg-gray-200 rounded w-2/3 mb-1" /><div className="h-2.5 bg-gray-200 rounded w-1/2" /></div>)}
                     </div>
                   ) : candidate.education && candidate.education.length > 0 ? (
-                    candidate.education.map((edu, index) => (
+                    candidate.education.map((edu: any, index: number) => (
                       <div key={index}>
                         <h4 className="text-sm font-semibold text-gray-900">
                           {edu.degree}{edu.field ? ` in ${edu.field}` : ''}
@@ -757,7 +789,7 @@ export default function CandidateDetail() {
                         <Award className="w-3.5 h-3.5" />Certifications
                       </h3>
                       <div className="space-y-1.5">
-                        {candidate.certifications.map((cert, i) => (
+                        {candidate.certifications.map((cert: string, i: number) => (
                           <div key={i} className="flex items-start gap-1.5">
                             <Award className="w-3 h-3 text-amber-500 mt-0.5 flex-shrink-0" />
                             <span className="text-xs text-gray-700">{cert}</span>
@@ -774,13 +806,49 @@ export default function CandidateDetail() {
                         <Globe className="w-3.5 h-3.5" />Languages
                       </h3>
                       <div className="flex flex-wrap gap-1.5">
-                        {candidate.languages.map((lang, i) => (
+                        {candidate.languages.map((lang: string, i: number) => (
                           <span key={i} className="text-xs px-2 py-0.5 rounded-full border border-sky-100 bg-sky-50/50 text-sky-700">{lang}</span>
                         ))}
                       </div>
                     </div>
                   </div>
                 )}
+              </div>
+            </motion.div>
+          )}
+
+          {/* Original Resume Text — shown as-is from email/upload */}
+          {candidate.resumeText && (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+              <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+                <div className="p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
+                      <Download className="w-3.5 h-3.5" />Original Resume Content
+                    </h3>
+                    <button
+                      onClick={async () => {
+                        try { await downloadOriginalResume(candidate as any) } catch { toast.error('Download failed', 'No resume file available') }
+                      }}
+                      className="flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg transition-colors"
+                    >
+                      <FileDown className="w-3.5 h-3.5" />Download Resume
+                    </button>
+                  </div>
+                  {isTextGarbled(candidate.resumeText) ? (
+                    <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center gap-3">
+                      <FileDown className="w-5 h-5 text-amber-500 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-800">Resume text could not be displayed</p>
+                        <p className="text-xs text-amber-600 mt-0.5">The extracted text contains encoding errors. Use <strong>Download Resume</strong> to view the original file.</p>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-slate-50 rounded-lg p-4 max-h-96 overflow-y-auto">
+                      <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-line font-mono">{candidate.resumeText}</p>
+                    </div>
+                  )}
+                </div>
               </div>
             </motion.div>
           )}
@@ -804,18 +872,22 @@ export default function CandidateDetail() {
                     candidate.matchScore >= 80
                       ? 'bg-emerald-500'
                       : candidate.matchScore >= 60
+                      ? 'bg-sky-500'
+                      : candidate.matchScore >= 40
                       ? 'bg-amber-500'
                       : 'bg-red-500'
                   }
                 />
                 <span className={`inline-block text-[10px] font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full ${
-                  candidate.status === 'Strong'
+                  candidate.matchScore >= 80
                     ? 'bg-emerald-50 text-emerald-700'
-                    : candidate.status === 'Partial'
+                    : candidate.matchScore >= 60
+                    ? 'bg-sky-50 text-sky-700'
+                    : candidate.matchScore >= 40
                     ? 'bg-amber-50 text-amber-700'
                     : 'bg-red-50 text-red-700'
                 }`}>
-                  {candidate.status} Match
+                  {candidate.matchScore >= 80 ? 'Strong' : candidate.matchScore >= 60 ? 'Medium' : candidate.matchScore >= 40 ? 'Weak' : 'Low'} Match
                 </span>
               </div>
             </div>
@@ -828,7 +900,7 @@ export default function CandidateDetail() {
                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-1">Quick Info</p>
                 {[
                   { label: 'Experience', value: `${candidate.experience} years` },
-                  { label: 'Applied', value: new Date(candidate.appliedDate).toLocaleDateString() },
+                  { label: 'Applied', value: candidate.appliedDate ? new Date(candidate.appliedDate).toLocaleDateString() : '—' },
                   { label: 'Location', value: candidate.location },
                 ].map((row) => (
                   <div key={row.label} className="flex items-center justify-between text-xs">
@@ -840,46 +912,59 @@ export default function CandidateDetail() {
             </div>
           </motion.div>
 
-          {/* AI Evaluation — compact */}
-          {candidate.evaluation && (
+          {/* AI Evaluation — populated from AI analysis or candidate data */}
+          {(aiAnalysis || (candidate.evaluation && (candidate.evaluation.strengths?.length > 0 || candidate.evaluation.gaps?.length > 0))) && (
             <motion.div initial={{ opacity: 0, x: 10 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.15 }}>
               <div className="rounded-xl border border-sky-100 bg-white shadow-sm overflow-hidden">
                 <div className="h-0.5 bg-gradient-to-r from-sky-500 to-indigo-500" />
                 <div className="p-4 space-y-3">
                   <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">AI Evaluation</p>
 
-                  <div>
-                    <h4 className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wide mb-1 flex items-center gap-1">
-                      <CheckCircle className="w-3 h-3" />Strengths
-                    </h4>
-                    <ul className="space-y-1">
-                      {candidate.evaluation.strengths.map((s, i) => (
-                        <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
-                          <span className="w-1 h-1 rounded-full bg-emerald-400 mt-1.5 flex-shrink-0" />
-                          {s}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                  {(() => {
+                    const strengths = aiAnalysis?.pros || candidate.evaluation?.strengths || []
+                    const gaps = aiAnalysis?.cons || candidate.evaluation?.gaps || []
+                    const recommendation = aiAnalysis?.hiring_recommendation_rationale || aiAnalysis?.hiring_recommendation?.replace('_', ' ') || candidate.evaluation?.recommendation || candidate.jobCategory || 'General'
+                    return (
+                      <>
+                        {strengths.length > 0 && (
+                          <div>
+                            <h4 className="text-[11px] font-semibold text-emerald-700 uppercase tracking-wide mb-1 flex items-center gap-1">
+                              <CheckCircle className="w-3 h-3" />Strengths
+                            </h4>
+                            <ul className="space-y-1">
+                              {strengths.slice(0, 5).map((s: string, i: number) => (
+                                <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
+                                  <span className="w-1 h-1 rounded-full bg-emerald-400 mt-1.5 flex-shrink-0" />
+                                  {s}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
 
-                  <div>
-                    <h4 className="text-[11px] font-semibold text-red-600 uppercase tracking-wide mb-1 flex items-center gap-1">
-                      <XCircle className="w-3 h-3" />Gaps
-                    </h4>
-                    <ul className="space-y-1">
-                      {candidate.evaluation.gaps.map((g, i) => (
-                        <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
-                          <span className="w-1 h-1 rounded-full bg-red-400 mt-1.5 flex-shrink-0" />
-                          {g}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                        {gaps.length > 0 && (
+                          <div>
+                            <h4 className="text-[11px] font-semibold text-red-600 uppercase tracking-wide mb-1 flex items-center gap-1">
+                              <XCircle className="w-3 h-3" />Gaps
+                            </h4>
+                            <ul className="space-y-1">
+                              {gaps.slice(0, 5).map((g: string, i: number) => (
+                                <li key={i} className="text-xs text-gray-600 flex items-start gap-1.5">
+                                  <span className="w-1 h-1 rounded-full bg-red-400 mt-1.5 flex-shrink-0" />
+                                  {g}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        )}
 
-                  <div className="pt-2 border-t border-gray-100">
-                    <h4 className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Recommendation</h4>
-                    <p className="text-xs text-gray-700 leading-relaxed">{candidate.evaluation.recommendation}</p>
-                  </div>
+                        <div className="pt-2 border-t border-gray-100">
+                          <h4 className="text-[11px] font-semibold text-gray-500 uppercase tracking-wide mb-1">Recommendation</h4>
+                          <p className="text-xs text-gray-700 leading-relaxed">{recommendation}</p>
+                        </div>
+                      </>
+                    )
+                  })()}
                 </div>
               </div>
             </motion.div>

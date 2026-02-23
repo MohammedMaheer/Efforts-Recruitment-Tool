@@ -1059,8 +1059,8 @@ class LocalAIService:
             score += depth_score
         
         # Ensure score is within realistic bounds
-        # Minimum 35% for any parsed resume, max 95%
-        final_score = max(35.0, min(95.0, score))
+        # Minimum 10% for any parsed resume (was 35% - too high for poor data), max 95%
+        final_score = max(10.0, min(95.0, score))
         
         # Round to 1 decimal
         return round(final_score, 1)

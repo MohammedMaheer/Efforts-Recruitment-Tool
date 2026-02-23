@@ -315,6 +315,24 @@ class CompressionMiddleware:
                 response_body.append(body)
                 
                 if more_body:
+                    if response_started:
+                        # Already flushed — passthrough remaining chunks
+                        await send({"type": "http.response.body", "body": body, "more_body": True})
+                        return
+                    # Safety check: if buffered body exceeds 5MB, flush without compression
+                    buffered_size = sum(len(chunk) for chunk in response_body)
+                    if buffered_size > 5 * 1024 * 1024:
+                        # Flush accumulated body without compression to prevent OOM
+                        await send({
+                            "type": "http.response.start",
+                            "status": initial_status,
+                            "headers": response_headers
+                        })
+                        for chunk in response_body:
+                            await send({"type": "http.response.body", "body": chunk, "more_body": True})
+                        response_body.clear()
+                        # Switch to passthrough for remaining chunks
+                        response_started = True
                     return
                 
                 # Combine body
@@ -389,10 +407,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self.window_size = 60  # seconds
         self._request_counts: Dict[str, List[float]] = defaultdict(list)
         self._lock = asyncio.Lock()
+        self._cleanup_counter: int = 0
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        # Get client identifier
-        client_ip = request.client.host if request.client else "unknown"
+        # Get client identifier — use X-Forwarded-For behind load balancers (Cloud Run)
+        forwarded_for = request.headers.get("x-forwarded-for", "")
+        if forwarded_for:
+            client_ip = forwarded_for.split(",")[0].strip()
+        else:
+            client_ip = request.client.host if request.client else "unknown"
         
         # Skip rate limiting for certain paths
         skip_paths = ["/health", "/api/health", "/api/metrics", "/docs", "/openapi.json"]
@@ -404,6 +427,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             now = time.time()
             window_start = now - self.window_size
             
+            # Evict all entries if dict exceeds 10,000 IPs to prevent OOM
+            if len(self._request_counts) > 10_000:
+                self._request_counts.clear()
+
             # Clean old requests
             self._request_counts[client_ip] = [
                 ts for ts in self._request_counts[client_ip]
@@ -411,10 +438,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             ]
             
             # Periodically clean up stale IPs (every 100th request)
-            if hasattr(self, '_cleanup_counter'):
-                self._cleanup_counter += 1
-            else:
-                self._cleanup_counter = 0
+            self._cleanup_counter += 1
             if self._cleanup_counter >= 100:
                 self._cleanup_counter = 0
                 stale_ips = [ip for ip, timestamps in self._request_counts.items() 

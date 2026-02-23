@@ -6,6 +6,7 @@ import React, { useState, useEffect } from 'react';
 import { advancedApi } from '@/services/api';
 import config from '@/config';
 import { authFetch } from '@/lib/authFetch';
+import { toast } from '@/components/ui/Toast';
 import {
   Brain,
   Target,
@@ -158,10 +159,10 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
         candidatePhone,
         campaignId,
       });
-      alert(`${candidateName} enrolled in campaign!`);
+      toast.success('Enrolled', `${candidateName} enrolled in campaign!`);
     } catch (error) {
       console.error('Failed to enroll:', error);
-      alert('Failed to enroll in campaign');
+      toast.error('Enrollment failed', 'Failed to enroll in campaign');
     } finally {
       setEnrolling(false);
     }
@@ -169,7 +170,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
 
   const handleSendSMS = async () => {
     if (!candidatePhone) {
-      alert('No phone number available');
+      toast.warning('No phone number', 'No phone number available for this candidate');
       return;
     }
     try {
@@ -179,10 +180,10 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
         variables: { name: candidateName.split(' ')[0] },
         candidateId,
       });
-      alert('SMS sent!');
+      toast.success('SMS sent', 'Message delivered successfully');
     } catch (error) {
       console.error('Failed to send SMS:', error);
-      alert('Failed to send SMS');
+      toast.error('SMS failed', 'Failed to send SMS');
     }
   };
 
@@ -245,7 +246,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
             <span className="font-medium text-gray-900 dark:text-white">AI Analysis (Pros & Cons)</span>
             {deepAnalysis?.ai_powered && (
               <span className="px-2 py-0.5 text-xs rounded-full bg-sky-100 text-sky-700">
-                GPT-4
+                AI-Powered
               </span>
             )}
           </div>
@@ -576,7 +577,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
             <span>SMS</span>
           </button>
           <button
-            onClick={() => window.location.href = `/schedule?candidate=${candidateId}`}
+            onClick={() => window.location.href = `/candidates/${candidateId}`}
             className="flex flex-col items-center gap-1 p-2 bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 rounded-lg hover:border-blue-500 text-xs"
           >
             <Calendar className="h-4 w-4 text-blue-500" />
@@ -592,7 +593,7 @@ const CandidateAIInsights: React.FC<CandidateInsightsProps> = ({
 interface PredictionRowProps {
   label: string;
   value: number;
-  color: 'blue' | 'green' | 'blue' | 'yellow' | 'red';
+  color: 'blue' | 'green' | 'purple' | 'yellow' | 'red';
 }
 
 const PredictionRow: React.FC<PredictionRowProps> = ({ label, value, color }) => {

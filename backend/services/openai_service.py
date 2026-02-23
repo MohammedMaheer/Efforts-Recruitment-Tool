@@ -20,7 +20,8 @@ class OpenAIService:
             raise ValueError("OPENAI_API_KEY not found in environment variables")
         
         self.client = OpenAI(api_key=api_key)
-        self.model = os.getenv('OPENAI_MODEL', 'gpt-4o')
+        self.available = True
+        self.model = os.getenv('OPENAI_MODEL', 'gpt-4o-mini')
         self.max_tokens = int(os.getenv('OPENAI_MAX_TOKENS', '2000'))
         self.temperature = float(os.getenv('OPENAI_TEMPERATURE', '0.3'))
     

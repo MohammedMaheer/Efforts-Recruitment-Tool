@@ -27,7 +27,7 @@ export default function OAuthCallback() {
       }
 
       // Clear the URL to prevent re-use of the code
-      window.history.replaceState({}, document.title, '/auth/callback')
+      window.history.replaceState({}, document.title, '/oauth/callback')
 
       try {
         // Exchange code for token
@@ -36,7 +36,7 @@ export default function OAuthCallback() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             code: code,
-            redirect_uri: `${window.location.origin}/auth/callback`
+            redirect_uri: `${window.location.origin}/oauth/callback`
           })
         })
 

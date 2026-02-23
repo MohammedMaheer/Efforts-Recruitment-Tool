@@ -143,14 +143,13 @@ export const useAuthStore = create<AuthState>()(
           clearTimeout(timeoutId)
           console.error('Token verification failed:', error)
           // Only clear auth on definitive server rejection, not network errors
-          // Network errors (timeout, offline) should keep existing auth state
+          // Timeout during cold start → keep auth state
           if (error instanceof DOMException && error.name === 'AbortError') {
-            // Timeout — server might be starting up, keep auth state
             return true
           }
-          // For other network errors, keep auth state and return true
-          // The user will get logged out on next actual 401 response
-          return true
+          // For genuine network errors, clear auth state — user needs to re-login
+          set({ isAuthenticated: false, user: null, token: null })
+          return false
         }
       },
       
@@ -203,11 +202,23 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'auth-storage',
+      storage: {
+        getItem: (name) => {
+          const str = sessionStorage.getItem(name)
+          return str ? JSON.parse(str) : null
+        },
+        setItem: (name, value) => {
+          sessionStorage.setItem(name, JSON.stringify(value))
+        },
+        removeItem: (name) => {
+          sessionStorage.removeItem(name)
+        },
+      },
       partialize: (state) => ({ 
         user: state.user, 
         token: state.token,
         isAuthenticated: state.isAuthenticated 
-      }),
+      } as unknown as AuthState),
     }
   )
 )

@@ -2,7 +2,7 @@
  * Main Application Component
  * Root component with routing, error handling, and global providers
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useState, lazy, Suspense } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
@@ -11,14 +11,27 @@ import config from '@/config'
 import LoginPage from '@/pages/LoginPage'
 import OAuthCallback from '@/pages/OAuthCallback'
 import DashboardLayout from '@/components/layout/DashboardLayout'
-import Dashboard from '@/pages/Dashboard'
-import Candidates from '@/pages/Candidates'
-import CandidateDetail from '@/pages/CandidateDetail'
-import Shortlist from '@/pages/Shortlist'
-import Settings from '@/pages/Settings'
-import AIAssistant from '@/pages/AIAssistant'
-// JobDescriptions removed - JD matching integrated into AI Assistant
-import SetupWizard from '@/pages/SetupWizard'
+
+// Lazy-load route components for code splitting
+const Dashboard = lazy(() => import('@/pages/Dashboard'))
+const Candidates = lazy(() => import('@/pages/Candidates'))
+const CandidateDetail = lazy(() => import('@/pages/CandidateDetail'))
+const Shortlist = lazy(() => import('@/pages/Shortlist'))
+const Settings = lazy(() => import('@/pages/Settings'))
+const AIAssistant = lazy(() => import('@/pages/AIAssistant'))
+const UploadFiles = lazy(() => import('@/pages/UploadFiles'))
+const SearchReports = lazy(() => import('@/pages/SearchReports'))
+const JDBuilder = lazy(() => import('@/pages/JDBuilder'))
+const SetupWizard = lazy(() => import('@/pages/SetupWizard'))
+
+/** Route loading fallback */
+function RouteFallback() {
+  return (
+    <div className="flex items-center justify-center h-64">
+      <div className="w-8 h-8 border-4 border-sky-600 border-t-transparent rounded-full animate-spin"></div>
+    </div>
+  )
+}
 
 /**
  * Protected Route Wrapper
@@ -109,14 +122,17 @@ function App() {
           }
         >
           <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="dashboard" element={<Dashboard />} />
-          <Route path="ai-assistant" element={<AIAssistant />} />
-          <Route path="candidates" element={<Candidates />} />
-          <Route path="candidates/:id" element={<CandidateDetail />} />
-          <Route path="shortlist" element={<Shortlist />} />
+          <Route path="dashboard" element={<Suspense fallback={<RouteFallback />}><Dashboard /></Suspense>} />
+          <Route path="ai-assistant" element={<Suspense fallback={<RouteFallback />}><AIAssistant /></Suspense>} />
+          <Route path="upload" element={<Suspense fallback={<RouteFallback />}><UploadFiles /></Suspense>} />
+          <Route path="search-reports" element={<Suspense fallback={<RouteFallback />}><SearchReports /></Suspense>} />
+          <Route path="jd-builder" element={<Suspense fallback={<RouteFallback />}><JDBuilder /></Suspense>} />
+          <Route path="candidates" element={<Suspense fallback={<RouteFallback />}><Candidates /></Suspense>} />
+          <Route path="candidates/:id" element={<Suspense fallback={<RouteFallback />}><CandidateDetail /></Suspense>} />
+          <Route path="shortlist" element={<Suspense fallback={<RouteFallback />}><Shortlist /></Suspense>} />
           <Route path="email-integration" element={<Navigate to="/setup" replace />} />
-          <Route path="settings" element={<Settings />} />
-          <Route path="setup" element={<SetupWizard />} />
+          <Route path="settings" element={<Suspense fallback={<RouteFallback />}><Settings /></Suspense>} />
+          <Route path="setup" element={<Suspense fallback={<RouteFallback />}><SetupWizard /></Suspense>} />
         </Route>
 
         {/* Fallback Route */}

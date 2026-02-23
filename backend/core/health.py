@@ -86,8 +86,7 @@ class HealthCheck:
         start_time = time.time()
         
         try:
-            async with asyncio.timeout(self.timeout):
-                is_healthy = await self.check_func()
+            is_healthy = await asyncio.wait_for(self.check_func(), timeout=self.timeout)
             
             latency = (time.time() - start_time) * 1000
             
@@ -235,7 +234,7 @@ class HealthCheckManager:
     def get_system_resources(self) -> SystemResources:
         """Get current system resource usage"""
         try:
-            cpu = psutil.cpu_percent(interval=0.1)
+            cpu = psutil.cpu_percent(interval=None)
             memory = psutil.virtual_memory()
             disk = psutil.disk_usage('/')
             process = psutil.Process()

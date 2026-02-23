@@ -464,8 +464,17 @@ class AsyncDatabaseManager:
         batch_size: int = 100
     ) -> int:
         """Efficient batch insert with chunking"""
+        import re as _re
         if not values_list:
             return 0
+        
+        # Validate table and column names to prevent SQL injection
+        _identifier_re = _re.compile(r'^[a-zA-Z_][a-zA-Z0-9_]*$')
+        if not _identifier_re.match(table):
+            raise ValueError(f"Invalid table name: {table}")
+        for col in columns:
+            if not _identifier_re.match(col):
+                raise ValueError(f"Invalid column name: {col}")
         
         placeholders = ','.join(['?' for _ in columns])
         query = f"INSERT OR REPLACE INTO {table} ({','.join(columns)}) VALUES ({placeholders})"
@@ -493,6 +502,16 @@ class AsyncDatabaseManager:
         # Normalize query for tracking
         query_key = query[:50].strip()
         
+        # Cap stats dict to prevent unbounded growth (evict oldest half)
+        if len(self._query_stats) > 1000:
+            # Keep the 500 most-queried entries
+            sorted_keys = sorted(
+                self._query_stats.keys(),
+                key=lambda k: self._query_stats[k]['count'],
+                reverse=True
+            )[:500]
+            self._query_stats = {k: self._query_stats[k] for k in sorted_keys}
+
         if query_key not in self._query_stats:
             self._query_stats[query_key] = {
                 'count': 0,
@@ -546,14 +565,20 @@ class AsyncDatabaseManager:
 
 # Singleton instance
 _db_manager: Optional[AsyncDatabaseManager] = None
+_db_manager_lock: asyncio.Lock = asyncio.Lock()
 
 
 async def get_db_manager(database_path: str = "recruitment.db") -> AsyncDatabaseManager:
-    """Get or create the database manager singleton"""
+    """Get or create the database manager singleton (thread-safe)"""
     global _db_manager
     
-    if _db_manager is None:
-        _db_manager = AsyncDatabaseManager(database_path)
-        await _db_manager.initialize()
+    if _db_manager is not None:
+        return _db_manager
+    
+    async with _db_manager_lock:
+        # Double-check after acquiring lock
+        if _db_manager is None:
+            _db_manager = AsyncDatabaseManager(database_path)
+            await _db_manager.initialize()
     
     return _db_manager

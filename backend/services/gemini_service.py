@@ -33,16 +33,31 @@ except ImportError:
 
 
 def _repair_json(text: str) -> Optional[Dict]:
-    """Lightweight JSON repair for Gemini output."""
+    """Lightweight JSON repair for Gemini output. Always returns a dict or None."""
     if not text:
         return None
     # Strip markdown fences
     text = re.sub(r'```(?:json)?\s*', '', text).strip()
     text = re.sub(r'```$', '', text).strip()
 
+    def _ensure_dict(val):
+        """Ensure the result is a dict, not a list or other type."""
+        if isinstance(val, dict):
+            return val
+        if isinstance(val, list):
+            # Return first dict in list, or None
+            for item in val:
+                if isinstance(item, dict):
+                    return item
+            return None
+        return None
+
     # Direct parse
     try:
-        return json.loads(text)
+        parsed = json.loads(text)
+        result = _ensure_dict(parsed)
+        if result is not None:
+            return result
     except json.JSONDecodeError:
         pass
 
@@ -51,13 +66,19 @@ def _repair_json(text: str) -> Optional[Dict]:
     if m:
         candidate = m.group()
         try:
-            return json.loads(candidate)
+            parsed = json.loads(candidate)
+            result = _ensure_dict(parsed)
+            if result is not None:
+                return result
         except json.JSONDecodeError:
             pass
         # Fix trailing commas
         fixed = re.sub(r',\s*([}\]])', r'\1', candidate)
         try:
-            return json.loads(fixed)
+            parsed = json.loads(fixed)
+            result = _ensure_dict(parsed)
+            if result is not None:
+                return result
         except json.JSONDecodeError:
             pass
 
@@ -68,7 +89,10 @@ def _repair_json(text: str) -> Optional[Dict]:
         patched = text + (']' * max(open_k, 0)) + ('}' * max(open_b, 0))
         patched = re.sub(r',\s*([}\]])', r'\1', patched)
         try:
-            return json.loads(patched)
+            parsed = json.loads(patched)
+            result = _ensure_dict(parsed)
+            if result is not None:
+                return result
         except json.JSONDecodeError:
             pass
 
@@ -108,7 +132,7 @@ class GeminiService:
 
         # Response cache
         self._cache: Dict[str, Any] = {}
-        self._cache_max_size = 2000
+        self._cache_max_size = 500
         self._cache_ttl = 3600  # 1 hour
 
         if not GEMINI_AVAILABLE:
@@ -146,7 +170,7 @@ class GeminiService:
     # ------------------------------------------------------------------
 
     def _cache_key(self, prefix: str, text: str) -> str:
-        h = hashlib.md5(text.encode()).hexdigest()[:16]
+        h = hashlib.sha256(text.encode()).hexdigest()
         return f"gemini:{prefix}:{h}"
 
     def _get_cached(self, key: str) -> Optional[Any]:
@@ -313,9 +337,13 @@ Return JSON:
 
 Set is_candidate_email to false if NOT a job application."""
 
-        result = await self._agenerate_json(prompt, temperature=0.05)
+        try:
+            result = await self._agenerate_json(prompt, temperature=0.05)
+        except Exception as gen_err:
+            logger.warning(f"Gemini JSON generation error: {gen_err}")
+            return None
 
-        if result:
+        if result and isinstance(result, dict):
             if not result.get('is_candidate_email', True):
                 return None
             result['source'] = source
@@ -328,7 +356,7 @@ Set is_candidate_email to false if NOT a job application."""
                     result['job_subcategory'] = sub
             if result.get('name') or result.get('email'):
                 self._set_cache(cache_key, result)
-                logger.info(f"📧 [Gemini] Email parsed: {result.get('name', 'Unknown')} | Source: {source}")
+                logger.info(f"[Gemini] Email parsed: {result.get('name', 'Unknown')} | Source: {source}")
                 return result
 
         return None

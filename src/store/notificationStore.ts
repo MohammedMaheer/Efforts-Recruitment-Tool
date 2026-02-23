@@ -35,10 +35,17 @@ export const useNotificationStore = create<NotificationState>()(
           read: false,
         }
         
-        set((state) => ({
-          notifications: [newNotification, ...state.notifications],
-          unreadCount: state.unreadCount + 1,
-        }))
+        set((state) => {
+          const updated = [newNotification, ...state.notifications]
+          // Cap at 100 notifications — trim oldest when exceeded
+          if (updated.length > 100) {
+            updated.length = 100
+          }
+          return {
+            notifications: updated,
+            unreadCount: state.unreadCount + 1,
+          }
+        })
       },
       
       markAsRead: (id) => {

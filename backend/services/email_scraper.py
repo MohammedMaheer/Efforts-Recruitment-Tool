@@ -504,13 +504,19 @@ _EXPANDED_SKILL_KEYWORDS: List[str] = [
 
 
 def _extract_skills_from_text(text_lower: str) -> List[str]:
-    """Extract skills from lowercased text using the expanded keyword list."""
+    """Extract skills from lowercased text using the expanded keyword list with word boundaries."""
+    import re as _re
     found = []
     seen: set = set()
     for skill in _EXPANDED_SKILL_KEYWORDS:
-        if skill in text_lower and skill not in seen:
-            seen.add(skill)
-            found.append(skill.title())
+        if skill not in seen:
+            # Use word boundary to avoid substring false positives
+            # e.g. 'go' matching 'going', 'r' matching 'from', 'ai' matching 'claim'
+            # For skills with special chars (c++, c#, .net, ci/cd), use re.escape
+            pattern = r'\b' + _re.escape(skill) + r'\b'
+            if _re.search(pattern, text_lower):
+                seen.add(skill)
+                found.append(skill.title())
     return found
 
 
@@ -615,7 +621,7 @@ def is_valid_name(name: str) -> bool:
     invalid_names = [
         'employers', 'employer', 'indeed', 'linkedin', 'glassdoor', 'noreply',
         'no-reply', 'notifications', 'notification', 'jobs', 'careers', 'hiring',
-        'recruitment', 'recruiter', 'hr', 'human resources', 'support', 'info',
+        'recruitment', 'recruiter', 'human resources', 'support', 'info',
         'admin', 'administrator', 'system', 'automated', 'donotreply', 'mailer',
         'daemon', 'postmaster', 'webmaster', 'team', 'service', 'services',
         'salesiq', 'zoho', 'freshdesk', 'zendesk', 'intercom', 'hubspot',
@@ -625,9 +631,9 @@ def is_valid_name(name: str) -> bool:
     if name.lower().strip() in invalid_names:
         return False
     
-    # Must have at least 2 parts (first + last name) or be > 3 chars
+    # Must have at least 2 parts (first + last name) or be > 2 chars
     parts = name.split()
-    if len(parts) == 1 and len(name) < 4:
+    if len(parts) == 1 and len(name) < 3:
         return False
     
     return True
@@ -762,23 +768,17 @@ class EmailScraperService:
     
     def connect_to_inbox(self, account: EmailAccount):
         """Connect to specific email account via IMAP with timeout"""
-        import socket
-        old_timeout = socket.getdefaulttimeout()
         try:
-            # Set shorter timeout for socket operations (10 seconds)
-            socket.setdefaulttimeout(10)
-            
-            mail = imaplib.IMAP4_SSL(account.server, account.port)
+            # Use per-connection timeout instead of global socket.setdefaulttimeout
+            mail = imaplib.IMAP4_SSL(account.server, account.port, timeout=10)
             mail.login(account.email, account.password)
             mail.select('INBOX')
             
             return mail
         except Exception as e:
-            logger.warning(f"âŒ Connection failed for {account.name} ({account.email}): {str(e)[:100]}")
+            logger.warning(f"Connection failed for {account.name} ({account.email}): " + str(e)[:100])
             return None
-        finally:
-            socket.setdefaulttimeout(old_timeout)
-    
+
     async def fetch_emails(self, mail, process_all: bool = False, since_date=None) -> List[Dict]:
         """
         Fetch emails from mailbox
@@ -887,6 +887,7 @@ class EmailScraperService:
                         subject = "(no subject)"
             
             # Filter out non-job-application emails based on subject
+            subject = subject or ''  # Null safety
             job_keywords = ['resume', 'cv', 'application', 'apply', 'applying', 'position', 
                            'job', 'candidate', 'opportunity', 'career', 'hiring', 'employment',
                            'vacancy', 'interview', 'interested', 'role', 'post', 'opening',
@@ -940,15 +941,25 @@ class EmailScraperService:
                         except Exception:
                             pass
                     
-                    # Get attachments (resumes)
-                    if "attachment" in content_disposition:
+                    # Get attachments (resumes) — catch both "attachment" AND "inline" dispositions
+                    # Also catch parts with resume content-type but no disposition header
+                    is_attachment = "attachment" in content_disposition or "inline" in content_disposition
+                    is_resume_type = content_type in ('application/pdf', 'application/msword',
+                        'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+                    if is_attachment or is_resume_type:
                         filename = part.get_filename()
-                        if filename and (filename.endswith('.pdf') or filename.endswith('.docx')):
+                        # If no filename, try to construct one from content-type
+                        if not filename and is_resume_type:
+                            ext_map = {'application/pdf': 'resume.pdf', 'application/msword': 'resume.doc',
+                                       'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'resume.docx'}
+                            filename = ext_map.get(content_type, '')
+                        if filename and filename.lower().endswith(('.pdf', '.docx', '.doc')):
                             file_data = part.get_payload(decode=True)
-                            attachments.append({
-                                'filename': filename,
-                                'data': file_data
-                            })
+                            if file_data and len(file_data) > 100:  # Skip empty/tiny attachments
+                                attachments.append({
+                                    'filename': filename,
+                                    'data': file_data
+                                })
             else:
                 try:
                     body = msg.get_payload(decode=True).decode('utf-8', errors='ignore')
@@ -956,6 +967,7 @@ class EmailScraperService:
                     pass
             
             # Final filter: Check if email has resume attachment OR job application content
+            body = body or ''  # Null safety
             body_lower = body.lower()
             has_resume_attachment = any(att['filename'].lower().endswith(('.pdf', '.docx', '.doc')) 
                                        for att in attachments)
@@ -989,10 +1001,10 @@ class EmailScraperService:
         """
         try:
             # Clean the email body (strip HTML)
-            raw_body = email_data.get('body', '')
+            raw_body = email_data.get('body', '') or ''
             clean_body = clean_html_to_text(raw_body) if '<' in raw_body else raw_body
-            subject = email_data.get('subject', '')
-            sender_email = email_data.get('sender_email', '')
+            subject = email_data.get('subject', '') or ''
+            sender_email = email_data.get('sender_email', '') or ''
             
             # FILTER: Skip system/noreply emails that aren't real candidates
             skip_email_patterns = [
@@ -1013,11 +1025,32 @@ class EmailScraperService:
             
             # FILTER: Detect chat transcript / non-candidate content
             _body_lower = clean_body[:500].lower() if clean_body else ''
+            _subject_lower = subject.lower() if subject else ''
             is_chat_transcript = bool(re.search(r'chat\s*transcript|attended\s*by\s*:|chat\s*duration\s*:', _body_lower))
-            is_system_notification = bool(re.search(
-                r'your\s*subscription|invoice|receipt|payment\s*confirm|order\s*confirm|shipping|delivery\s*notification|unsubscribe\s*from|newsletter\s*update',
-                _body_lower
-            ))
+            # System notification detection — only flag if sender is a system email
+            # Personal email addresses (gmail, outlook, yahoo etc.) should NEVER be flagged
+            # because candidates may have keywords like "invoice" in their job descriptions
+            _is_personal_email = any(d in sender_email.lower() for d in ['@gmail.', '@yahoo.', '@hotmail.', '@outlook.', '@live.', '@icloud.', '@proton', '@aol.', '@rediff.'])
+            is_system_notification = False
+            if not _is_personal_email:
+                is_system_notification = bool(re.search(
+                    r'your\s*subscription|(?:^|\s)invoice\s*#|receipt\s*#|payment\s*confirm|order\s*confirm|shipping\s*(?:confirm|notif)|delivery\s*notification|newsletter\s*update',
+                    _body_lower
+                ))
+            
+            # FILTER: Skip Indeed/LinkedIn employer notification emails (not candidate applications)
+            _employer_notification_patterns = [
+                r'^your\s+job[,:]',                    # "Your job, X, has been closed/is active"
+                r'you\s+have\s+\d+\s+new\s+applicants', # "You have 24 new applicants"
+                r'^your\s+sponsored\s+job',             # Sponsored job notifications
+                r'^your\s+posting',                     # Job posting notifications
+                r'job\s+performance\s+report',          # Indeed performance reports
+                r'^hiring\s+insights',                  # Indeed hiring insights
+                r'^budget\s+alert',                     # Sponsored job budget alerts
+            ]
+            if any(re.search(p, _subject_lower) for p in _employer_notification_patterns):
+                logger.debug(f"Employer notification email skipped: {subject[:80]}")
+                return None
             
             # For chat transcripts from SalesIQ etc. - extract real candidate or skip
             if is_chat_transcript and is_system_email:
@@ -1049,7 +1082,7 @@ class EmailScraperService:
             
             # Skip pure system notifications
             if is_system_notification and not is_chat_transcript:
-                logger.info(f"System notification email - skipping: {subject[:60]}")
+                logger.warning(f"System notification email skipped: {subject[:80]} from {sender_email}")
                 return None
             
             # FIRST: Try LLM-powered email parsing (100% accurate)
@@ -1064,9 +1097,25 @@ class EmailScraperService:
                         sender=sender_email
                     )
                     if llm_portal_data:
-                        logger.info(f"ðŸ¤– LLM parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
+                        logger.info(f"LLM parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
             except Exception as llm_err:
                 logger.debug(f"LLM email parsing skipped: {llm_err}")
+            
+            # If LLM (Ollama) not available, try Gemini for email parsing
+            if not llm_portal_data:
+                try:
+                    from services.gemini_service import get_gemini_service
+                    gemini_svc = get_gemini_service()
+                    if gemini_svc and gemini_svc.available:
+                        llm_portal_data = await gemini_svc.parse_candidate_email(
+                            subject=subject,
+                            body=clean_body[:4000],
+                            sender=sender_email
+                        )
+                        if llm_portal_data:
+                            logger.info(f"Gemini parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
+                except Exception as gemini_err:
+                    logger.warning(f"Gemini email parsing error: {gemini_err}")
             
             # SECOND: Try regex-based job portal parsing as fallback
             job_portal_data = llm_portal_data  # Use LLM result if available
@@ -1166,7 +1215,8 @@ class EmailScraperService:
                 if '@indeed' not in portal_email.lower() and 'noreply' not in portal_email.lower():
                     actual_candidate_email = portal_email
             
-            # Generate unique candidate ID based on actual candidate email
+            # Generate unique candidate ID based on actual candidate email (NORMALIZED lowercase)
+            actual_candidate_email = actual_candidate_email.lower().strip()
             candidate_id = hashlib.md5(actual_candidate_email.encode()).hexdigest()
             
             # ===== SMART FILTER: Block Indeed relay & garbage emails =====
@@ -1225,9 +1275,25 @@ class EmailScraperService:
                     # Last resort: use email prefix cleaned up
                     candidate_name = actual_email.split('@')[0].replace('.', ' ').replace('_', ' ').title()
             
-            # FINAL VALIDATION: Skip if name is still invalid
+            # FINAL VALIDATION: if name is still invalid, try harder before giving up
             if not candidate_name or not is_valid_name(candidate_name):
-                logger.warning(f"âš ï¸ Skipping candidate - invalid name: {candidate_name}")
+                # Last resort: try to extract name from first lines of resume text
+                _raw = resume_data.get('raw_text', '') or ''
+                if _raw:
+                    for _line in _raw.strip().splitlines()[:5]:
+                        _line = _line.strip()
+                        # Skip empty lines, emails, phone numbers, URLs
+                        if not _line or '@' in _line or _line.startswith('http') or re.match(r'^[\d\s\+\-\(\)]+$', _line):
+                            continue
+                        # Lines that look like a name (2-5 words, all alpha)
+                        _parts = _line.split()
+                        if 2 <= len(_parts) <= 5 and all(p.replace('.', '').replace('-', '').replace(chr(39), '').isalpha() for p in _parts):
+                            if is_valid_name(_line) and len(_line) >= 4:
+                                candidate_name = _line.title()
+                                break
+
+            if not candidate_name or not is_valid_name(candidate_name):
+                logger.warning(f"âš ï¸ Skipping candidate - invalid name: {candidate_name} | Subject: {subject[:80]}")
                 return None
             
             # Note: actual_candidate_email was already determined earlier (before ID generation)

@@ -1,5 +1,6 @@
 import { useEffect, useCallback, useState, useRef } from 'react'
-import { useCandidateStore, type Candidate } from '@/store/candidateStore'
+import { useCandidateStore } from '@/store/candidateStore'
+import type { Candidate } from '@/types'
 import { useAuthStore } from '@/store/authStore'
 import config from '@/config'
 
@@ -230,16 +231,21 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
     }
   }, [setCandidates])
 
-  // Initial fetch
+  // Initial fetch — always fetch if empty, and also refetch on mount
   useEffect(() => {
-    if (autoFetch && candidates.length === 0) {
-      fetchCandidates()
+    if (autoFetch) {
+      // If we have cached candidates, show them immediately but refresh in background
+      if (candidates.length > 0) {
+        fetchCandidates() // Will use session cache for instant render, then background fetch
+      } else {
+        fetchCandidates()
+      }
     }
     return () => {
       // Cleanup: abort in-flight requests on unmount
       if (abortControllerRef.current) abortControllerRef.current.abort()
     }
-  }, [autoFetch, fetchCandidates, candidates.length])
+  }, [autoFetch]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // Refresh interval
   useEffect(() => {

@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import config from '@/config';
+import { useAuthStore } from '@/store/authStore';
 
 interface AIStatus {
   available: boolean
@@ -22,7 +23,10 @@ export function useAIStatus() {
 
   const checkAIStatus = async () => {
     try {
-      const response = await fetch(`${config.endpoints.ai}/status`)
+      const token = useAuthStore.getState().token
+      const response = await fetch(`${config.endpoints.ai}/status`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      })
       if (response.ok) {
         const data = await response.json()
         setStatus({

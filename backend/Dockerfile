@@ -16,9 +16,8 @@ COPY requirements.txt requirements.production.txt ./
 ARG REQUIREMENTS_FILE=requirements.production.txt
 RUN pip install --no-cache-dir -r ${REQUIREMENTS_FILE}
 
-# Download AI models during build (optional, can be done at runtime too)
-RUN pip install sentence-transformers spacy && \
-    python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-mpnet-base-v2')" && \
+# Pre-download AI models during build (packages already installed via requirements)
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-mpnet-base-v2')" && \
     python -m spacy download en_core_web_sm
 
 # Copy application code

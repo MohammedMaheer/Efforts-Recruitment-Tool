@@ -125,7 +125,7 @@ class MemoryCache(CacheBackend[T]):
     def __init__(
         self,
         max_entries: int = 10000,
-        max_size_bytes: int = 100 * 1024 * 1024,  # 100MB
+        max_size_bytes: int = 30 * 1024 * 1024,  # 30MB
         default_ttl: int = 300,
         strategy: CacheStrategy = CacheStrategy.LRU
     ):
@@ -140,9 +140,19 @@ class MemoryCache(CacheBackend[T]):
         self._stats = CacheStats()
     
     def _estimate_size(self, value: Any) -> int:
-        """Estimate memory size of a value"""
+        """Estimate memory size of a value using sys.getsizeof (avoids pickle overhead)"""
+        import sys
         try:
-            return len(pickle.dumps(value))
+            if isinstance(value, (str, bytes)):
+                return len(value)
+            if isinstance(value, dict):
+                return sys.getsizeof(value) + sum(
+                    sys.getsizeof(k) + sys.getsizeof(v)
+                    for k, v in value.items()
+                )
+            if isinstance(value, (list, tuple)):
+                return sys.getsizeof(value) + sum(sys.getsizeof(item) for item in value)
+            return sys.getsizeof(value)
         except Exception:
             return 1024  # Default estimate
     
@@ -336,12 +346,25 @@ class MemoryCache(CacheBackend[T]):
             return count
     
     async def get_many(self, keys: List[str]) -> Dict[str, T]:
-        """Get multiple values at once"""
+        """Get multiple values at once (single lock acquisition)"""
         results = {}
-        for key in keys:
-            value = await self.get(key)
-            if value is not None:
-                results[key] = value
+        async with self._lock:
+            for key in keys:
+                if key not in self._cache:
+                    self._stats.misses += 1
+                    continue
+                entry = self._cache[key]
+                if entry.is_expired:
+                    self._cache.pop(key)
+                    self._stats.total_size_bytes -= entry.size_bytes
+                    self._stats.expired += 1
+                    self._stats.misses += 1
+                    continue
+                entry.access_count += 1
+                entry.last_accessed = time.time()
+                self._cache.move_to_end(key)
+                self._stats.hits += 1
+                results[key] = entry.value
         return results
     
     async def set_many(
@@ -589,7 +612,7 @@ def get_cache_service() -> CacheService:
         _cache_service = CacheService(
             backend=MemoryCache(
                 max_entries=10000,
-                max_size_bytes=100 * 1024 * 1024,  # 100MB
+                max_size_bytes=30 * 1024 * 1024,  # 30MB
                 default_ttl=300
             )
         )

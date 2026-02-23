@@ -37,7 +37,7 @@ class MicrosoftGraphService:
             'code': authorization_code,
             'redirect_uri': redirect_uri,
             'grant_type': 'authorization_code',
-            'scope': 'https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access'
+            'scope': 'https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read offline_access'
         }
         
         try:
@@ -138,8 +138,8 @@ class MicrosoftGraphService:
         else:
             url = f"{self.graph_url}/me/mailFolders/{folder}/messages"
         
-        # Always fetch max page size (999) for efficiency
-        page_size = 999
+        # Use smaller page size (100) to reduce memory pressure
+        page_size = min(100, top) if not fetch_all else 100
         params = {'$top': page_size, '$orderby': 'receivedDateTime desc'}
         
         if filter_query:
@@ -171,6 +171,11 @@ class MicrosoftGraphService:
                 # Safety: if fetch_all but no more pages, we're done
                 if not url:
                     break
+                
+                # Memory safety: cap at 2000 emails max no matter what
+                if len(all_messages) >= 2000:
+                    logger.warning(f"📧 Hit 2000 email safety cap, stopping pagination")
+                    break
             
             # Trim to requested amount if not fetching all
             if not fetch_all and len(all_messages) > top:
@@ -189,6 +194,73 @@ class MicrosoftGraphService:
                 'status': 'error',
                 'message': str(e)
             }
+
+    async def get_messages_paged(
+        self,
+        folder: str = 'inbox',
+        filter_query: Optional[str] = None,
+        page_size: int = 50,
+        max_pages: int = 10
+    ):
+        """
+        Async generator that yields pages of messages one at a time.
+        Memory-efficient: only one page is in memory at a time.
+        Yields: list of messages (one page worth)
+        """
+        if not self._is_token_valid():
+            return
+        
+        headers = {
+            'Authorization': f'Bearer {self.access_token}',
+            'Content-Type': 'application/json'
+        }
+        
+        if self.auth_type == 'application' and self.user_email:
+            url = f"{self.graph_url}/users/{self.user_email}/mailFolders/{folder}/messages"
+        else:
+            url = f"{self.graph_url}/me/mailFolders/{folder}/messages"
+        
+        params = {'$top': page_size, '$orderby': 'receivedDateTime desc'}
+        if filter_query:
+            params['$filter'] = filter_query
+        
+        page_count = 0
+        while url and page_count < max_pages:
+            page_count += 1
+            last_error = None
+            for attempt in range(3):  # Retry each page up to 3 times
+                try:
+                    response = await asyncio.to_thread(
+                        lambda u=url, p=params: requests.get(u, headers=headers, params=p, timeout=30)
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    messages = data.get('value', [])
+                    
+                    if not messages:
+                        return  # No more messages
+                    
+                    logger.info(f"📧 Page {page_count}: fetched {len(messages)} emails")
+                    yield messages
+                    
+                    url = data.get('@odata.nextLink')
+                    params = {}  # nextLink has all params
+                    
+                    if not url:
+                        return  # No more pages
+                    
+                    last_error = None
+                    break  # Success — move to next page
+                except Exception as e:
+                    last_error = e
+                    logger.warning(f"📧 Page {page_count} attempt {attempt+1}/3 failed: {e}")
+                    if attempt < 2:
+                        await asyncio.sleep(2 * (attempt + 1))  # Backoff: 2s, 4s
+            
+            if last_error:
+                logger.error(f"📧 Page {page_count} failed after 3 attempts: {last_error}")
+                # Continue to yield whatever we have — don't abort the generator
+                break
     
     async def get_message_with_attachments(self, message_id: str) -> Dict[str, Any]:
         """
@@ -438,7 +510,7 @@ class MicrosoftGraphService:
             'client_secret': self.client_secret,
             'refresh_token': refresh_token,
             'grant_type': 'refresh_token',
-            'scope': 'https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite https://graph.microsoft.com/Mail.Send https://graph.microsoft.com/User.Read offline_access'
+            'scope': 'https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/User.Read offline_access'
         }
         
         try:
@@ -475,8 +547,6 @@ class MicrosoftGraphService:
         """
         scopes = [
             'https://graph.microsoft.com/Mail.Read',
-            'https://graph.microsoft.com/Mail.ReadWrite',
-            'https://graph.microsoft.com/Mail.Send',
             'https://graph.microsoft.com/User.Read',
             'offline_access'  # Required for refresh tokens
         ]

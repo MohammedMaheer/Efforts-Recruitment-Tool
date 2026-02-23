@@ -101,17 +101,20 @@ class EmailParser:
         
         # Extract skills (common tech keywords)
         skill_keywords = [
-            'python', 'java', 'javascript', 'react', 'node', 'sql', 'aws', 'docker',
-            'kubernetes', 'machine learning', 'data science', 'ai', 'frontend', 'backend',
-            'devops', 'agile', 'scrum', 'git', 'ci/cd', 'api', 'rest', 'graphql',
+            'python', 'java', 'javascript', 'react', 'node.js', 'nodejs', 'sql', 'aws', 'docker',
+            'kubernetes', 'machine learning', 'data science', 'artificial intelligence', 'frontend', 'backend',
+            'devops', 'agile', 'scrum', 'git', 'ci/cd', 'rest api', 'restful', 'graphql',
             'typescript', 'vue', 'angular', 'django', 'flask', 'spring', 'microservices',
             'mongodb', 'postgresql', 'redis', 'kafka', 'jenkins', 'terraform',
-            'marketing', 'seo', 'content', 'social media', 'analytics', 'sales',
-            'excel', 'powerpoint', 'word', 'photoshop', 'figma', 'sketch'
+            'marketing', 'seo', 'social media', 'analytics', 'sales',
+            'excel', 'powerpoint', 'ms word', 'photoshop', 'figma', 'sketch'
         ]
         found_skills = []
         for skill in skill_keywords:
-            if skill in body_lower:
+            # Use word boundary matching to avoid substring false positives
+            # e.g. 'ai' matching 'claim', 'rest' matching 'interested', 'go' matching 'going'
+            pattern = r'\b' + re.escape(skill) + r'\b'
+            if re.search(pattern, body_lower):
                 found_skills.append(skill.title())
         result['skills'] = found_skills
         
@@ -462,7 +465,7 @@ class EmailParser:
         ]
         
         text_lower = text.lower()
-        found_skills = [skill for skill in skill_keywords if skill in text_lower]
+        found_skills = [skill for skill in skill_keywords if re.search(r'\b' + re.escape(skill) + r'\b', text_lower)]
         info['skills'] = list(set(found_skills))
         
         # Extract location (UAE cities or international format)

@@ -195,7 +195,7 @@ class PgCursorWrapper:
             if self._cursor.description:
                 self._columns = tuple(col[0] for col in self._cursor.description)
         except Exception as e:
-            logger.error(f"SQL error: {e}\nQuery: {converted[:200]}\nParams: {str(params)[:100]}")
+            logger.error(f"SQL error: {e}\nQuery: {converted[:200]}")
             raise
         return self
     

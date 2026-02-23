@@ -16,6 +16,10 @@ export const CandidateStatus = {
   HIRED: 'Hired',
   REJECTED: 'Rejected',
   WITHDRAWN: 'Withdrawn',
+  // Match-tier statuses (used in scoring/filtering)
+  STRONG: 'Strong',
+  PARTIAL: 'Partial',
+  REJECT: 'Reject',
 } as const;
 
 export type CandidateStatusType = typeof CandidateStatus[keyof typeof CandidateStatus];
@@ -88,6 +92,20 @@ export interface AIEvaluation {
   confidenceScore?: number;
 }
 
+export interface AIAnalysisResult {
+  overall_score?: number;
+  category_scores?: Record<string, number>;
+  strengths?: string[];
+  gaps?: string[];
+  recommendation?: string;
+  summary?: string;
+  skills_extracted?: string[];
+  experience_years?: number;
+  job_category?: string;
+  confidence?: number;
+  [key: string]: unknown;  // Allow additional fields from different AI providers
+}
+
 // ============================================================================
 // Candidate Types
 // ============================================================================
@@ -118,7 +136,7 @@ export interface Candidate {
   certifications?: string[];
   languages?: string[];
   resumeText?: string;
-  aiAnalysis?: any;
+  aiAnalysis?: AIAnalysisResult;
 }
 
 export interface CandidateFilters {

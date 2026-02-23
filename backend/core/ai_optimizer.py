@@ -15,6 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple, Callable
+from collections import OrderedDict
 from functools import lru_cache
 import numpy as np
 
@@ -78,7 +79,7 @@ class EmbeddingCache:
         # Pre-allocate memory for embeddings
         self._embeddings = np.zeros((max_entries, embedding_dim), dtype=np.float32)
         self._keys: Dict[str, int] = {}
-        self._access_order: List[str] = []
+        self._access_order: OrderedDict = OrderedDict()  # O(1) move_to_end + popitem
         self._next_idx = 0
         self._lock = asyncio.Lock()
     
@@ -96,10 +97,11 @@ class EmbeddingCache:
             
             idx = self._keys[key]
             
-            # Move to end of access order
+            # Move to end of access order (O(1) with OrderedDict)
             if key in self._access_order:
-                self._access_order.remove(key)
-            self._access_order.append(key)
+                self._access_order.move_to_end(key)
+            else:
+                self._access_order[key] = True
             
             return self._embeddings[idx].copy()
     
@@ -114,8 +116,8 @@ class EmbeddingCache:
             else:
                 # Evict if needed
                 if len(self._keys) >= self.max_entries:
-                    # Remove oldest entry
-                    oldest_key = self._access_order.pop(0)
+                    # Remove oldest entry (O(1) with OrderedDict)
+                    oldest_key, _ = self._access_order.popitem(last=False)
                     oldest_idx = self._keys.pop(oldest_key)
                     idx = oldest_idx
                 else:
@@ -127,10 +129,11 @@ class EmbeddingCache:
             # Store embedding
             self._embeddings[idx] = embedding.astype(np.float32)
             
-            # Update access order
+            # Update access order (O(1) with OrderedDict)
             if key in self._access_order:
-                self._access_order.remove(key)
-            self._access_order.append(key)
+                self._access_order.move_to_end(key)
+            else:
+                self._access_order[key] = True
     
     async def get_batch(self, texts: List[str]) -> Tuple[Dict[str, np.ndarray], List[str]]:
         """
@@ -428,8 +431,8 @@ class OptimizedAIService:
                 'skills': [],
                 'experience': 0,
                 'job_category': 'General',
-                'quality_score': 35,
-                'summary': 'Analysis unavailable'
+                'quality_score': 0,
+                'summary': 'Analysis unavailable - will retry'
             }
     
     async def analyze_candidates_batch(
