@@ -13,6 +13,37 @@ from typing import Dict, List, Tuple, Any, Optional
 
 logger = logging.getLogger("db_repair")
 
+# ─── Location Cleanup ────────────────────────────────────────────────────────
+
+# Match parenthetical text containing garbled/non-Latin characters (Arabic mojibake, etc.)
+_GARBLED_PARENS_RE = re.compile(r'\s*\([^)]*[\u00c0-\u024f\u0600-\u06ff\u0400-\u04ff\u00d8\u00b1\u00a7\u00a9][^)]*\)')
+# Noise location values that aren't real locations
+_NOISE_LOCATIONS = {'you', 'sir', 'dear', 'n/a', 'na', 'null', 'none', '-', '.', '..', '...', 'unknown', 'soon', 'hello', 'hi', 'hey', 'thanks', 'thank', 'regards', 'resume', 'cv'}
+
+
+def clean_location_text(loc: str) -> str:
+    """Clean garbled Arabic/Unicode text from location strings.
+    
+    Example: 'United Arab Emirates (Ø§ÙØ¥ÙØ§Ø±Ø§Øª Ø§ÙØ¹Ø±Ø¨ÙØ© Ø§ÙÙØªØØ¯Ø©)' → 'United Arab Emirates'
+    Also strips noise values like 'you', 'sir', etc.
+    """
+    if not loc or not loc.strip():
+        return ''
+    # Strip garbled parenthetical text (contains non-Latin chars)
+    cleaned = _GARBLED_PARENS_RE.sub('', loc).strip()
+    # Remove remaining mojibake fragments
+    cleaned = re.sub(r'[Ø§Ù\u0600-\u06ff\u00c0-\u00ff]{3,}', '', cleaned).strip()
+    # Strip trailing/leading punctuation and whitespace
+    cleaned = cleaned.strip(' ,;-.()')
+    # Remove individual noise words (e.g. "you soon" → "soon" → empty)
+    words = [w for w in cleaned.split() if w.lower() not in _NOISE_LOCATIONS]
+    cleaned = ' '.join(words).strip(' ,;-.()')
+    # Check if the result is a noise value or too short
+    if cleaned.lower() in _NOISE_LOCATIONS or len(cleaned) <= 1:
+        return ''
+    return cleaned
+
+
 # ─── Detection Patterns ──────────────────────────────────────────────────────
 
 # Mojibake / double-encoded UTF-8
@@ -843,6 +874,16 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
                 'id': cid, 'name': name[:40], 'field': 'text_fields'
             })
         
+        # ─── PHASE 2.5: Fix garbled locations ────────────────────────────
+        location = (c.get('location') or '').strip()
+        if location:
+            cleaned_loc = clean_location_text(location)
+            if cleaned_loc != location:
+                updates['location'] = cleaned_loc
+                results.setdefault('locations_fixed', []).append({
+                    'id': cid, 'old': location[:60], 'new': cleaned_loc[:60]
+                })
+        
         # ─── PHASE 3: Fix empty/bad names ────────────────────────────────
         current_name = updates.get('name', name)
         if not current_name or current_name.lower() in ('unknown', 'n/a', '-', 'null', 'none', ''):
@@ -1014,6 +1055,7 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
         'skills_fixed': len(results['skills_fixed']),
         'skills_extracted': len(results['skills_extracted']),
         'phones_fixed': len(results['phones_fixed']),
+        'locations_fixed': len(results.get('locations_fixed', [])),
         'duplicates_merged': len(results['duplicates_merged']),
         'rescored': len(results['rescored']),
         'needs_rescore': len(results['needs_rescore']),

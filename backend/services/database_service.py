@@ -5,6 +5,7 @@ Optimized for concurrent requests
 """
 import sqlite3
 import json
+import re
 from typing import List, Dict, Optional
 from datetime import datetime
 import hashlib
@@ -16,6 +17,21 @@ from threading import Lock
 from core.db_wrapper import create_connection, IS_POSTGRES, init_pg_schema
 
 logger = logging.getLogger(__name__)
+
+# ─── Location cleanup (inline, avoids circular import from db_repair) ─────────
+_GARBLED_PARENS_RE = re.compile(r'\s*\([^)]*[\u00c0-\u024f\u0600-\u06ff\u0400-\u04ff\u00d8\u00b1\u00a7\u00a9][^)]*\)')
+_NOISE_LOCATIONS = frozenset({'you', 'sir', 'dear', 'n/a', 'na', 'null', 'none', '-', '.', '..', '...', 'unknown', 'soon', 'hello', 'hi', 'hey', 'thanks', 'thank', 'regards', 'resume', 'cv'})
+
+def _clean_loc(loc: str) -> str:
+    """Strip garbled Arabic/Unicode from location strings (fast inline version)."""
+    if not loc:
+        return ''
+    c = _GARBLED_PARENS_RE.sub('', loc).strip()
+    c = re.sub(r'[Ø§Ù\u0600-\u06ff\u00c0-\u00ff]{3,}', '', c).strip(' ,;-.()')
+    # Remove individual noise words (e.g. "you soon" → "soon" → empty)
+    words = [w for w in c.split() if w.lower() not in _NOISE_LOCATIONS]
+    c = ' '.join(words).strip(' ,;-.()')
+    return '' if (c.lower() in _NOISE_LOCATIONS or len(c) <= 1) else c
 
 class DatabaseService:
     def __init__(self, db_path: str = "./recruitment.db"):
@@ -911,7 +927,7 @@ class DatabaseService:
                     'job_category': row[7] or 'General',
                     'job_subcategory': row[8] or '',
                     'status': row[9] or 'New',
-                    'location': row[10] or '',
+                    'location': _clean_loc(row[10] or ''),
                     'summary': row[11] or '',
                     'work_history': json.loads(wh_raw) if wh_raw and isinstance(wh_raw, str) and wh_raw.startswith('[') else [],
                     'certifications': json.loads(cert_raw) if cert_raw and isinstance(cert_raw, str) and cert_raw.startswith('[') else [],
@@ -968,7 +984,7 @@ class DatabaseService:
                     'job_category': row[7] or 'General',
                     'job_subcategory': row[8] or '',
                     'status': row[9] or 'New',
-                    'location': row[10] or '',
+                    'location': _clean_loc(row[10] or ''),
                     'summary': row[11] or '',
                 })
             return results
@@ -1097,7 +1113,7 @@ class DatabaseService:
                         'name': row[1] or 'Unknown',
                         'email': row[2] or '',
                         'phone': row[3] or '',
-                        'location': row[4] or '',
+                        'location': _clean_loc(row[4] or ''),
                         'skills': skills,
                         'experience': row[6] or 0,
                         'matchScore': row[7] if row[7] else 50,
@@ -1561,7 +1577,7 @@ class DatabaseService:
             'email': row[1],
             'name': row[3],
             'phone': row[4] or '',
-            'location': row[5] or '',
+            'location': _clean_loc(row[5] or ''),
             'skills': json.loads(row[6]) if row[6] else [],
             'experience': row[7] or 0,
             'education': json.loads(row[8]) if row[8] and str(row[8]).startswith('[') else [],

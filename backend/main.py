@@ -4279,10 +4279,12 @@ async def ai_chat(
         
         if include_candidates:
             stats = await asyncio.to_thread(db_service.get_statistics)
-            # Get top candidates (sorted by match_score DESC) for AI context
-            # Limit to 150 to control Gemini token costs (~$0.001/request vs ~$0.008 with 10K)
+            # Fetch ALL candidates so the Gemini pre-filter can search the ENTIRE database.
+            # The pre-filter scores every candidate by query relevance (Python-side, no AI cost)
+            # and only sends the top 150 most relevant to the Gemini prompt.
+            # Token cost stays the same (~$0.001/request) regardless of DB size.
             candidates = await asyncio.to_thread(
-                db_service.get_candidates_for_ai, {}, 150
+                db_service.get_candidates_for_ai, {}, None
             )
             candidates_data = candidates
             context = {
