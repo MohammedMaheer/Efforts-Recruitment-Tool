@@ -56,6 +56,20 @@ async def require_auth(authorization: Optional[str] = Header(None)) -> dict:
     return user
 
 
+async def require_admin(current_user: dict = Depends(require_auth)) -> dict:
+    """
+    FastAPI dependency that enforces admin role.
+    Use as: current_user: dict = Depends(require_admin)
+    Raises 403 if the authenticated user is not an admin.
+    """
+    if current_user.get('role') != 'admin':
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin privileges required",
+        )
+    return current_user
+
+
 async def optional_auth(authorization: Optional[str] = Header(None)) -> Optional[dict]:
     """
     FastAPI dependency that optionally validates auth.

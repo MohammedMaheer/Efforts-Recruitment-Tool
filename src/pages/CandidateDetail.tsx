@@ -1,6 +1,6 @@
 import { useParams, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { useState, useEffect, useMemo, useCallback } from 'react'
+import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
 import {
   ArrowLeft,
   Download,
@@ -25,6 +25,7 @@ import {
   Globe,
   Calendar,
   XOctagon,
+  Upload,
 } from 'lucide-react'
 import { useCandidates } from '@/hooks/useCandidates'
 import { useCandidateStore } from '@/store/candidateStore'
@@ -34,45 +35,71 @@ import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { Avatar, AvatarFallback } from '@/components/ui/Avatar'
 import { Progress } from '@/components/ui/Progress'
-import { getMatchScoreColor } from '@/lib/utils'
+import { getMatchScoreColor, getCategoryColor } from '@/lib/utils'
 import config from '@/config'
 import { authFetch } from '@/lib/authFetch'
 import { generateCandidatePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
 import { isTextGarbled } from '@/lib/textUtils'
 import { toast } from '@/components/ui/Toast'
+import type { Candidate } from '@/types'
 
-// Category colors for visual distinction
-const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
-  'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'DevOps Engineer': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
-  'Cybersecurity': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
-  'QA / Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
-  'IT & Systems': { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
-  'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
-  'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
-  'Product Manager': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
-  'Project Management': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  'Business Analyst': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
-  'Consulting': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
-  'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  'Finance': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
-  'Legal': { bg: 'bg-stone-50', text: 'text-stone-700', border: 'border-stone-200' },
-  'Operations': { bg: 'bg-zinc-50', text: 'text-zinc-700', border: 'border-zinc-200' },
-  'Customer Support': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Design': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
-  'Content & Communications': { bg: 'bg-lime-50', text: 'text-lime-700', border: 'border-lime-200' },
-  'Healthcare': { bg: 'bg-red-50', text: 'text-red-600', border: 'border-red-200' },
-  'Education': { bg: 'bg-blue-50', text: 'text-blue-600', border: 'border-blue-200' },
-  'Engineering': { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
-  'Media & Creative': { bg: 'bg-pink-50', text: 'text-pink-600', border: 'border-pink-200' },
-  'Real Estate': { bg: 'bg-amber-50', text: 'text-amber-600', border: 'border-amber-200' },
-  'Hospitality': { bg: 'bg-orange-50', text: 'text-orange-600', border: 'border-orange-200' },
-  'General': { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' },
+/** Shape of the detailed AI candidate analysis */
+interface CandidateAnalysis {
+  executive_summary?: string
+  hiring_recommendation?: string
+  overall_rating?: string
+  confidence_score?: number
+  technical_assessment?: string
+  experience_assessment?: string
+  education_assessment?: string
+  pros?: string[]
+  cons?: string[]
+  career_trajectory?: string
+  interview_focus_areas?: string[]
+  ideal_roles?: string[]
+  hiring_recommendation_rationale?: string
+  grade?: string
+  recommendation?: string
+  summary?: string
+  overall_score?: number
+  skills_match?: number
+  experience_years?: number
+  isFallback?: boolean
+  from_cache?: boolean
+  salary_range_estimate?: string
+  culture_fit_notes?: string
+  source?: string
+  [key: string]: unknown
 }
 
-const getCategoryColor = (category: string) => {
-  return categoryColors[category] || categoryColors['General']
+/** Raw candidate data from backend API */
+interface RawCandidateData {
+  name?: string
+  email?: string
+  phone?: string
+  location?: string
+  skills?: string[]
+  experience?: number
+  matchScore?: number
+  status?: string
+  jobCategory?: string
+  job_category?: string
+  jobSubcategory?: string
+  job_subcategory?: string
+  appliedDate?: string
+  applied_date?: string
+  linkedin?: string
+  hasResume?: boolean
+  summary?: string
+  education?: { degree?: string; title?: string; field?: string; institution?: string; school?: string; year?: string; graduation_year?: string }[]
+  workHistory?: { title?: string; position?: string; company?: string; organization?: string; duration?: string; period?: string; years?: string; description?: string; responsibilities?: string }[]
+  resume_text?: string
+  resumeText?: string
+  certifications?: string[]
+  languages?: string[]
+  ai_analysis?: CandidateAnalysis
+  aiAnalysis?: CandidateAnalysis
+  [key: string]: unknown
 }
 
 export default function CandidateDetail() {
@@ -83,29 +110,73 @@ export default function CandidateDetail() {
   const toggleShortlist = useCandidateStore((state) => state.toggleShortlist)
   const addNotification = useNotificationStore((state) => state.addNotification)
 
-  const [aiAnalysis, setAiAnalysis] = useState<Record<string, any> | null>(null)
+  const [aiAnalysis, setAiAnalysis] = useState<CandidateAnalysis | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
   const [analysisError, setAnalysisError] = useState<string | null>(null)
   const [isShortlisting, setIsShortlisting] = useState(false)
-  const [fullCandidateData, setFullCandidateData] = useState<Record<string, any> | null>(null)
+  const [fullCandidateData, setFullCandidateData] = useState<RawCandidateData | null>(null)
   const [fullDataLoading, setFullDataLoading] = useState(true)
   const [showCalendarPicker, setShowCalendarPicker] = useState(false)
   const [interviewDate, setInterviewDate] = useState(() => {
     const d = new Date(); d.setDate(d.getDate() + 3); return d.toISOString().slice(0, 16)
   })
+  const [isUploadingResume, setIsUploadingResume] = useState(false)
+  const resumeFileInputRef = useRef<HTMLInputElement>(null)
+
+  const handleResumeUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0]
+    if (!file || !id) return
+    const ext = file.name.split('.').pop()?.toLowerCase()
+    if (!ext || !['pdf', 'docx', 'doc'].includes(ext)) {
+      toast.error('Invalid file', 'Only PDF and DOCX files are supported.')
+      return
+    }
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('File too large', 'Maximum file size is 10 MB.')
+      return
+    }
+    setIsUploadingResume(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const res = await authFetch(`${config.endpoints.candidates}/${id}/resume`, {
+        method: 'POST',
+        body: formData,
+      })
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: 'Upload failed' }))
+        throw new Error(err.detail || 'Upload failed')
+      }
+      toast.success('Resume uploaded', `${file.name} uploaded successfully. Candidate data updated.`)
+      // Re-fetch candidate data to reflect the changes
+      const refreshRes = await authFetch(`${config.endpoints.candidates}/${id}`)
+      if (refreshRes.ok) {
+        const data = await refreshRes.json()
+        setFullCandidateData(data)
+      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Could not upload resume.'
+      toast.error('Upload failed', message)
+    } finally {
+      setIsUploadingResume(false)
+      if (resumeFileInputRef.current) resumeFileInputRef.current.value = ''
+    }
+  }, [id])
 
   const lightCandidate = useMemo(() => candidates.find((c) => c.id === id), [candidates, id])
 
   // Fetch full candidate data (light endpoint omits workHistory/education/summary)
   useEffect(() => {
+    const controller = new AbortController()
     if (id) {
       setFullDataLoading(true)
-      authFetch(`${config.endpoints.candidates}/${id}`)
+      authFetch(`${config.endpoints.candidates}/${id}`, { signal: controller.signal })
         .then(r => r.ok ? r.json() : null)
         .then(data => { if (data) setFullCandidateData(data) })
-        .catch((err) => console.error('Full candidate fetch failed:', err))
+        .catch((err) => { if (err?.name !== 'AbortError') console.error('Full candidate fetch failed:', err) })
         .finally(() => setFullDataLoading(false))
     }
+    return () => controller.abort()
   }, [id])
 
   // Merge full data over light store data — works even when lightCandidate is null (direct URL nav)
@@ -132,19 +203,20 @@ export default function CandidateDetail() {
       resumeText: '',
       certifications: [],
       languages: [],
-    } as any : null)
+      resumeUrl: '',
+    } as Candidate : null)
     if (!base) return null
     return {
       ...base,
       ...(fullCandidateData ? {
         summary: fullCandidateData.summary || base.summary || '',
-        workHistory: (fullCandidateData.workHistory || []).map((job: any) => ({
+        workHistory: (fullCandidateData.workHistory || []).map((job: Record<string, string>) => ({
           title: job.title || job.position || '',
           company: job.company || job.organization || '',
           duration: job.duration || job.period || job.years || '',
           description: job.description || job.responsibilities || '',
         })),
-        education: (fullCandidateData.education || []).map((edu: any) => ({
+        education: (fullCandidateData.education || []).map((edu: Record<string, string>) => ({
           degree: edu.degree || edu.title || '',
           field: edu.field || '',
           institution: edu.institution || edu.school || '',
@@ -165,8 +237,25 @@ export default function CandidateDetail() {
     setAnalysisError(null)
     
     try {
-      // Use the new detailed AI analysis endpoint
-      const response = await authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis${aiAnalysis ? '?refresh=true' : ''}`)
+      const isRefresh = !!aiAnalysis
+
+      // If refreshing, first re-score the candidate via Gemini (updates matchScore + category in DB)
+      if (isRefresh) {
+        try {
+          const rescoreRes = await authFetch(`${config.endpoints.candidates}/${candidate.id}/rescore`, { method: 'POST' })
+          if (rescoreRes.ok) {
+            const rescoreData = await rescoreRes.json()
+            if (rescoreData.status === 'success') {
+              toast.success('Re-scored', `Score updated: ${rescoreData.old_score}% → ${rescoreData.new_score}%`)
+            }
+          }
+        } catch (rescoreErr) {
+          console.warn('Rescore failed (non-critical), continuing with AI analysis:', rescoreErr)
+        }
+      }
+
+      // Run the detailed AI analysis endpoint
+      const response = await authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis${isRefresh ? '?refresh=true' : ''}`)
 
       if (!response.ok) {
         if (response.status === 503) {
@@ -177,15 +266,26 @@ export default function CandidateDetail() {
 
       const analysis = await response.json()
       setAiAnalysis(analysis)
+
+      // Re-fetch full candidate data to reflect updated score/category
+      try {
+        const refreshRes = await authFetch(`${config.endpoints.candidates}/${candidate.id}`)
+        if (refreshRes.ok) {
+          const data = await refreshRes.json()
+          setFullCandidateData(data)
+        }
+      } catch {
+        // Non-critical — UI will update on next page visit
+      }
       
       addNotification({
         type: 'success',
         title: 'AI Analysis Complete',
         message: `Detailed assessment generated for ${candidate.name}`,
       })
-    } catch (error: any) {
+    } catch (error: unknown) {
       console.error('AI Analysis error:', error)
-      setAnalysisError(error.message || 'Failed to analyze candidate')
+      setAnalysisError(error instanceof Error ? error.message : 'Failed to analyze candidate')
       
       // Fallback to simple analysis — derive grade AND recommendation from score
       const fallbackScore = candidate.matchScore
@@ -221,8 +321,9 @@ export default function CandidateDetail() {
   // Auto-load cached AI analysis on page load
   const [autoTriggered, setAutoTriggered] = useState(false)
   useEffect(() => {
+    const controller = new AbortController()
     if (candidate?.id) {
-      authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis`)
+      authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis`, { signal: controller.signal })
         .then(r => r.ok ? r.json() : null)
         .then(data => {
           if (data?.executive_summary) {
@@ -234,6 +335,7 @@ export default function CandidateDetail() {
         })
         .catch(() => {})
     }
+    return () => controller.abort()
   }, [candidate?.id])
 
   // Separate effect for auto-triggering AI analysis — avoids stale closure on handleAIAnalysis
@@ -247,29 +349,34 @@ export default function CandidateDetail() {
   const handleToggleShortlist = async () => {
     if (!candidate) return
     const wasShortlisted = isShortlisted(candidate.id)
+    
+    if (!wasShortlisted && !confirm(`Shortlist ${candidate.name} and send a notification email?`)) return
     setIsShortlisting(true)
     
     try {
       if (!wasShortlisted) {
         // Shortlisting — call API which persists status AND auto-sends email
         const result = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+        if (result.error) throw new Error(result.error.message || 'Failed to shortlist')
         toggleShortlist(candidate.id)
         
         const emailStatus = result?.data?.email_sent?.status
         const emailSent = emailStatus === 'success' || emailStatus === 'queued'
+        const emailFailed = emailStatus === 'error' || emailStatus === 'failed'
         addNotification({
-          type: 'success',
+          type: emailFailed ? 'warning' : 'success',
           title: 'Added to Shortlist',
           message: emailSent 
             ? `${candidate.name} shortlisted — notification email sent!`
-            : emailStatus === 'error'
-              ? `${candidate.name} shortlisted — email failed: ${result?.data?.email_sent?.message || 'unknown error'}`
+            : emailFailed
+              ? `${candidate.name} shortlisted — email could not be sent. Please check email settings or send manually.`
               : `${candidate.name} added to your shortlist`,
           actionUrl: '/shortlist'
         })
       } else {
         // Un-shortlisting — revert to Reviewed status
-        await candidateApi.updateStatus(candidate.id, 'Reviewed')
+        const unRes = await candidateApi.updateStatus(candidate.id, 'Reviewed')
+        if (unRes.error) throw new Error(unRes.error.message || 'Failed to remove from shortlist')
         toggleShortlist(candidate.id)
         addNotification({
           type: 'info',
@@ -339,7 +446,8 @@ export default function CandidateDetail() {
   const handleRejectCandidate = async () => {
     if (!candidate) return
     try {
-      await candidateApi.updateStatus(candidate.id, 'Rejected')
+      const res = await candidateApi.updateStatus(candidate.id, 'Rejected')
+      if (res.error) throw new Error(res.error.message || 'Failed to reject')
       addNotification({
         type: 'info',
         title: 'Candidate Rejected',
@@ -385,7 +493,7 @@ export default function CandidateDetail() {
   // Use backend status as source of truth (survives page refresh), with in-memory store as fallback
   const shortlisted = candidate.status === 'Shortlisted' || isShortlisted(candidate.id)
 
-  const scoreColor = candidate.matchScore >= 80 ? 'text-emerald-600' : candidate.matchScore >= 60 ? 'text-blue-600' : candidate.matchScore >= 40 ? 'text-amber-600' : 'text-red-500'
+  const scoreColor = getMatchScoreColor(candidate.matchScore)
   const catColor = getCategoryColor(candidate.jobCategory || 'General')
 
   return (
@@ -495,7 +603,7 @@ export default function CandidateDetail() {
                     className="bg-gradient-to-r from-slate-800 to-slate-700 text-white hover:from-slate-700 hover:to-slate-600 shadow-sm text-xs h-8"
                   >
                     {isAnalyzing ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1" />}
-                    {isAnalyzing ? 'Analyzing...' : aiAnalysis ? 'Refresh' : 'AI Analysis'}
+                    {isAnalyzing ? 'Analyzing...' : aiAnalysis ? 'Re-analyze' : 'AI Analysis'}
                   </Button>
                   <Button 
                     size="sm"
@@ -601,21 +709,21 @@ export default function CandidateDetail() {
 
               {/* Pros & Cons — compact side-by-side */}
               <div className="grid grid-cols-2 gap-3">
-                {aiAnalysis.pros?.length > 0 && (
+                {(aiAnalysis.pros?.length ?? 0) > 0 && (
                   <div className="rounded-lg p-3 border border-emerald-100 bg-emerald-50/30">
                     <h4 className="text-xs font-semibold text-emerald-700 mb-2 flex items-center gap-1"><CheckCircle className="w-3 h-3" />Strengths</h4>
                     <ul className="space-y-1">
-                      {aiAnalysis.pros.map((pro: string, i: number) => (
+                      {aiAnalysis.pros!.map((pro: string, i: number) => (
                         <li key={i} className="text-xs text-gray-700 flex items-start gap-1.5"><span className="text-emerald-500 mt-px font-bold">+</span><span>{pro}</span></li>
                       ))}
                     </ul>
                   </div>
                 )}
-                {aiAnalysis.cons?.length > 0 && (
+                {(aiAnalysis.cons?.length ?? 0) > 0 && (
                   <div className="rounded-lg p-3 border border-red-100 bg-red-50/30">
                     <h4 className="text-xs font-semibold text-red-600 mb-2 flex items-center gap-1"><AlertCircle className="w-3 h-3" />Gaps</h4>
                     <ul className="space-y-1">
-                      {aiAnalysis.cons.map((con: string, i: number) => (
+                      {aiAnalysis.cons!.map((con: string, i: number) => (
                         <li key={i} className="text-xs text-gray-700 flex items-start gap-1.5"><span className="text-red-400 mt-px font-bold">-</span><span>{con}</span></li>
                       ))}
                     </ul>
@@ -624,18 +732,18 @@ export default function CandidateDetail() {
               </div>
 
               {/* Interview Focus & Ideal Roles */}
-              {(aiAnalysis.interview_focus_areas?.length > 0 || aiAnalysis.ideal_roles?.length > 0) && (
+              {((aiAnalysis.interview_focus_areas?.length ?? 0) > 0 || (aiAnalysis.ideal_roles?.length ?? 0) > 0) && (
                 <div className="grid grid-cols-2 gap-3">
-                  {aiAnalysis.interview_focus_areas?.length > 0 && (
+                  {(aiAnalysis.interview_focus_areas?.length ?? 0) > 0 && (
                     <div>
                       <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Interview Focus</h4>
-                      <ul className="space-y-0.5">{aiAnalysis.interview_focus_areas.map((a: string, i: number) => <li key={i} className="text-xs text-gray-600">• {a}</li>)}</ul>
+                      <ul className="space-y-0.5">{aiAnalysis.interview_focus_areas!.map((a: string, i: number) => <li key={i} className="text-xs text-gray-600">• {a}</li>)}</ul>
                     </div>
                   )}
-                  {aiAnalysis.ideal_roles?.length > 0 && (
+                  {(aiAnalysis.ideal_roles?.length ?? 0) > 0 && (
                     <div>
                       <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Ideal Roles</h4>
-                      <div className="flex flex-wrap gap-1">{aiAnalysis.ideal_roles.map((r: string, i: number) => <span key={i} className="text-xs bg-sky-50 text-sky-700 px-2 py-0.5 rounded-full border border-sky-100">{r}</span>)}</div>
+                      <div className="flex flex-wrap gap-1">{aiAnalysis.ideal_roles!.map((r: string, i: number) => <span key={i} className="text-xs bg-sky-50 text-sky-700 px-2 py-0.5 rounded-full border border-sky-100">{r}</span>)}</div>
                       {aiAnalysis.salary_range_estimate && <p className="text-[11px] text-gray-400 mt-1.5">Est. Salary: {aiAnalysis.salary_range_estimate}</p>}
                     </div>
                   )}
@@ -725,7 +833,7 @@ export default function CandidateDetail() {
                       {[1,2,3].map(i => <div key={i} className="pl-5"><div className="h-3 bg-gray-200 rounded w-3/4 mb-1.5" /><div className="h-2.5 bg-gray-200 rounded w-1/2" /></div>)}
                     </div>
                   ) : candidate.workHistory && candidate.workHistory.length > 0 ? (
-                    candidate.workHistory.map((job: any, index: number) => (
+                    candidate.workHistory.map((job, index) => (
                       <div key={index} className="relative pl-5 pb-4 last:pb-0 border-l border-gray-200 last:border-l-transparent">
                         <div className="absolute left-0 top-1 w-2 h-2 -translate-x-[5px] rounded-full bg-slate-800 ring-2 ring-white" />
                         <h4 className="text-sm font-semibold text-gray-900">{job.title}</h4>
@@ -760,7 +868,7 @@ export default function CandidateDetail() {
                       {[1,2].map(i => <div key={i}><div className="h-3 bg-gray-200 rounded w-2/3 mb-1" /><div className="h-2.5 bg-gray-200 rounded w-1/2" /></div>)}
                     </div>
                   ) : candidate.education && candidate.education.length > 0 ? (
-                    candidate.education.map((edu: any, index: number) => (
+                    candidate.education.map((edu, index) => (
                       <div key={index}>
                         <h4 className="text-sm font-semibold text-gray-900">
                           {edu.degree}{edu.field ? ` in ${edu.field}` : ''}
@@ -817,8 +925,9 @@ export default function CandidateDetail() {
             </motion.div>
           )}
 
-          {/* Original Resume Text — shown as-is from email/upload */}
-          {candidate.resumeText && (
+          {/* Resume Section — upload, view, download */}
+          <input type="file" ref={resumeFileInputRef} accept=".pdf,.docx,.doc" className="hidden" onChange={handleResumeUpload} />
+          {candidate.resumeText ? (
             <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
               <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
                 <div className="p-5">
@@ -826,14 +935,24 @@ export default function CandidateDetail() {
                     <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 flex items-center gap-1.5">
                       <Download className="w-3.5 h-3.5" />Original Resume Content
                     </h3>
-                    <button
-                      onClick={async () => {
-                        try { await downloadOriginalResume(candidate as any) } catch { toast.error('Download failed', 'No resume file available') }
-                      }}
-                      className="flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg transition-colors"
-                    >
-                      <FileDown className="w-3.5 h-3.5" />Download Resume
-                    </button>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => resumeFileInputRef.current?.click()}
+                        disabled={isUploadingResume}
+                        className="flex items-center gap-1 text-xs font-medium text-amber-600 hover:text-amber-800 bg-amber-50 hover:bg-amber-100 px-2.5 py-1 rounded-lg transition-colors disabled:opacity-50"
+                      >
+                        {isUploadingResume ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                        {isUploadingResume ? 'Uploading...' : 'Replace'}
+                      </button>
+                      <button
+                        onClick={async () => {
+                          try { await downloadOriginalResume(candidate as any) } catch (err) { console.error('Resume download failed:', err); toast.error('Download failed', 'No resume file available') }
+                        }}
+                        className="flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg transition-colors"
+                      >
+                        <FileDown className="w-3.5 h-3.5" />Download
+                      </button>
+                    </div>
                   </div>
                   {isTextGarbled(candidate.resumeText) ? (
                     <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 flex items-center gap-3">
@@ -848,6 +967,24 @@ export default function CandidateDetail() {
                       <p className="text-xs text-gray-700 leading-relaxed whitespace-pre-line font-mono">{candidate.resumeText}</p>
                     </div>
                   )}
+                </div>
+              </div>
+            </motion.div>
+          ) : (
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 }}>
+              <div className="rounded-xl border border-dashed border-gray-200 bg-gray-50/50 shadow-sm">
+                <div className="p-6 text-center">
+                  <Upload className="w-8 h-8 text-gray-300 mx-auto mb-2" />
+                  <p className="text-sm font-medium text-gray-500 mb-1">No resume on file</p>
+                  <p className="text-xs text-gray-400 mb-3">Upload a PDF or DOCX to attach a resume and auto-analyze the candidate.</p>
+                  <button
+                    onClick={() => resumeFileInputRef.current?.click()}
+                    disabled={isUploadingResume}
+                    className="inline-flex items-center gap-1.5 text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 px-4 py-2 rounded-lg transition-colors disabled:opacity-50"
+                  >
+                    {isUploadingResume ? <Loader2 className="w-4 h-4 animate-spin" /> : <Upload className="w-4 h-4" />}
+                    {isUploadingResume ? 'Uploading & Analyzing...' : 'Upload Resume'}
+                  </button>
                 </div>
               </div>
             </motion.div>

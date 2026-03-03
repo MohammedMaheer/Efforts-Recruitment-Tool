@@ -3,19 +3,10 @@ import { useCandidateStore } from '@/store/candidateStore'
 import type { Candidate } from '@/types'
 import { useAuthStore } from '@/store/authStore'
 import config from '@/config'
+import { cleanLocation } from '@/lib/utils'
 
-// Clean up bad location values extracted from email body parsing
-const cleanLocation = (loc: string | undefined | null): string => {
-  if (!loc) return ''
-  let cleaned = loc.trim()
-  // Strip Arabic/non-Latin text in parentheses (e.g. UAE Arabic name)
-  cleaned = cleaned.replace(/\s*\([^)]*[\u0600-\u06FF][^)]*\)\s*/g, '').trim()
-  // Remove locations that are just common pronouns / noise words
-  const noise = /^(you|me|us|we|they|them|him|her|i|my|your|our|here|there|null|undefined|n\/a|none|na|unknown|test|email|sir|madam|dear|hi|hello|the|a|an|from|to|for)$/i
-  if (noise.test(cleaned)) return ''
-  if (cleaned.length <= 1) return ''
-  return cleaned
-}
+/** Timeout per-fetch request (ms). Prevents hanging when backend is under load. */
+const FETCH_TIMEOUT_MS = 30_000
 
 interface UseCandidatesOptions {
   autoFetch?: boolean
@@ -38,20 +29,14 @@ interface UseCandidatesReturn {
   }
 }
 
-// Session-storage key & TTL for instant restores
-const CACHE_KEY = 'candidates_cache'
-const CACHE_TS_KEY = 'candidates_cache_ts'
-const CACHE_TOTAL_KEY = 'candidates_cache_total'
-const CACHE_TTL = 5 * 60 * 1000 // 5 minutes
-
 // Parse JSON string safely
-const parseJSON = (value: any, fallback: any[] = []): any => {
+const parseJSON = <T = unknown>(value: unknown, fallback: T[] = []): T[] => {
   if (!value) return fallback
-  if (Array.isArray(value)) return value
+  if (Array.isArray(value)) return value as T[]
   if (typeof value === 'string') {
     try {
       const parsed = JSON.parse(value)
-      return Array.isArray(parsed) ? parsed : fallback
+      return Array.isArray(parsed) ? parsed as T[] : fallback
     } catch {
       return fallback
     }
@@ -59,14 +44,52 @@ const parseJSON = (value: any, fallback: any[] = []): any => {
   return fallback
 }
 
+/** Raw candidate shape from the backend API */
+interface RawCandidate {
+  id: string
+  name?: string
+  email?: string
+  phone?: string
+  location?: string
+  experience?: number
+  experience_years?: number
+  matchScore?: number
+  ai_score?: number
+  match_score?: number
+  status?: string
+  candidate_status?: string
+  skills?: string | string[]
+  appliedDate?: string
+  applied_date?: string
+  created_at?: string
+  summary?: string
+  raw_text?: string
+  education?: string | unknown[]
+  workHistory?: string | unknown[]
+  work_history?: string | unknown[]
+  hasResume?: boolean
+  job_category?: string
+  linkedin?: string
+  strengths?: string | string[]
+  gaps?: string | string[]
+  certifications?: string | string[]
+  languages?: string | string[]
+  resume_text?: string
+  resumeText?: string
+  ai_analysis?: Record<string, unknown>
+  aiAnalysis?: Record<string, unknown>
+  isShortlisted?: boolean
+  [key: string]: unknown
+}
+
 // Transform API candidate to store format
-const transformCandidate = (c: any): Candidate => {
+const transformCandidate = (c: RawCandidate): Candidate => {
   // Parse skills (can be JSON string or array)
   const skills = parseJSON(c.skills, [])
   
   // Parse education (stored as JSON string in DB)
-  const rawEducation = parseJSON(c.education, [])
-  const education = rawEducation.map((edu: any) => ({
+  const rawEducation = parseJSON(c.education, []) as Record<string, string>[]
+  const education = rawEducation.map((edu) => ({
     degree: edu.degree || edu.title || '',
     field: edu.field || '',  // Include field of study
     institution: edu.institution || edu.school || '',
@@ -74,8 +97,8 @@ const transformCandidate = (c: any): Candidate => {
   }))
   
   // Parse work history (stored as workHistory or work_history)
-  const rawWorkHistory = parseJSON(c.workHistory || c.work_history, [])
-  const workHistory = rawWorkHistory.map((job: any) => ({
+  const rawWorkHistory = parseJSON(c.workHistory || c.work_history, []) as Record<string, string>[]
+  const workHistory = rawWorkHistory.map((job) => ({
     title: job.title || job.position || '',
     company: job.company || job.organization || '',
     duration: job.duration || job.period || job.years || '',
@@ -115,14 +138,14 @@ const transformCandidate = (c: any): Candidate => {
     jobCategory: c.job_category || 'General',
     linkedin: c.linkedin || '',
     evaluation: {
-      strengths: parseJSON(c.strengths, []),
-      gaps: parseJSON(c.gaps, []),
+      strengths: parseJSON<string>(c.strengths, []),
+      gaps: parseJSON<string>(c.gaps, []),
       recommendation: c.job_category || 'General'
     },
-    certifications: parseJSON(c.certifications, []),
-    languages: parseJSON(c.languages, []),
+    certifications: parseJSON<string>(c.certifications, []),
+    languages: parseJSON<string>(c.languages, []),
     resumeText: c.resume_text || c.resumeText || '',
-    aiAnalysis: c.ai_analysis || c.aiAnalysis || null,
+    aiAnalysis: (c.ai_analysis || c.aiAnalysis || undefined) as import('@/types').AIAnalysisResult | undefined,
   }
 }
 
@@ -137,7 +160,29 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
   const [totalCount, setTotalCount] = useState(0)
   const abortControllerRef = useRef<AbortController | null>(null)
 
-  const fetchCandidates = useCallback(async (skipCache = false) => {
+  /** Create a combined AbortSignal from the controller + a timeout */
+  const fetchWithTimeout = useCallback(
+    (url: string, opts: RequestInit, timeoutMs = FETCH_TIMEOUT_MS): Promise<Response> => {
+      // Use AbortSignal.any if available, otherwise manual timeout
+      if (typeof AbortSignal !== 'undefined' && 'any' in AbortSignal) {
+        const timeoutSignal = AbortSignal.timeout(timeoutMs)
+        const combined = AbortSignal.any([opts.signal as AbortSignal, timeoutSignal])
+        return fetch(url, { ...opts, signal: combined })
+      }
+      // Fallback: manual timeout via setTimeout
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          reject(new Error('Request timed out'))
+        }, timeoutMs)
+        fetch(url, opts)
+          .then(resolve, reject)
+          .finally(() => clearTimeout(timer))
+      })
+    },
+    [],
+  )
+
+  const fetchCandidates = useCallback(async (_skipCache = false) => {
     // Cancel any in-flight fetch to prevent race conditions
     if (abortControllerRef.current) {
       abortControllerRef.current.abort()
@@ -150,39 +195,28 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
     
     try {
       const token = useAuthStore.getState().token
+      const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {}
       
-      // --- Instant restore from sessionStorage (< 1ms) ---
-      if (!skipCache) {
-        try {
-          const cachedTs = sessionStorage.getItem(CACHE_TS_KEY)
-          if (cachedTs && Date.now() - Number(cachedTs) < CACHE_TTL) {
-            const cached = sessionStorage.getItem(CACHE_KEY)
-            if (cached) {
-              const parsed = JSON.parse(cached) as Candidate[]
-              if (parsed.length > 0) {
-                setCandidates(parsed)
-                const cachedTotal = Number(sessionStorage.getItem(CACHE_TOTAL_KEY)) || parsed.length
-                setTotalCount(cachedTotal)
-                setLoading(false)
-                // Background refresh after instant render
-                setTimeout(() => fetchCandidates(true), 500)
-                return
-              }
-            }
-          }
-        } catch { /* ignore cache errors */ }
-      }
-      
-      // Fetch with fields=light for ~3x smaller payload
-      const pageSize = 500
+      // Use a large page size to minimize parallel requests (4820 candidates ≈ 1.5 MB with fields=light)
+      const pageSize = 2000
       let allCandidates: Candidate[] = []
       let totalFromServer = 0
       
-      // First page - fast initial render
-      const firstResponse = await fetch(`${config.endpoints.candidates}?limit=${pageSize}&page=1&fields=light`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-        signal: controller.signal,
-      })
+      // First page — renders immediately, sets initial data
+      const firstResponse = await fetchWithTimeout(
+        `${config.endpoints.candidates}?limit=${pageSize}&page=1&fields=light`,
+        { headers, signal: controller.signal, cache: 'no-store' as RequestCache },
+      )
+      
+      // Handle 401 — auto-logout so user doesn't stay on a broken session
+      if (firstResponse.status === 401) {
+        const authStore = useAuthStore.getState()
+        if (authStore.isAuthenticated) {
+          authStore.logout()
+          window.dispatchEvent(new CustomEvent('auth:session-expired'))
+        }
+        throw new Error('Session expired. Please log in again.')
+      }
       
       if (!firstResponse.ok) {
         throw new Error(`Failed to fetch candidates: ${firstResponse.statusText}`)
@@ -199,50 +233,52 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
         setTotalCount(totalFromServer)
       }
       
-      // Fetch remaining pages in parallel if there are more
+      // Fetch remaining pages (if any) with Promise.allSettled to handle partial failures
       if (totalFromServer > pageSize && !controller.signal.aborted) {
         const totalPages = Math.ceil(totalFromServer / pageSize)
         const pagePromises = []
         for (let p = 2; p <= totalPages; p++) {
           pagePromises.push(
-            fetch(`${config.endpoints.candidates}?limit=${pageSize}&page=${p}&fields=light`, {
-              headers: token ? { Authorization: `Bearer ${token}` } : {},
-              signal: controller.signal,
-            }).then(r => r.ok ? r.json() : null)
+            fetchWithTimeout(
+              `${config.endpoints.candidates}?limit=${pageSize}&page=${p}&fields=light`,
+              { headers, signal: controller.signal, cache: 'no-store' as RequestCache },
+            ).then(r => (r.ok ? r.json() : null)),
           )
         }
-        const results = await Promise.all(pagePromises)
-        for (const data of results) {
-          if (data) {
-            const batch = (data.candidates || []).map(transformCandidate)
+
+        // allSettled never rejects — partial data is better than no data
+        const results = await Promise.allSettled(pagePromises)
+        let failedPages = 0
+        for (const result of results) {
+          if (result.status === 'fulfilled' && result.value) {
+            const batch = (result.value.candidates || []).map(transformCandidate)
             if (batch.length > 0) allCandidates = [...allCandidates, ...batch]
+          } else {
+            failedPages++
           }
         }
         if (!controller.signal.aborted) {
           setCandidates(allCandidates)
+          if (failedPages > 0) {
+            console.warn(`${failedPages} page(s) failed to load — showing partial data`)
+          }
         }
       }
       
       if (!controller.signal.aborted) {
         setTotalCount(totalFromServer)
-        // Persist to sessionStorage for instant next load
-        try {
-          sessionStorage.setItem(CACHE_KEY, JSON.stringify(allCandidates))
-          sessionStorage.setItem(CACHE_TS_KEY, String(Date.now()))
-          sessionStorage.setItem(CACHE_TOTAL_KEY, String(totalFromServer))
-        } catch { /* storage full — ignore */ }
       }
       
     } catch (err) {
-      // Ignore abort errors — they're expected when a newer fetch supersedes
-      if (err instanceof DOMException && err.name === 'AbortError') return
+      // Ignore abort errors — they're expected when a newer fetch supersedes or on unmount
+      if (err instanceof DOMException && (err.name === 'AbortError' || err.name === 'TimeoutError')) return
       const message = err instanceof Error ? err.message : 'Failed to fetch candidates'
       setError(message)
       console.error('Error fetching candidates:', err)
     } finally {
       setLoading(false)
     }
-  }, [setCandidates])
+  }, [setCandidates, fetchWithTimeout])
 
   // Initial fetch — always fetch if empty, and also refetch on mount
   useEffect(() => {
@@ -258,7 +294,7 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
       // Cleanup: abort in-flight requests on unmount
       if (abortControllerRef.current) abortControllerRef.current.abort()
     }
-  }, [autoFetch]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [autoFetch, fetchCandidates])
 
   // Refresh interval
   useEffect(() => {
@@ -301,7 +337,7 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
     loading,
     error,
     totalCount,
-    refetch: fetchCandidates,
+    refetch: () => fetchCandidates(),
     stats
   }
 }

@@ -20,16 +20,347 @@ import asyncio
 import hashlib
 from typing import Dict, List, Optional, Any, Union
 
+# ── Shared constants for pre-filter scoring (used by both chat() and rank_candidates_for_job()) ──
+
+STOP_WORDS = frozenset({
+    'find', 'me', 'the', 'a', 'an', 'is', 'are', 'in', 'for', 'and', 'or', 'with',
+    'who', 'show', 'list', 'get', 'all', 'best', 'top', 'candidates', 'candidate',
+    'can', 'you', 'i', 'we', 'our', 'have', 'has', 'do', 'does', 'what', 'how',
+    'need', 'want', 'looking', 'search', 'tell', 'about', 'give', 'please',
+    'any', 'some', 'good', 'from', 'to', 'of', 'that', 'this', 'it', 'be',
+    'position', 'role', 'job', 'hiring', 'work', 'working', 'prefer', 'preferred',
+    'should', 'must', 'minimum', 'experience', 'years', 'year', 'office',
+})
+
+LOCATION_ALIASES = {
+    # Country / region aliases
+    'uae': ['dubai', 'abu dhabi', 'sharjah', 'ajman', 'fujairah', 'ras al khaimah', 'umm al quwain', 'united arab emirates'],
+    'usa': ['united states', 'new york', 'california', 'texas', 'florida', 'chicago', 'los angeles', 'san francisco', 'seattle', 'boston', 'austin'],
+    'uk': ['united kingdom', 'london', 'manchester', 'birmingham', 'england', 'scotland'],
+    'india': ['mumbai', 'delhi', 'bangalore', 'bengaluru', 'hyderabad', 'chennai', 'pune', 'kolkata', 'noida', 'gurgaon', 'gurugram', 'jaipur', 'ahmedabad', 'kochi', 'cochin', 'coimbatore', 'thiruvananthapuram', 'trivandrum'],
+    'gcc': ['saudi arabia', 'kuwait', 'bahrain', 'oman', 'qatar', 'dubai', 'abu dhabi', 'riyadh', 'doha', 'muscat'],
+    'ksa': ['saudi arabia', 'riyadh', 'jeddah', 'dammam', 'mecca', 'medina'],
+    # Indian city <-> state bidirectional aliases
+    'chennai': ['tamil nadu', 'tamilnadu', 'tn', 'madras'],
+    'tamil nadu': ['chennai', 'coimbatore', 'madurai', 'trichy', 'salem', 'tamilnadu'],
+    'tamilnadu': ['chennai', 'tamil nadu', 'coimbatore', 'madurai'],
+    'bangalore': ['bengaluru', 'karnataka'],
+    'bengaluru': ['bangalore', 'karnataka'],
+    'karnataka': ['bangalore', 'bengaluru', 'mysore', 'mysuru', 'mangalore'],
+    'hyderabad': ['telangana', 'andhra pradesh', 'secunderabad'],
+    'telangana': ['hyderabad', 'secunderabad', 'warangal'],
+    'mumbai': ['maharashtra', 'bombay', 'navi mumbai', 'thane'],
+    'maharashtra': ['mumbai', 'pune', 'nagpur', 'nashik', 'thane'],
+    'delhi': ['new delhi', 'ncr', 'noida', 'gurgaon', 'gurugram', 'faridabad', 'ghaziabad'],
+    'ncr': ['delhi', 'new delhi', 'noida', 'gurgaon', 'gurugram', 'faridabad', 'ghaziabad'],
+    'noida': ['delhi', 'ncr', 'uttar pradesh'],
+    'gurgaon': ['gurugram', 'delhi', 'ncr', 'haryana'],
+    'gurugram': ['gurgaon', 'delhi', 'ncr', 'haryana'],
+    'pune': ['maharashtra'],
+    'kolkata': ['west bengal', 'calcutta'],
+    'kochi': ['cochin', 'kerala', 'ernakulam'],
+    'cochin': ['kochi', 'kerala'],
+    'kerala': ['kochi', 'cochin', 'thiruvananthapuram', 'trivandrum', 'kozhikode', 'calicut'],
+    'dubai': ['uae', 'united arab emirates'],
+    'abu dhabi': ['uae', 'united arab emirates'],
+    'sharjah': ['uae', 'united arab emirates'],
+    'riyadh': ['ksa', 'saudi arabia'],
+    'jeddah': ['ksa', 'saudi arabia'],
+    # East Asia / SEA
+    'singapore': ['sg'],
+    'malaysia': ['kuala lumpur', 'kl'],
+}
+
+# Comprehensive skill synonyms for flexible matching
+SKILL_SYNONYMS = {
+    # AI / ML
+    'ml': {'machine learning', 'machine', 'learning'},
+    'machine learning': {'ml', 'deep learning', 'neural networks'},
+    'ai': {'artificial intelligence', 'machine learning', 'ml', 'deep learning'},
+    'artificial intelligence': {'ai', 'ml'},
+    'nlp': {'natural language processing', 'text mining', 'text analytics'},
+    'natural language processing': {'nlp'},
+    'deep learning': {'dl', 'neural networks', 'tensorflow', 'pytorch'},
+    'computer vision': {'cv', 'image processing', 'opencv'},
+    # RPA / Automation
+    'rpa': {'robotic process automation', 'uipath', 'blueprism', 'blue prism', 'automation anywhere', 'power automate'},
+    'robotic process automation': {'rpa'},
+    'uipath': {'rpa', 'robotic process automation'},
+    'blueprism': {'rpa', 'blue prism'},
+    'blue prism': {'rpa', 'blueprism'},
+    'automation anywhere': {'rpa'},
+    'power automate': {'microsoft power automate', 'power platform', 'rpa'},
+    'microsoft power automate': {'power automate', 'power platform'},
+    'power platform': {'power automate', 'power apps', 'power bi'},
+    # JavaScript ecosystem
+    'react': {'reactjs', 'react.js', 'react js'},
+    'reactjs': {'react', 'react.js'},
+    'react.js': {'react', 'reactjs'},
+    'angular': {'angularjs', 'angular.js', 'angular js'},
+    'angularjs': {'angular', 'angular.js'},
+    'vue': {'vuejs', 'vue.js', 'vue js'},
+    'vuejs': {'vue', 'vue.js'},
+    'next': {'nextjs', 'next.js'},
+    'nextjs': {'next', 'next.js'},
+    'next.js': {'next', 'nextjs'},
+    'node': {'nodejs', 'node.js', 'node js'},
+    'nodejs': {'node', 'node.js'},
+    'node.js': {'node', 'nodejs'},
+    'express': {'expressjs', 'express.js'},
+    'js': {'javascript'},
+    'javascript': {'js', 'ecmascript', 'es6'},
+    'ts': {'typescript'},
+    'typescript': {'ts'},
+    'jquery': {'jquery'},
+    # Python ecosystem
+    'python': {'py', 'python3'},
+    'django': {'django rest framework', 'drf'},
+    'flask': {'flask'},
+    'fastapi': {'fast api'},
+    # Java / JVM
+    'java': {'j2ee', 'jee', 'jdk'},
+    'spring': {'spring boot', 'springboot', 'spring framework'},
+    'spring boot': {'spring', 'springboot'},
+    'springboot': {'spring', 'spring boot'},
+    'kotlin': {'kt'},
+    'scala': {'scala'},
+    # .NET / C#
+    'c#': {'csharp', 'c sharp', '.net', 'dotnet'},
+    'csharp': {'c#', '.net'},
+    '.net': {'dotnet', 'c#', 'csharp', 'asp.net'},
+    'dotnet': {'.net', 'c#'},
+    'asp.net': {'.net', 'dotnet', 'c#'},
+    # C / C++
+    'c++': {'cpp', 'c plus plus', 'cplusplus'},
+    'cpp': {'c++', 'c plus plus'},
+    # DevOps / Cloud
+    'devops': {'ci/cd', 'cicd', 'docker', 'kubernetes', 'jenkins', 'terraform', 'ansible'},
+    'cicd': {'ci/cd', 'continuous integration', 'continuous deployment', 'devops'},
+    'ci/cd': {'cicd', 'continuous integration', 'devops'},
+    'docker': {'container', 'containerization'},
+    'kubernetes': {'k8s', 'container orchestration'},
+    'k8s': {'kubernetes'},
+    'terraform': {'tf', 'infrastructure as code', 'iac'},
+    'ansible': {'configuration management'},
+    'aws': {'amazon web services', 'cloud', 'ec2', 's3', 'lambda'},
+    'amazon web services': {'aws'},
+    'azure': {'microsoft azure', 'cloud'},
+    'microsoft azure': {'azure'},
+    'gcp': {'google cloud', 'google cloud platform', 'cloud'},
+    'google cloud': {'gcp', 'google cloud platform'},
+    'cloud': {'aws', 'azure', 'gcp'},
+    # Databases
+    'sql': {'mysql', 'postgresql', 'oracle', 'database', 'rdbms', 'mssql', 'sql server'},
+    'mysql': {'sql', 'database', 'rdbms'},
+    'postgresql': {'postgres', 'sql', 'database'},
+    'postgres': {'postgresql'},
+    'mongodb': {'mongo', 'nosql'},
+    'mongo': {'mongodb', 'nosql'},
+    'nosql': {'mongodb', 'cassandra', 'redis', 'dynamodb'},
+    'oracle': {'oracle db', 'plsql', 'pl/sql'},
+    'sql server': {'mssql', 'microsoft sql server', 'tsql'},
+    'mssql': {'sql server', 'microsoft sql server'},
+    'redis': {'cache', 'in-memory database'},
+    'database': {'sql', 'nosql', 'rdbms', 'dbms'},
+    # Full-stack
+    'fullstack': {'full stack', 'full-stack', 'frontend', 'backend'},
+    'full stack': {'fullstack', 'full-stack'},
+    'frontend': {'front-end', 'front end', 'ui', 'client-side'},
+    'backend': {'back-end', 'back end', 'server-side', 'api'},
+    # Data
+    'data science': {'data scientist', 'analytics', 'machine learning'},
+    'data engineering': {'data engineer', 'etl', 'data pipeline'},
+    'data analytics': {'data analysis', 'analytics', 'business intelligence', 'bi'},
+    'power bi': {'powerbi', 'business intelligence', 'bi'},
+    'powerbi': {'power bi'},
+    'tableau': {'data visualization', 'business intelligence'},
+    'etl': {'data pipeline', 'data engineering'},
+    # QA / Testing
+    'qa': {'testing', 'quality assurance', 'test automation', 'selenium', 'qc'},
+    'testing': {'qa', 'quality assurance', 'test'},
+    'selenium': {'test automation', 'qa', 'web testing'},
+    'automation testing': {'test automation', 'qa', 'selenium', 'cypress'},
+    'test automation': {'automation testing', 'qa', 'selenium'},
+    'manual testing': {'qa', 'quality assurance'},
+    # Security
+    'cyber': {'cybersecurity', 'security', 'infosec'},
+    'cybersecurity': {'cyber security', 'security', 'infosec', 'soc', 'siem'},
+    'security': {'cybersecurity', 'infosec'},
+    'infosec': {'information security', 'cybersecurity'},
+    # ERP / Business
+    'sap': {'sap hana', 'sap s/4hana', 'erp'},
+    'erp': {'sap', 'oracle erp', 'dynamics 365'},
+    'salesforce': {'sfdc', 'crm'},
+    'crm': {'salesforce', 'hubspot', 'dynamics crm'},
+    # Project Management
+    'scrum': {'agile', 'sprint', 'kanban', 'scrum master'},
+    'agile': {'scrum', 'sprint', 'kanban'},
+    'pmp': {'project management', 'project manager'},
+    'pm': {'project management', 'project manager'},
+    'project management': {'pm', 'pmp', 'agile', 'scrum'},
+    # HR / Recruitment
+    'hr': {'human resources', 'recruitment', 'talent acquisition', 'hrbp', 'people operations'},
+    'recruitment': {'talent acquisition', 'hiring', 'hr', 'staffing', 'sourcing'},
+    'talent acquisition': {'recruitment', 'hiring', 'sourcing'},
+    'hrbp': {'hr business partner', 'human resources', 'hr'},
+    # Design
+    'ui/ux': {'ux', 'ui', 'user experience', 'user interface', 'ux design', 'ui design'},
+    'ux': {'user experience', 'ui/ux', 'ux design', 'ux research'},
+    'ui': {'user interface', 'ui/ux', 'ui design'},
+    'figma': {'ui design', 'ux design', 'prototyping', 'sketch'},
+    # Mobile
+    'ios': {'swift', 'objective-c', 'xcode', 'apple'},
+    'android': {'kotlin', 'java', 'mobile'},
+    'react native': {'mobile', 'cross-platform', 'react'},
+    'flutter': {'dart', 'mobile', 'cross-platform'},
+    # API / Integration
+    'rest': {'rest api', 'restful', 'api'},
+    'rest api': {'restful', 'rest', 'api'},
+    'restful': {'rest api', 'rest'},
+    'graphql': {'graph ql', 'api'},
+    'api': {'rest', 'restful', 'graphql', 'web services'},
+    'microservices': {'micro services', 'distributed systems'},
+    'micro services': {'microservices'},
+    # Networking / Infra
+    'networking': {'network', 'ccna', 'ccnp', 'cisco'},
+    'cisco': {'ccna', 'ccnp', 'networking'},
+    'linux': {'unix', 'ubuntu', 'centos', 'rhel'},
+    'unix': {'linux'},
+    # Automation general
+    'automate': {'automation', 'scripting'},
+    'automation': {'automate', 'scripting', 'rpa'},
+    # ── Finance / Accounting ──
+    'finance': {'financial analysis', 'financial modeling', 'accounting', 'treasury', 'budgeting'},
+    'accounting': {'accounts', 'bookkeeping', 'financial reporting', 'audit', 'cpa', 'acca'},
+    'cpa': {'certified public accountant', 'accounting'},
+    'acca': {'chartered accountant', 'accounting'},
+    'cfa': {'chartered financial analyst', 'finance', 'investment'},
+    'audit': {'auditing', 'internal audit', 'external audit', 'accounting'},
+    'treasury': {'cash management', 'finance'},
+    'tax': {'taxation', 'tax planning', 'vat', 'corporate tax'},
+    # ── Sales / Business Development ──
+    'sales': {'business development', 'account management', 'revenue', 'selling'},
+    'business development': {'bd', 'sales', 'partnerships'},
+    'account management': {'key accounts', 'client management', 'sales'},
+    'b2b': {'business to business', 'enterprise sales'},
+    'b2c': {'business to consumer', 'retail sales', 'consumer'},
+    # ── Marketing ──
+    'marketing': {'digital marketing', 'brand management', 'advertising', 'seo', 'sem'},
+    'digital marketing': {'seo', 'sem', 'social media marketing', 'ppc', 'google ads'},
+    'seo': {'search engine optimization', 'digital marketing'},
+    'sem': {'search engine marketing', 'ppc', 'google ads'},
+    'content marketing': {'content writing', 'copywriting', 'blog'},
+    'social media': {'social media marketing', 'smm', 'community management'},
+    # ── Operations / Supply Chain ──
+    'operations': {'operations management', 'process improvement', 'lean', 'six sigma'},
+    'supply chain': {'scm', 'logistics', 'procurement', 'warehousing'},
+    'logistics': {'supply chain', 'freight', 'shipping', 'transportation'},
+    'procurement': {'purchasing', 'sourcing', 'vendor management'},
+    'lean': {'lean manufacturing', 'six sigma', 'kaizen', 'continuous improvement'},
+    'six sigma': {'lean', 'process improvement', 'quality'},
+    # ── Healthcare ──
+    'healthcare': {'medical', 'hospital', 'clinical', 'health'},
+    'nursing': {'nurse', 'registered nurse', 'rn', 'healthcare'},
+    'pharmacy': {'pharmacist', 'pharmaceutical', 'pharma'},
+    # ── Legal ──
+    'legal': {'law', 'lawyer', 'attorney', 'compliance', 'contracts'},
+    'compliance': {'regulatory', 'governance', 'risk', 'legal'},
+    # ── Consulting ──
+    'consulting': {'consultant', 'advisory', 'management consulting', 'strategy'},
+    # ── Education ──
+    'education': {'teaching', 'training', 'e-learning', 'curriculum'},
+    'teaching': {'teacher', 'instructor', 'professor', 'education'},
+    # ── Insurance ──
+    'insurance': {'underwriting', 'claims', 'risk management', 'actuarial'},
+    # ── Real Estate ──
+    'real estate': {'property', 'realty', 'property management', 'leasing'},
+}
+
+# Pre-compiled regex for location detection
+LOCATION_PATTERN = re.compile(
+    r'(?:based\s+in|work\s*(?:ing)?\s*(?:from|in|at)|located?\s+(?:in|at)|'
+    r'(?:prefer(?:red|ably)?|must\s+be)\s+(?:in|from|to\s+work\s+(?:from|in))|'
+    r'office\s+in|(?:from|in|at|near)\s+)'
+    r'\s+([A-Za-z][A-Za-z\s,]{1,40}?)(?:\s*[.\-]|\s+(?:office|with|who|minimum|'
+    r'min|experience|exp|having|and|must|should|can|preferr?|at\s+least|\d)|$)',
+    re.IGNORECASE
+)
+
+# Pre-compiled regex for experience detection
+EXPERIENCE_PATTERN = re.compile(
+    r'(?:minimum|min|at\s+least|above)?\s*(\d+)\+?\s*(?:years?|yrs?|y)\s*(?:of\s+)?(?:experience|exp)?',
+    re.IGNORECASE
+)
+
+# Experience RANGE pattern: "0 to 2 years", "1-3 years", "between 2 and 5 years"
+EXPERIENCE_RANGE_PATTERN = re.compile(
+    r'(?:(\d+)\s*(?:to|-|–)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|between\s*(\d+)\s*(?:and|&)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|(?:no\s+more\s+than|not\s+more\s+than|max(?:imum)?|under|below|less\s+than|at\s+most)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|(?:do\s+not|don\'t|doesn\'t|should\s+not)\s+(?:include|have|exceed).*?(?:more\s+than|above|over)\s*(\d+)\s*(?:years?|yrs?|y))',
+    re.IGNORECASE
+)
+
+# Count extraction from message: "show me 15 candidates", "top 20", "list 25"
+COUNT_PATTERN = re.compile(
+    r'(?:show|give|list|find|get|display|return|fetch|bring|send|provide)\s+(?:me\s+)?(?:the\s+)?(?:top\s+)?(\d+)'
+    r'|(?:top|best|first)\s+(\d+)'
+    r'|(\d+)\s+(?:candidates|results|people|profiles|matches|applicants|resumes|cvs)',
+    re.IGNORECASE
+)
+
+
+def _expand_location_terms(raw_terms: list, stop_words: frozenset = STOP_WORDS) -> set:
+    """Expand location terms using aliases (bidirectional). Returns set of all matching terms."""
+    expanded: set = set()
+    for term in raw_terms:
+        expanded.add(term)
+        for word in term.split():
+            if len(word) > 2:
+                expanded.add(word)
+        if term in LOCATION_ALIASES:
+            for alias in LOCATION_ALIASES[term]:
+                expanded.add(alias)
+        for alias_key, alias_vals in LOCATION_ALIASES.items():
+            if term in alias_vals or term == alias_key:
+                expanded.add(alias_key)
+                for v in alias_vals:
+                    expanded.add(v)
+    return expanded
+
+
+def _extract_location_from_text(text: str) -> list:
+    """Extract required location terms from a query or JD using regex."""
+    match = LOCATION_PATTERN.search(text)
+    terms = []
+    if match:
+        raw_loc = match.group(1).strip().strip(',').strip()
+        for part in raw_loc.split(','):
+            part = part.strip().lower()
+            if part and part not in STOP_WORDS and len(part) > 1:
+                terms.append(part)
+    return terms
+
+
+def _safe_int_experience(val) -> int:
+    """Safely convert experience to int, handling strings and None."""
+    try:
+        return int(float(val or 0))
+    except (ValueError, TypeError):
+        return 0
+
 logger = logging.getLogger(__name__)
 
 # Try to import google-generativeai
 try:
-    import google.generativeai as genai
+    from google import genai
+    from google.genai import types as genai_types
     GEMINI_AVAILABLE = True
 except ImportError:
     genai = None  # type: ignore
+    genai_types = None  # type: ignore
     GEMINI_AVAILABLE = False
-    logger.info("google-generativeai not installed — Gemini service disabled")
+    logger.info("google-genai not installed — Gemini service disabled")
 
 
 def _repair_json(text: str) -> Optional[Dict]:
@@ -119,11 +450,10 @@ class GeminiService:
 
     def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.0-flash"):
         import os
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
+        self.api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
         self.model_name = model_name
         self.available = False
-        self._model = None
-        self._chat_model = None
+        self._client = None
 
         # Performance tracking
         self._request_count = 0
@@ -135,8 +465,13 @@ class GeminiService:
         self._cache_max_size = 500
         self._cache_ttl = 3600  # 1 hour
 
+        # Daily budget tracking — prevents runaway costs
+        self._daily_call_count = 0
+        self._daily_call_date = ''  # YYYY-MM-DD
+        self._daily_call_limit = int(os.environ.get('GEMINI_DAILY_LIMIT', '2000'))  # Max API calls/day
+
         if not GEMINI_AVAILABLE:
-            logger.warning("⚠️ google-generativeai package not installed. Run: pip install google-generativeai")
+            logger.warning("⚠️ google-genai package not installed. Run: pip install google-genai")
             return
 
         if not self.api_key:
@@ -144,21 +479,7 @@ class GeminiService:
             return
 
         try:
-            genai.configure(api_key=self.api_key)
-            self._model = genai.GenerativeModel(
-                model_name=self.model_name,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.1,
-                    max_output_tokens=2048,  # INTELLIGENCE OPTIMIZED: need room for detailed analysis
-                ),
-            )
-            self._chat_model = genai.GenerativeModel(
-                model_name=self.model_name,
-                generation_config=genai.types.GenerationConfig(
-                    temperature=0.3,
-                    max_output_tokens=3000,  # INTELLIGENCE OPTIMIZED: rich candidate lists need space
-                ),
-            )
+            self._client = genai.Client(api_key=self.api_key)
             self.available = True
             logger.info(f"✅ Gemini AI initialized: {self.model_name}")
         except Exception as e:
@@ -190,12 +511,28 @@ class GeminiService:
 
     def _generate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> str:
         """Synchronous text generation via Gemini."""
-        if not self.available or not self._model:
+        if not self.available or not self._client:
             return ""
+        # ── Daily budget check ──
+        import datetime as _dt
+        today = _dt.date.today().isoformat()
+        if self._daily_call_date != today:
+            self._daily_call_date = today
+            self._daily_call_count = 0
+        if self._daily_call_count >= self._daily_call_limit:
+            logger.warning(f"⚠️ Gemini daily limit reached ({self._daily_call_limit} calls). Skipping API call.")
+            return ""
+        self._daily_call_count += 1
         start = time.time()
         try:
-            cfg = genai.types.GenerationConfig(temperature=temperature, max_output_tokens=max_tokens)
-            response = self._model.generate_content(prompt, generation_config=cfg)
+            response = self._client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens,
+                ),
+            )
             result = response.text.strip()
             elapsed = time.time() - start
             self._request_count += 1
@@ -209,8 +546,7 @@ class GeminiService:
 
     async def _agenerate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> str:
         """Async wrapper — Gemini SDK is sync, so we run in executor."""
-        import asyncio
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._generate, prompt, temperature, max_tokens)
 
     def _generate_json(self, prompt: str, temperature: float = 0.05, max_tokens: int = 1024) -> Optional[Dict]:
@@ -365,50 +701,95 @@ Set is_candidate_email to false if NOT a job application."""
     # CANDIDATE TEXT ANALYSIS (for background processing)
     # ==================================================================
 
-    async def analyze_candidate(self, text: str) -> Dict:
+    async def analyze_candidate(self, text: str, job_context: str = None) -> Dict:
         """Analyze raw candidate/resume text and extract structured data.
-        Used by the background processor to enrich unprocessed candidates."""
+        Used by the background processor to enrich unprocessed candidates.
+        If job_context is provided, scores reflect fit for that role."""
         if not text or len(text.strip()) < 20:
             return {}
 
-        cache_key = self._cache_key("analyze", text[:500])
+        cache_key = self._cache_key("analyze", text[:500] + (job_context or '')[:200])
         cached = self._get_cached(cache_key)
         if cached:
             return cached
 
-        prompt = f"""You are a recruitment AI. Analyze this candidate profile/resume text and extract structured information.
-Return ONLY valid JSON.
+        job_instruction = ""
+        if job_context:
+            job_instruction = f"""
+TARGET ROLE CONTEXT:
+{job_context[:1000]}
 
-TEXT:
-{text[:3000]}
+Score the candidate's FIT for this specific role. A 90%+ means excellent match for this exact position."""
+        else:
+            job_instruction = """
+No specific target role provided. Score based on OVERALL professional quality:
+- 85-100: Exceptional — 10+ yrs experience, strong skills, leadership, certifications
+- 70-84: Strong — 5+ yrs, good skills match, relevant education
+- 55-69: Moderate — 2-5 yrs, some relevant skills but gaps
+- 40-54: Developing — Entry-level, limited skills, minimal experience
+- Below 40: Weak — Unclear background or very junior
 
-Return JSON:
+Be precise and differentiated. Do NOT default to 50 or 65. Assess the actual resume quality carefully.
+If the resume shows 10+ skills, clear experience, and education, score 75+.
+If sparse/generic, score 35-50."""
+
+        prompt = f"""You are an expert recruitment AI analyzing a candidate's resume/profile.
+Extract ALL structured information and provide an honest quality assessment.
+{job_instruction}
+
+RESUME TEXT:
+{text[:4000]}
+
+Return ONLY valid JSON with these exact fields:
 {{
-    "skills": ["skill1", "skill2", "skill3"],
+    "name": "Full Name from resume (if visible)",
+    "phone": "Phone number with country code if found",
+    "email": "Email address if found",
+    "location": "City, State/Country — extract from address, contact info, or any location mention",
+    "skills": ["Extract ALL technical and professional skills mentioned — be thorough, list 10+ if present"],
     "experience": 5,
-    "education": ["degree or certification"],
-    "job_category": "Software Development",
-    "match_score": 65,
-    "quality_score": 70,
-    "summary": "Brief 1-2 sentence professional summary",
-    "location": "City, Country if mentioned",
-    "certifications": ["cert1"]
-}}"""
+    "education": ["Highest degree — e.g. B.Tech in Computer Science, MBA, etc."],
+    "job_category": "MUST be exactly one of: Software Engineering, Data & Analytics, IT & Systems, Engineering, HR & Admin, Finance & Accounting, Sales, Operations, Consulting, Healthcare, Design & Creative, QA & Testing, Marketing, Customer Service, Insurance & Safety, Retail & Hospitality, Business Analyst, Education, Legal, General",
+    "job_subcategory": "Specific role title — e.g. Full Stack Developer, MEP Engineer, Data Scientist",
+    "quality_score": 72,
+    "summary": "2-3 sentence professional summary highlighting key strengths and experience level",
+    "certifications": ["Any certifications mentioned"],
+    "languages": ["Languages spoken if mentioned"],
+    "linkedin": "LinkedIn URL if found",
+    "work_history": ["Recent company/role if mentioned"]
+}}
+
+IMPORTANT for quality_score:
+- Base it on: depth of experience, breadth of skills, education quality, certifications, career progression
+- A resume with 10+ skills, 5+ years exp, and a degree should score 70-80
+- A resume with 3-4 skills and 1-2 years should score 45-55
+- Score MUST reflect actual resume content — never default to 50 or 65"""
 
         result = await self._agenerate_json(prompt, temperature=0.1)
 
         if result:
-            # Normalize fields
-            score = result.get('match_score', result.get('quality_score', 50))
+            # Normalize score — prefer quality_score, then match_score
+            score = result.get('quality_score') or result.get('match_score')
             if score is None:
-                score = 50
+                # Calculate a reasonable fallback from extracted data
+                skills_count = len(result.get('skills', []))
+                exp = result.get('experience', 0) or 0
+                has_edu = bool(result.get('education'))
+                has_certs = bool(result.get('certifications'))
+                score = 25  # base
+                score += min(30, skills_count * 3)  # up to 30 from skills
+                score += min(25, exp * 3)  # up to 25 from experience  
+                score += 10 if has_edu else 0
+                score += 5 if has_certs else 0
+                score = min(95, max(15, score))
+                logger.info(f"📊 Calculated fallback score: {score} (skills={skills_count}, exp={exp})")
             if isinstance(score, str):
                 nums = re.findall(r'\d+', score)
-                score = int(nums[0]) if nums else 50
+                score = int(nums[0]) if nums else 40
             try:
-                result['match_score'] = max(0, min(100, int(float(score))))
+                result['match_score'] = max(10, min(100, int(float(score))))
             except (TypeError, ValueError):
-                result['match_score'] = 50
+                result['match_score'] = 40
             result['quality_score'] = result['match_score']
             result.setdefault('job_category', 'General')
             result.setdefault('skills', [])
@@ -566,47 +947,24 @@ Return JSON:
         """
         start = time.time()
 
-        # Stage 1: Fast keyword pre-filter (matches chat() approach)
+        # Stage 1: Fast keyword pre-filter using shared constants
         jd_lower = job_description.lower()
         jd_tokens = set(re.sub(r'[^\w\s#+.]', ' ', jd_lower).split())
-        # Remove stop words (same list as chat())
-        stop_words = {'find', 'me', 'the', 'a', 'an', 'is', 'are', 'in', 'for', 'and', 'or', 'with',
-                      'who', 'show', 'list', 'get', 'all', 'best', 'top', 'candidates', 'candidate',
-                      'can', 'you', 'i', 'we', 'our', 'have', 'has', 'do', 'does', 'what', 'how',
-                      'need', 'want', 'looking', 'search', 'tell', 'about', 'give', 'please',
-                      'any', 'some', 'good', 'from', 'to', 'of', 'that', 'this', 'it', 'be',
-                      'position', 'role', 'job', 'hiring'}
-        jd_keywords = {t for t in jd_tokens if len(t) >= 2 and t not in stop_words}
+        jd_keywords = {t for t in jd_tokens if len(t) >= 2 and t not in STOP_WORDS}
 
-        # Location aliases for flexible matching
-        location_aliases = {
-            'uae': ['dubai', 'abu dhabi', 'sharjah', 'ajman', 'united arab emirates'],
-            'usa': ['united states', 'new york', 'california', 'texas', 'florida'],
-            'uk': ['united kingdom', 'london', 'manchester', 'england'],
-            'india': ['mumbai', 'delhi', 'bangalore', 'bengaluru', 'hyderabad', 'chennai', 'pune', 'kolkata', 'noida', 'india'],
-            'gcc': ['saudi arabia', 'kuwait', 'bahrain', 'oman', 'qatar', 'dubai', 'abu dhabi', 'riyadh'],
-            'ksa': ['saudi arabia', 'riyadh', 'jeddah', 'dammam'],
-        }
         expanded_keywords = set(jd_keywords)
-        for alias, expansions in location_aliases.items():
+        for alias, expansions in LOCATION_ALIASES.items():
             if alias in jd_keywords:
                 expanded_keywords.update(expansions)
 
-        # Skill synonyms for flexible matching
-        skill_synonyms = {
-            'ml': {'machine', 'learning'}, 'ai': {'artificial', 'intelligence'},
-            'rpa': {'robotic', 'process', 'automation', 'uipath', 'blueprism'},
-            'react': {'reactjs'}, 'reactjs': {'react'}, 'node': {'nodejs'}, 'nodejs': {'node'},
-            'js': {'javascript'}, 'javascript': {'js'}, 'ts': {'typescript'}, 'typescript': {'ts'},
-            'devops': {'cicd', 'docker', 'kubernetes', 'jenkins', 'terraform'},
-            'fullstack': {'full stack', 'frontend', 'backend'},
-            'sql': {'mysql', 'postgresql', 'oracle', 'database'},
-            'qa': {'testing', 'quality assurance', 'selenium'},
-            'automate': {'automation', 'rpa'}, 'automation': {'automate', 'rpa'},
-            'cyber': {'cybersecurity', 'security'}, 'security': {'cybersecurity', 'infosec'},
-            'sap': {'erp'}, 'erp': {'sap'},
-            'scrum': {'agile'}, 'agile': {'scrum'},
-        }
+        # Detect explicit location requirement from JD
+        raw_loc_terms = _extract_location_from_text(job_description)
+        jd_location_terms = _expand_location_terms(raw_loc_terms)
+        jd_has_location = len(jd_location_terms) > 0
+
+        # Detect experience requirement from JD
+        _exp_match_jd = EXPERIENCE_PATTERN.search(job_description)
+        jd_min_experience = int(_exp_match_jd.group(1)) if _exp_match_jd else 0
 
         pre_scored = []
         for idx, c in enumerate(candidates):
@@ -616,40 +974,59 @@ Return JSON:
             location = str(c.get('location', '')).lower()
             summary = str(c.get('summary', '')).lower()
 
-            # Word-boundary matching (not substring) for skills with synonym support
+            # Word-boundary matching for skills with synonym support
             skill_hits = 0
             for s in skills:
                 s_words = set(re.sub(r'[^\w\s]', ' ', s).split())
                 if s_words & expanded_keywords:
                     skill_hits += 1
                     continue
-                # Also match whole skill name as keyword (e.g. 'rpa' == 'rpa')
                 matched = False
                 for kw in expanded_keywords:
+                    if jd_has_location and kw in jd_location_terms:
+                        continue
                     if kw == s or (len(kw) >= 3 and (kw in s.split() or s in kw.split())):
                         skill_hits += 1
                         matched = True
                         break
-                # Check synonyms if no direct match
                 if not matched:
                     for kw in expanded_keywords:
-                        syns = skill_synonyms.get(kw, set())
+                        if jd_has_location and kw in jd_location_terms:
+                            continue
+                        syns = SKILL_SYNONYMS.get(kw, set())
                         if syns and (syns & s_words or s in syns):
                             skill_hits += 1
                             break
 
-            # Category/subcategory match
             cat_hits = sum(1 for kw in expanded_keywords if kw in category.split() or kw in subcategory.split())
 
-            # Location match
-            loc_hits = sum(1 for kw in expanded_keywords if kw in location)
+            # Location scoring — strong when location requirement detected
+            loc_score_add = 0
+            if jd_has_location:
+                loc_words = set(re.sub(r'[^\w\s]', ' ', location).split())
+                loc_matched = any(lt in location or lt in loc_words for lt in jd_location_terms)
+                if loc_matched:
+                    loc_score_add = 50  # Strong boost
+                else:
+                    loc_score_add = -30  # Penalty
+            else:
+                loc_hits = sum(1 for kw in expanded_keywords if kw in location)
+                loc_score_add = loc_hits * 8
 
-            # Summary word match
             summary_words = set(summary.split())
             summary_hits = len(summary_words & expanded_keywords)
 
-            exp = c.get('experience', 0) or 0
-            pre_score = skill_hits * 12 + cat_hits * 10 + loc_hits * 8 + min(summary_hits, 5) * 3 + min(exp, 15) * 0.5
+            exp = _safe_int_experience(c.get('experience', 0))
+            
+            # Experience scoring — meaningful weight
+            exp_score = min(exp, 20) * 1.5  # Up to 30 points from experience
+            if jd_min_experience > 0:
+                if exp >= jd_min_experience:
+                    exp_score += 15  # Bonus for meeting minimum
+                else:
+                    exp_score -= 15  # Penalty for below minimum
+
+            pre_score = skill_hits * 15 + cat_hits * 10 + loc_score_add + min(summary_hits, 5) * 3 + exp_score
             pre_scored.append((pre_score, idx, c))
 
         pre_scored.sort(key=lambda x: (x[0], -x[1]), reverse=True)
@@ -786,6 +1163,54 @@ Return JSON:
     # AI CHAT
     # ==================================================================
 
+    # ── Query type classification ──
+    @staticmethod
+    def _classify_query(message: str) -> str:
+        """Classify user query to route to the best prompt strategy.
+        Returns: 'search', 'analytics', 'advice', 'comparison', 'greeting', 'followup'
+        """
+        msg = message.lower().strip()
+
+        # Greetings / pleasantries
+        if msg in ('hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'thanks', 'thank you', 'ok', 'okay'):
+            return 'greeting'
+
+        # Follow-up / conversational (short messages referencing prior context)
+        if len(msg.split()) <= 4 and any(w in msg for w in ['yes', 'no', 'more', 'next', 'sure', 'go ahead', 'continue', 'elaborate', 'explain']):
+            return 'followup'
+
+        # Analytics / statistics queries
+        analytics_signals = [
+            'how many', 'count', 'total', 'statistics', 'stats', 'average', 'breakdown',
+            'distribution', 'percentage', 'ratio', 'trend', 'report', 'summary of',
+            'overview', 'dashboard', 'analyze the database', 'analyze our'
+        ]
+        if any(sig in msg for sig in analytics_signals):
+            return 'analytics'
+
+        # Comparison queries
+        if any(w in msg for w in ['compare', 'comparison', 'versus', 'vs', 'better between', 'side by side', 'which one']):
+            return 'comparison'
+
+        # Recruitment advice / general knowledge
+        advice_signals = [
+            'how to', 'how do i', 'how should', 'what is the best way', 'what are the best',
+            'tips for', 'advice on', 'best practices', 'strategy for', 'suggest a',
+            'recommend a', 'help me write', 'draft a', 'template for', 'guide for',
+            'explain', 'what does', 'what is', 'define', 'difference between',
+            'improve my', 'optimize my', 'when should i', 'why should',
+            'interview questions', 'how to evaluate', 'red flags',
+            'salary range', 'market rate', 'compensation for',
+            'what questions', 'should i ask', 'how to interview',
+            'how to assess', 'screening tips', 'evaluation criteria',
+            'what to look for', 'hiring tips', 'recruitment tips',
+        ]
+        if any(sig in msg for sig in advice_signals) and not any(w in msg for w in ['find', 'show', 'list', 'get', 'candidates']):
+            return 'advice'
+
+        # Default: candidate search
+        return 'search'
+
     async def chat(
         self,
         message: str,
@@ -793,12 +1218,21 @@ Return JSON:
         conversation_history: Optional[List[Dict]] = None,
         candidates_data: Optional[List[Dict]] = None,
         return_candidates: bool = False,
-        num_candidates: int = 10,
+        num_candidates: int = 15,
     ) -> Union[str, Dict]:
         """AI chat assistant with intelligent 2-stage database search.
         
+        Stage 0: Classify query type → route to best prompt strategy
         Stage 1: Pre-filter candidates using keyword extraction from user query
         Stage 2: Send relevant subset to Gemini for intelligent analysis
+        
+        Query types:
+        - 'search': Candidate search (full pre-filter + candidate context)
+        - 'analytics': Database statistics & insights
+        - 'advice': Recruitment best practices & general knowledge
+        - 'comparison': Candidate comparison
+        - 'greeting': Friendly greeting
+        - 'followup': Conversational follow-up
         
         This allows searching the ENTIRE database cost-effectively.
         
@@ -811,6 +1245,10 @@ Return JSON:
         strong = ctx.get('strongMatches', 0)
         categories = ctx.get('categories', {})
         
+        # ── STAGE 0: Query Classification ──
+        query_type = self._classify_query(message)
+        logger.info(f"🧠 Query classified as: {query_type} | Message: {message[:80]}")
+        
         # Track selected candidates for returning alongside response
         _selected_candidates = []
 
@@ -818,7 +1256,7 @@ Return JSON:
         # Extract keywords from user query for candidate pre-filtering
         query_lower = message.lower()
         
-        # Build category summary for general questions
+        # Build category summary for general/analytics questions
         cat_summary = ""
         if categories:
             cat_lines = [f"  \u2022 {cat}: {info.get('count', info) if isinstance(info, dict) else info} candidates" for cat, info in sorted(categories.items(), key=lambda x: x[1].get('count', 0) if isinstance(x[1], dict) else x[1], reverse=True)[:15]]
@@ -828,78 +1266,70 @@ Return JSON:
         relevant_count = 0
         total_scanned = 0
         
+        # Initialize variables used later in prompt building (set before the candidates_data block)
+        has_location_requirement = False
+        required_location_terms: list = []
+        expanded_location_terms: list = []
+        required_min_experience = 0
+        required_max_experience = 999  # No upper limit by default
+        
+        # ── Server-side count extraction from message (override frontend default) ──
+        _count_match = COUNT_PATTERN.search(message)
+        if _count_match:
+            extracted_count = int(next(g for g in _count_match.groups() if g))
+            if 1 <= extracted_count <= 50:
+                num_candidates = extracted_count
+                logger.info(f"Extracted requested count from message: {num_candidates}")
+        
         if candidates_data:
             total_scanned = len(candidates_data)
             
             # Smart pre-filter: score each candidate against query keywords
             scored_candidates = []
             query_tokens = set(re.sub(r'[^\w\s]', ' ', query_lower).split())
-            # Remove common stop words
-            stop_words = {'find', 'me', 'the', 'a', 'an', 'is', 'are', 'in', 'for', 'and', 'or', 'with', 
-                         'who', 'show', 'list', 'get', 'all', 'best', 'top', 'candidates', 'candidate',
-                         'can', 'you', 'i', 'we', 'our', 'have', 'has', 'do', 'does', 'what', 'how',
-                         'need', 'want', 'looking', 'search', 'tell', 'about', 'give', 'please',
-                         'any', 'some', 'good', 'from', 'to', 'of', 'that', 'this', 'it', 'be',
-                         'position', 'role', 'job', 'hiring'}
-            # Keep meaningful keywords
-            keywords = query_tokens - stop_words
+            keywords = query_tokens - STOP_WORDS
             
-            # Location aliases for flexible matching
-            location_aliases = {
-                'uae': ['dubai', 'abu dhabi', 'sharjah', 'ajman', 'fujairah', 'ras al khaimah', 'umm al quwain', 'united arab emirates'],
-                'usa': ['united states', 'new york', 'california', 'texas', 'florida', 'chicago', 'los angeles', 'san francisco'],
-                'uk': ['united kingdom', 'london', 'manchester', 'birmingham', 'england', 'scotland'],
-                'india': ['mumbai', 'delhi', 'bangalore', 'bengaluru', 'hyderabad', 'chennai', 'pune', 'kolkata'],
-                'gcc': ['saudi arabia', 'kuwait', 'bahrain', 'oman', 'qatar', 'dubai', 'abu dhabi', 'riyadh', 'doha'],
-                'ksa': ['saudi arabia', 'riyadh', 'jeddah', 'dammam', 'mecca', 'medina'],
-            }
+            # Detect explicit location requirement using shared helpers
+            required_location_terms = _extract_location_from_text(message)
+            expanded_location_terms = _expand_location_terms(required_location_terms)
+            has_location_requirement = len(expanded_location_terms) > 0
             
-            # Expand location keywords
+            # Detect experience requirement (both min and range/max)
+            _range_match = EXPERIENCE_RANGE_PATTERN.search(message)
+            if _range_match:
+                groups = _range_match.groups()
+                if groups[0] and groups[1]:       # "0 to 2 years"
+                    required_min_experience = int(groups[0])
+                    required_max_experience = int(groups[1])
+                elif groups[2] and groups[3]:     # "between 2 and 5 years"
+                    required_min_experience = int(groups[2])
+                    required_max_experience = int(groups[3])
+                elif groups[4]:                   # "max 2 years", "under 3 years"
+                    required_max_experience = int(groups[4])
+                elif groups[5]:                   # "do not include more than 2 years"
+                    required_max_experience = int(groups[5])
+                logger.info(f"Experience range detected: {required_min_experience}-{required_max_experience} years")
+            else:
+                _exp_match = EXPERIENCE_PATTERN.search(message)
+                required_min_experience = int(_exp_match.group(1)) if _exp_match else 0
+            
+            # Expand keywords with location aliases
             expanded_keywords = set(keywords)
-            for alias, expansions in location_aliases.items():
+            for alias, expansions in LOCATION_ALIASES.items():
                 if alias in keywords:
                     expanded_keywords.update(expansions)
-            
-            # Common skill synonyms for flexible matching
-            skill_synonyms = {
-                'ml': {'machine', 'learning', 'machine learning'},
-                'ai': {'artificial', 'intelligence', 'artificial intelligence'},
-                'nlp': {'natural', 'language', 'processing', 'natural language processing'},
-                'rpa': {'robotic', 'process', 'automation', 'uipath', 'blueprism', 'automation anywhere'},
-                'react': {'reactjs', 'react.js'},
-                'reactjs': {'react', 'react.js'},
-                'node': {'nodejs', 'node.js'},
-                'nodejs': {'node', 'node.js'},
-                'js': {'javascript'},
-                'javascript': {'js'},
-                'ts': {'typescript'},
-                'typescript': {'ts'},
-                'python': {'django', 'flask', 'fastapi'},
-                'devops': {'cicd', 'ci/cd', 'docker', 'kubernetes', 'jenkins', 'terraform'},
-                'cloud': {'aws', 'azure', 'gcp', 'google cloud'},
-                'aws': {'amazon web services', 'cloud'},
-                'azure': {'microsoft azure', 'cloud'},
-                'gcp': {'google cloud', 'cloud'},
-                'fullstack': {'full stack', 'full-stack', 'frontend', 'backend'},
-                'frontend': {'front-end', 'front end', 'react', 'angular', 'vue'},
-                'backend': {'back-end', 'back end', 'api', 'server'},
-                'sql': {'mysql', 'postgresql', 'oracle', 'database'},
-                'database': {'sql', 'nosql', 'mongodb', 'postgresql', 'mysql'},
-                'data': {'analytics', 'analysis', 'science'},
-                'qa': {'testing', 'quality assurance', 'test automation', 'selenium'},
-                'testing': {'qa', 'quality assurance', 'test'},
-                'automate': {'automation', 'rpa', 'scripting'},
-                'automation': {'automate', 'rpa', 'scripting'},
-                'cyber': {'cybersecurity', 'security', 'infosec'},
-                'security': {'cybersecurity', 'infosec', 'soc', 'siem'},
-                'sap': {'erp', 'sap hana', 'sap s/4hana'},
-                'erp': {'sap', 'oracle erp', 'dynamics'},
-                'hr': {'human resources', 'recruitment', 'talent acquisition'},
-                'pm': {'project management', 'project manager'},
-                'scrum': {'agile', 'sprint', 'kanban'},
-                'agile': {'scrum', 'sprint', 'kanban'},
-            }
                     
+            # ── Build multi-word phrases from query for phrase matching ──
+            # e.g. "data science" should match as a phrase, not just "data" + "science"
+            query_clean = re.sub(r'[^\w\s]', ' ', query_lower)
+            query_words_ordered = [w for w in query_clean.split() if w not in STOP_WORDS and len(w) >= 2]
+            query_phrases = set()
+            for pi in range(len(query_words_ordered) - 1):
+                phrase = f"{query_words_ordered[pi]} {query_words_ordered[pi+1]}"
+                # Only keep phrases that are meaningful (both words appear consecutively in original)
+                if phrase in query_lower:
+                    query_phrases.add(phrase)
+            
             for idx, c in enumerate(candidates_data):
                 relevance = 0
                 name = str(c.get('name', '')).lower()
@@ -907,189 +1337,494 @@ Return JSON:
                 skills_str = ' '.join(skills)
                 category = str(c.get('jobCategory', c.get('job_category', ''))).lower()
                 subcategory = str(c.get('jobSubcategory', c.get('job_subcategory', ''))).lower()
+                # Also match against normalized category words for broader matching
+                cat_words = set(re.sub(r'[^\w\s]', ' ', category).split()) | set(re.sub(r'[^\w\s]', ' ', subcategory).split())
                 location = str(c.get('location', '')).lower()
                 summary = str(c.get('summary', '')).lower()
-                experience = c.get('experience', 0) or 0
+                experience = _safe_int_experience(c.get('experience', 0))
                 score = c.get('matchScore', c.get('match_score', 0)) or 0
+                
+                # ── Build searchable text from work history ──
+                work_history = c.get('workHistory', c.get('work_history', []))
+                wh_titles = []
+                wh_companies = []
+                wh_full_text = ''
+                if isinstance(work_history, list):
+                    for w in work_history:
+                        if isinstance(w, dict):
+                            t = str(w.get('title', '')).lower()
+                            comp = str(w.get('company', '')).lower()
+                            if t: wh_titles.append(t)
+                            if comp: wh_companies.append(comp)
+                    wh_full_text = ' '.join(wh_titles + wh_companies)
+                
+                # ── Build searchable text from education ──
+                education = c.get('education', [])
+                edu_text = ''
+                if isinstance(education, list):
+                    for e in education:
+                        if isinstance(e, dict):
+                            edu_text += f" {str(e.get('degree', '')).lower()} {str(e.get('institution', '')).lower()} {str(e.get('field', '')).lower()}"
+                edu_text = edu_text.strip()
+                
+                # ── Build searchable text from certifications ──
+                certs = c.get('certifications', [])
+                certs_text = ' '.join([str(x).lower() for x in certs[:10]]) if isinstance(certs, list) else ''
+                
+                # ── Location-aware scoring ──
+                location_matched = False
+                if has_location_requirement:
+                    loc_words = set(re.sub(r'[^\w\s]', ' ', location).split())
+                    for lt in expanded_location_terms:
+                        if lt in location or lt in loc_words:
+                            location_matched = True
+                            break
+                    if location_matched:
+                        relevance += 60  # Strong boost for matching the required location
+                    else:
+                        relevance -= 40  # Penalty for being in wrong location
+                
+                # ── Multi-word phrase matching (bonus on top of individual keyword scores) ──
+                for phrase in query_phrases:
+                    if phrase in skills_str:
+                        relevance += 15  # Strong: phrase found in skills (e.g. "data science")
+                    if phrase in wh_full_text:
+                        relevance += 14  # Strong: phrase in work history
+                    if phrase in summary:
+                        relevance += 10
+                    if phrase in category or phrase in subcategory:
+                        relevance += 14  # Category phrase match is very strong
+                    if phrase in edu_text:
+                        relevance += 8
+                    if phrase in certs_text:
+                        relevance += 10
+                
+                # ── Job title matching — high value signal for role-specific queries ──
+                # Check if any work history title closely matches the query role
+                role_title_bonus = 0
+                for title in wh_titles:
+                    title_words = set(title.split())
+                    title_kw_overlap = len(title_words & expanded_keywords)
+                    if title_kw_overlap >= 2:
+                        role_title_bonus = max(role_title_bonus, 25)
+                    elif title_kw_overlap == 1 and any(kw in title for kw in expanded_keywords if len(kw) >= 4):
+                        role_title_bonus = max(role_title_bonus, 15)
+                relevance += role_title_bonus
                 
                 # Score based on keyword matches (word-boundary, not substring)
                 for kw in expanded_keywords:
                     if len(kw) < 2:
                         continue
+                    # Skip location keywords from normal scoring — handled above
+                    if has_location_requirement and kw in expanded_location_terms:
+                        continue
                     # Also check skill synonyms
-                    kw_synonyms = skill_synonyms.get(kw, set())
+                    kw_synonyms = SKILL_SYNONYMS.get(kw, set())
                     # Skills: check each skill individually with word matching + synonyms
+                    matched_skill = False
                     for s in skills:
                         s_words = set(re.sub(r'[^\w\s]', ' ', s).split())
                         if kw in s_words or kw == s:
                             relevance += 20
+                            matched_skill = True
                             break
                         # Check synonyms (e.g. 'ml' matches 'machine learning')
                         if kw_synonyms and (kw_synonyms & s_words or s in kw_synonyms):
                             relevance += 18
+                            matched_skill = True
                             break
-                    # Category/subcategory: word match
-                    if kw in category.split() or kw in subcategory.split():
+                    # Category/subcategory: word match (using expanded cat_words)
+                    if kw in cat_words:
                         relevance += 15
-                    if kw in location:
+                    # Also check category synonym match (e.g. query "finance" matches category "accounting")
+                    if kw_synonyms and (kw_synonyms & cat_words):
+                        relevance += 12
+                    # General location keyword match (only when no explicit requirement)
+                    if not has_location_requirement and kw in location:
                         relevance += 15
                     if kw in name.split():
                         relevance += 25  # Direct name search
-                    # Summary: word match (not substring)
+                    
+                    # ── Work history scoring (job titles + company names) ──
+                    wh_words = set(wh_full_text.split())
+                    if kw in wh_words:
+                        relevance += 15  # Strong signal — keyword in actual job history
+                    elif kw_synonyms:
+                        if kw_synonyms & wh_words:
+                            relevance += 12
+                    # Also check if keyword appears as substring in titles (e.g. "sales" in "sales manager")
+                    if not (kw in wh_words):
+                        for title in wh_titles:
+                            if kw in title:
+                                relevance += 10
+                                break
+                    
+                    # ── Education scoring ──
+                    if edu_text and kw in set(edu_text.split()):
+                        relevance += 8
+                    
+                    # ── Certification scoring ──
+                    if certs_text and kw in set(certs_text.split()):
+                        relevance += 10
+                    
+                    # Summary: word match — increased weight (summary is rich text)
                     if kw in set(summary.split()):
-                        relevance += 5
+                        relevance += 12
+                    
+                    # ── If keyword matched nowhere at all, slight penalty to de-rank irrelevant candidates ──
+                    if not matched_skill and kw not in cat_words and kw not in wh_words and kw not in set(summary.split()):
+                        relevance -= 2  # Small penalty per unmatched keyword
                 
                 # Boost by match score
-                relevance += score * 0.1
+                relevance += score * 0.15
                 
-                # Recency boost — newly synced candidates get prioritized
+                # ── Experience requirement check — meaningful weight ──
+                if required_max_experience < 999:
+                    # Has an upper cap (e.g. "0-2 years", "max 3 years")
+                    if experience > required_max_experience:
+                        relevance -= 80  # HARD penalty for exceeding max
+                    elif experience >= required_min_experience and experience <= required_max_experience:
+                        relevance += 30  # Perfect fit within range
+                    elif experience < required_min_experience:
+                        relevance -= 20  # Below minimum
+                elif required_min_experience > 0:
+                    if experience >= required_min_experience:
+                        relevance += 20  # Meets minimum experience
+                        if experience >= required_min_experience * 1.5:
+                            relevance += 10
+                    else:
+                        relevance -= 25  # Below minimum experience
+                else:
+                    # General experience boost even when no explicit requirement
+                    relevance += min(experience, 15) * 1.0
+                
+                # Recency boost — only for explicitly recency-related queries
                 created_at = c.get('created_at', '')
-                if created_at:
+                if created_at and any(w in query_lower for w in ['new', 'recent', 'latest', 'today', 'week', 'fresh']):
                     try:
                         from datetime import datetime, timedelta
-                        # Parse created_at (format: YYYY-MM-DD HH:MM:SS or ISO)
                         created_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00')) if 'T' in created_at else datetime.strptime(created_at[:19], '%Y-%m-%d %H:%M:%S')
                         now = datetime.utcnow()
                         age_hours = (now - created_dt.replace(tzinfo=None)).total_seconds() / 3600
                         if age_hours <= 24:
-                            relevance += 15  # Strong boost for last 24h
+                            relevance += 20
                         elif age_hours <= 72:
-                            relevance += 10  # Medium boost for last 3 days
+                            relevance += 15
                         elif age_hours <= 168:
-                            relevance += 5   # Small boost for last week
-                        
-                        # Recency-specific queries get extra boost
-                        if any(w in query_lower for w in ['new', 'recent', 'latest', 'today', 'week', 'fresh']):
-                            if age_hours <= 168:
-                                relevance += 20
+                            relevance += 10
                     except (ValueError, TypeError):
                         pass
                 
-                # Experience-based queries
-                if any(w in query_lower for w in ['senior', 'experienced', 'lead', 'principal', 'manager']):
-                    if experience >= 7:
-                        relevance += 10
-                elif any(w in query_lower for w in ['junior', 'entry', 'fresher', 'graduate', 'intern']):
-                    if experience <= 3:
-                        relevance += 10
+                # Experience-based queries — richer seniority detection
+                if any(w in query_lower for w in ['senior', 'experienced', 'lead', 'principal', 'director', 'head', 'vp', 'chief']):
+                    if experience >= 10:
+                        relevance += 20
+                    elif experience >= 7:
+                        relevance += 15
+                    elif experience >= 5:
+                        relevance += 5
+                    else:
+                        relevance -= 10  # Penalty for juniors on senior queries
+                elif any(w in query_lower for w in ['mid', 'intermediate', 'mid-level', 'moderate']):
+                    if 3 <= experience <= 7:
+                        relevance += 15
+                elif any(w in query_lower for w in ['junior', 'entry', 'fresher', 'graduate', 'intern', 'trainee', 'beginner']):
+                    if experience <= 2:
+                        relevance += 15
+                    elif experience <= 3:
+                        relevance += 5
+                    else:
+                        relevance -= 10  # Penalty for seniors on junior queries
                 
                 scored_candidates.append((relevance, idx, c))
             
             # Sort by relevance and take top candidates (idx as tiebreaker to avoid dict comparison)
             scored_candidates.sort(key=lambda x: x[0], reverse=True)
             
-            # Determine how many to include based on relevance distribution
-            # If query is very specific, take fewer but more relevant candidates
-            # If query is general, take more candidates
+            # Dynamic pool size — optimized for Gemini 2.5 Flash throughput
+            # Compact profiles: 15 candidates keeps prompt well within 120s timeout
             has_specific_keywords = len(keywords) >= 2
+            has_many_keywords = len(keywords) >= 4
+            
+            if has_many_keywords:
+                MAX_CANDIDATES_TO_GEMINI = 12  # Complex query — tight focus
+            elif has_specific_keywords:
+                MAX_CANDIDATES_TO_GEMINI = 15  # Moderate query
+            else:
+                MAX_CANDIDATES_TO_GEMINI = 18  # Broad/simple query
+            
+            # Ensure we request at least enough for the user's num_candidates
+            MAX_CANDIDATES_TO_GEMINI = max(MAX_CANDIDATES_TO_GEMINI, min(num_candidates + 3, 20))
             
             if has_specific_keywords:
-                # Take candidates with relevance > 0, up to 150
                 relevant = [(score, idx, c) for score, idx, c in scored_candidates if score > 0]
-                selected = relevant[:150] if relevant else scored_candidates[:80]
+                selected = relevant[:MAX_CANDIDATES_TO_GEMINI] if relevant else scored_candidates[:50]
             else:
-                # General query — take top 150 (ensures new candidates aren't buried)
-                selected = scored_candidates[:150]
+                selected = scored_candidates[:MAX_CANDIDATES_TO_GEMINI]
             
             relevant_count = len(selected)
             
-            # Store selected candidates indexed by [N] position for frontend matching
-            _selected_candidates = [c for (_score, _idx, c) in selected[:150]]
+            # ── Diagnostic logging ──
+            top5_scores = [(c.get('name', '?'), s) for s, _, c in selected[:5]]
+            logger.info(
+                f"Pre-filter: {total_scanned} candidates → {relevant_count} selected "
+                f"(MAX={MAX_CANDIDATES_TO_GEMINI}, keywords={list(keywords)[:8]}, "
+                f"location={'yes' if has_location_requirement else 'no'}, "
+                f"exp={required_min_experience}-{required_max_experience}y, "
+                f"phrases={list(query_phrases)[:4]}) "
+                f"Top5: {top5_scores}"
+            )
             
-            # Build context with rich candidate info — include ALL available data
-            candidates_context = f"\n\nCANDIDATE DATABASE ({relevant_count} most relevant of {total_scanned} scanned):\n"
-            for i, (rel_score, _idx, c) in enumerate(selected[:150]):
-                skills_str = ', '.join(c.get('skills', [])[:25])
+            # Store selected candidates for frontend matching
+            _selected_candidates = [c for (_score, _idx, c) in selected[:MAX_CANDIDATES_TO_GEMINI]]
+            
+            # Build context — lean format for fast Gemini processing
+            # Focus on essential info: name, skills, work titles, location, experience
+            candidates_context = f"\n\nCANDIDATES ({relevant_count} pre-filtered from {total_scanned}):\n"
+            for i, (rel_score, _idx, c) in enumerate(selected[:MAX_CANDIDATES_TO_GEMINI]):
+                skills_raw = c.get('skills', [])
+                skills_str = ', '.join(skills_raw[:15]) if isinstance(skills_raw, list) else str(skills_raw or '')
                 work = c.get('workHistory', c.get('work_history', []))
-                work_str = '; '.join([f"{w.get('title', '')} at {w.get('company', '')} ({w.get('duration', '')})" for w in work[:4]]) if work else 'N/A'
+                if isinstance(work, list):
+                    work_entries = []
+                    for w in work[:3]:
+                        if isinstance(w, dict):
+                            entry = f"{w.get('title', 'N/A')} @ {w.get('company', 'N/A')}"
+                            dur = w.get('duration', '')
+                            if dur:
+                                entry += f" ({dur})"
+                            work_entries.append(entry)
+                    work_str = '; '.join(work_entries) or 'N/A'
+                else:
+                    work_str = str(work)[:150] if work else 'N/A'
                 edu = c.get('education', [])
-                edu_str = '; '.join([f"{e.get('degree', '')} - {e.get('institution', '')}" for e in edu[:3]]) if edu else 'N/A'
-                certs = c.get('certifications', [])
-                certs_str = ', '.join(certs[:5]) if certs else ''
-                langs = c.get('languages', [])
-                langs_str = ', '.join(langs[:5]) if langs else ''
-                summary_text = str(c.get('summary', ''))[:500]
-                email_str = c.get('email', 'N/A')
-                phone_str = c.get('phone', 'N/A')
-                linkedin_str = c.get('linkedin', '')
-                status_str = c.get('status', 'New')
+                if isinstance(edu, list) and edu:
+                    e = edu[0] if isinstance(edu[0], dict) else {}
+                    edu_str = ' - '.join(p for p in [e.get('degree', ''), e.get('field', ''), e.get('institution', '')] if p) or 'N/A'
+                else:
+                    edu_str = str(edu)[:100] if edu else 'N/A'
                 
                 candidates_context += (
-                    f"[{i+1}] {c.get('name', 'Unknown')} | Score: {c.get('matchScore', 0)}% | "
-                    f"Status: {status_str} | "
+                    f"[{i+1}] {c.get('name', 'Unknown')} | {c.get('matchScore', 0)}% | "
                     f"{c.get('jobCategory', c.get('job_category', 'General'))} | "
-                    f"Exp: {c.get('experience', 0)}yrs | {c.get('location', 'N/A')}\n"
-                    f"   Email: {email_str} | Phone: {phone_str}"
+                    f"Exp: {c.get('experience', 0)}yrs | {c.get('location', 'N/A')} | "
+                    f"Status: {c.get('status', 'New')}\n"
+                    f"   Skills: {skills_str}\n"
+                    f"   Work: {work_str}\n"
+                    f"   Edu: {edu_str}\n"
+                    f"   Contact: {c.get('email', 'N/A')} | {c.get('phone', 'N/A')}\n"
                 )
-                if linkedin_str:
-                    candidates_context += f" | LinkedIn: {linkedin_str}"
-                candidates_context += f"\n   Skills: {skills_str}\n"
-                candidates_context += f"   Work History: {work_str}\n"
-                candidates_context += f"   Education: {edu_str}\n"
-                if certs_str:
-                    candidates_context += f"   Certifications: {certs_str}\n"
-                if langs_str:
-                    candidates_context += f"   Languages: {langs_str}\n"
-                if summary_text:
-                    candidates_context += f"   Summary: {summary_text}\n"
 
+        # Build conversation context
         history_text = ""
         if conversation_history:
-            for msg in conversation_history[-10:]:
-                history_text += f"\n{msg.get('role', 'user')}: {msg.get('content', '')[:500]}"
+            # Keep last 8 messages, prioritize recent full context
+            for msg in conversation_history[-8:]:
+                role = msg.get('role', 'user')
+                content = msg.get('content', '')[:400]
+                history_text += f"\n{role}: {content}"
 
-        # Build category breakdown for context
-        cat_list = ', '.join([f"{k}: {v}" for k, v in list(categories.items())[:15]]) if categories else 'No category data'
+        cat_list = ', '.join([f"{k}: {v}" for k, v in list(categories.items())[:12]]) if categories else 'N/A'
 
-        prompt = f"""You are the AI Recruitment Intelligence Agent for Efforts Solutions — the most advanced AI-powered recruitment platform. You are a world-class talent acquisition specialist with COMPLETE, UNRESTRICTED access to the entire candidate database.
+        # Build dynamic constraint sections
+        constraints = []
+        if has_location_requirement:
+            loc_str = ', '.join(required_location_terms)
+            constraints.append(f"LOCATION FILTER (MANDATORY): Candidates in/near {loc_str} MUST be ranked first. Only include non-local candidates if fewer than {num_candidates} match locally. Flag non-local candidates clearly.")
+        if required_max_experience < 999:
+            constraints.append(f"EXPERIENCE RANGE FILTER (STRICT): Only {required_min_experience}-{required_max_experience} years. EXCLUDE any candidate with more than {required_max_experience} years of experience — this is a hard requirement, not a preference.")
+        elif required_min_experience > 0:
+            constraints.append(f"EXPERIENCE FILTER: Minimum {required_min_experience}+ years. Flag candidates below this threshold.")
+        
+        constraints_text = "\n".join(f"• {c}" for c in constraints) if constraints else "No special filters."
 
-YOUR CAPABILITIES:
-• You can search, filter, rank, compare, and analyze ANY candidate in the database
-• You understand technical roles, non-technical roles, management, and executive positions 
-• You know UAE/GCC/Middle East recruitment dynamics (visa, sponsorship, Emiratization)
-• You can handle: candidate search, job matching, skill gap analysis, team building, salary insights, hiring strategy, pipeline analytics, diversity analysis, and more
+        # ══════════════════════════════════════════════════════════════
+        # STAGE 2: Build prompt based on query type
+        # ══════════════════════════════════════════════════════════════
 
-DATABASE SNAPSHOT:
-• Total active candidates: {total}
-• Strong matches (70%+ score): {strong}
-• Average candidate score: {avg_score:.1f}%
-• Categories: {cat_list}
+        if query_type == 'greeting':
+            # ── Fast greeting — no Gemini call needed ──
+            greetings_map = {
+                'hi': 'Hello! 👋', 'hello': 'Hello! 👋', 'hey': 'Hey there! 👋',
+                'good morning': 'Good morning! ☀️', 'good afternoon': 'Good afternoon! 🌤️',
+                'good evening': 'Good evening! 🌙',
+                'thanks': 'You\'re welcome! 😊', 'thank you': 'You\'re welcome! 😊',
+                'ok': 'Great!', 'okay': 'Great!',
+            }
+            greeting = greetings_map.get(message.lower().strip(), 'Hello! 👋')
+            text_response = f"""{greeting} I'm your AI Recruitment Assistant for Efforts Solutions.
 
-SEARCH RESULTS: Scanned {total_scanned} candidates, showing {relevant_count} most relevant below.
-{candidates_context}
+**Here's what I can do:**
+
+🔍 **Find Candidates** — "Find React developers in Dubai with 3+ years experience"
+📊 **Analytics** — "How many candidates do we have by category?"
+💡 **Recruitment Advice** — "How to evaluate a senior backend engineer?"
+📋 **Compare Candidates** — "Compare John and Sarah for the PM role"
+📝 **Interview Help** — "What questions should I ask a data scientist?"
+
+**Quick Stats:** {total} candidates in database | {strong} strong matches (70%+)
+{cat_summary}
+
+What would you like to explore?"""
+
+        elif query_type == 'advice':
+            # ── Recruitment expertise prompt — no candidate data needed ──
+            prompt = f"""You are a world-class Senior Recruitment Strategist and HR Expert for Efforts Solutions, a recruitment agency. You have 20+ years of experience across tech, finance, healthcare, engineering, and executive hiring.
+
+You have deep expertise in:
+- Talent acquisition strategy & sourcing methodologies
+- Interview design, behavioral & competency-based questioning
+- Compensation benchmarking & offer negotiation
+- Employer branding & candidate experience
+- Diversity, equity & inclusion in hiring
+- Applicant tracking systems & recruitment technology
+- Labor market trends across GCC, India, US, UK, Europe
+- Industry-specific hiring (IT, finance, engineering, healthcare, sales, operations)
+- Remote/hybrid workforce management
+- Onboarding best practices
+
+DATABASE CONTEXT: You have access to a database of {total} candidates across these categories: {cat_list}
 
 CONVERSATION HISTORY:{history_text}
 
-USER QUERY: {message}
+USER QUESTION:
+{message}
 
-REQUESTED NUMBER OF CANDIDATES: {num_candidates} (The user wants exactly {num_candidates} candidates in the response. Always return this many candidates, sorted by match score descending. If fewer candidates match the criteria, return all matching candidates.)
+─── RESPONSE GUIDELINES ───
+1. Provide actionable, expert-level advice grounded in real recruitment best practices
+2. Use specific examples, frameworks, or methodologies where relevant
+3. Reference industry standards (e.g., SHRM, LinkedIn Talent Insights, Glassdoor data)
+4. Structure your response with clear headers, bullet points, and numbered steps
+5. If the question relates to roles in the database, reference the candidate pool size
+6. Include pro tips, common pitfalls to avoid, and red/green flags
+7. Be concise but thorough — aim for comprehensive yet scannable responses
+8. Use bold text for key terms and headers for structure
+9. When discussing salaries/compensation, acknowledge regional variations (GCC vs India vs US/UK)
+10. End with a specific actionable recommendation or next step
 
-RESPONSE RULES:
-1. ALWAYS use REAL candidate data from the database above — names, scores, skills, locations, work history, education. NEVER fabricate or hallucinate candidates.
-2. Return EXACTLY {num_candidates} candidates (or all matching if fewer exist), sorted by match score from highest to lowest.
-3. When listing candidates, use this format for EACH candidate:
-   **#N. Candidate Name** | Score: X% | Category | Experience: Xyrs | Location
-   - Skills: list key skills
-   - Work History: relevant roles
-   - Education: degrees
-   - Match Reasoning: why they fit the query
-   - Contact: email, phone if available
-4. For search/find queries: thoroughly check ALL {relevant_count} candidates listed above, rank by relevance to the query, show the top {num_candidates} matches
-5. Location matching: UAE includes Dubai, Abu Dhabi, Sharjah, Ajman, RAK, etc. Match flexibly (city, country, region).
-6. Skill matching: consider synonyms (e.g., "RPA" = "Robotic Process Automation" = "UiPath" = "Automation Anywhere" = "Blue Prism")
-7. For "how many" / statistics queries: count accurately from the data provided
-8. For comparison queries: side-by-side analysis with strengths and weaknesses
-9. ALWAYS provide actionable next steps: "Shortlist this candidate", "Schedule interview", "Review full profile"
-10. If results are limited, suggest adjusting criteria (e.g., "Try expanding location to all UAE" or "Consider candidates with 5+ years instead of 10+")
-11. Use rich markdown: **bold** names/scores, bullet points, horizontal rules between candidates
-12. Return exactly {num_candidates} candidates unless fewer match. Sort by match score descending (highest first).
-13. For any query you don't understand, ask a clarifying question rather than giving a generic answer.
-14. If asked about shortlisted candidates, filter by status=Shortlisted.
-15. Include the candidate's current status (New, Strong, Shortlisted, etc.) in results."""
+Write in a professional, confident, and helpful tone. Format with markdown."""
 
-        result = await self._agenerate(prompt, temperature=0.3, max_tokens=6000)
+            result = await self._agenerate(prompt, temperature=0.3, max_tokens=4000)
+            text_response = result or "I'd be happy to help with recruitment advice. Could you provide more details about your question?"
 
-        text_response = result or f"I'm here to help! We have **{total} candidates** in the database. What would you like to know?"
+        elif query_type == 'analytics':
+            # ── Analytics prompt — uses database stats, minimal candidate data ──
+            # Build richer stats context
+            stats_detail = f"""DATABASE ANALYTICS:
+- Total Candidates: {total}
+- Strong Matches (70%+): {strong}
+- Average Match Score: {avg_score:.1f}%
+{cat_summary}
+"""
+            # Add top candidates by score if available
+            if _selected_candidates:
+                top_by_score = sorted(_selected_candidates[:200], key=lambda c: c.get('matchScore', 0), reverse=True)[:10]
+                stats_detail += "\nTop 10 Candidates by Score:\n"
+                for i, c in enumerate(top_by_score, 1):
+                    stats_detail += f"  {i}. {c.get('name', 'N/A')} — {c.get('matchScore', 0)}% | {c.get('jobCategory', 'General')} | {c.get('experience', 0)} yrs | {c.get('location', 'N/A')}\n"
+                
+                # Location distribution
+                loc_counts: Dict[str, int] = {}
+                for c in _selected_candidates[:500]:
+                    loc = str(c.get('location', 'Unknown')).strip()
+                    if loc:
+                        loc_counts[loc] = loc_counts.get(loc, 0) + 1
+                top_locations = sorted(loc_counts.items(), key=lambda x: x[1], reverse=True)[:10]
+                stats_detail += "\nTop Locations:\n" + "\n".join(f"  • {loc}: {cnt}" for loc, cnt in top_locations)
+                
+                # Experience distribution
+                exp_buckets = {'0-2 yrs': 0, '3-5 yrs': 0, '6-10 yrs': 0, '10+ yrs': 0}
+                for c in _selected_candidates[:500]:
+                    exp = _safe_int_experience(c.get('experience', 0))
+                    if exp <= 2: exp_buckets['0-2 yrs'] += 1
+                    elif exp <= 5: exp_buckets['3-5 yrs'] += 1
+                    elif exp <= 10: exp_buckets['6-10 yrs'] += 1
+                    else: exp_buckets['10+ yrs'] += 1
+                stats_detail += "\n\nExperience Distribution:\n" + "\n".join(f"  • {k}: {v}" for k, v in exp_buckets.items())
+
+            prompt = f"""You are an expert Recruitment Analytics Advisor for Efforts Solutions. Analyze the data and provide clear, insightful answers with specific numbers.
+
+{stats_detail}
+
+CONVERSATION HISTORY:{history_text}
+
+USER QUESTION:
+{message}
+
+─── RESPONSE GUIDELINES ───
+1. Lead with the specific numbers and data the user asked about
+2. Present data in clear tables or bullet lists with bold labels
+3. Provide context and insights — don't just state numbers, explain what they mean
+4. Highlight trends, strengths, and gaps in the talent pool
+5. Compare against industry benchmarks where possible
+6. Suggest actionable steps based on the data (e.g., "You have a gap in senior DevOps — consider posting on specialized job boards")
+7. Use percentages and ratios for clearer understanding
+8. If the user asks about something not in the data, say so clearly and suggest alternatives
+9. Format with markdown headers, bold labels, and organized structure
+10. Keep it data-driven and precise — recruiters need facts, not fluff"""
+
+            result = await self._agenerate(prompt, temperature=0.15, max_tokens=4000)
+            text_response = result or f"We have **{total} candidates** in the database. Could you clarify what analytics you'd like to see?"
+
+        elif query_type == 'followup':
+            # ── Conversational follow-up — leverage conversation history ──
+            prompt = f"""You are an AI Recruitment Assistant for Efforts Solutions. The user is continuing a conversation.
+
+DATABASE: {total} candidates | Categories: {cat_list}
+
+CONVERSATION HISTORY:{history_text}
+
+USER FOLLOW-UP:
+{message}
+
+{f"CANDIDATE POOL (if needed for follow-up):{candidates_context}" if candidates_context else ""}
+
+Respond naturally to the follow-up. If they're asking for more candidates, different criteria, or clarification, provide it. If they're acknowledging or confirming, respond appropriately.
+Keep the same format and quality as the previous response. Use markdown formatting."""
+
+            result = await self._agenerate(prompt, temperature=0.2, max_tokens=8000)
+            text_response = result or "Could you provide more details about what you'd like me to do next?"
+
+        else:
+            # ══════════════════════════════════════════════════════════
+            # CANDIDATE SEARCH — Optimized prompt for speed + quality
+            # ══════════════════════════════════════════════════════════
+
+            prompt = f"""You are an expert AI Recruitment Specialist for Efforts Solutions. Analyze the candidate pool and rank the best matches for the user's query.
+
+DATABASE: {total} candidates total | {strong} strong matches (70%+) | Categories: {cat_list}
+
+FILTERS: {constraints_text}
+
+{candidates_context}
+
+HISTORY:{history_text}
+
+QUERY: {message}
+
+INSTRUCTIONS:
+1. Parse query: extract role, skills, location, experience range, industry, exclusions
+2. Evaluate each candidate on: Skills Match (30%), Experience Fit (25%), Location (20%), Industry/Domain (15%), Education (10%)
+3. Recognize skill synonyms: React=ReactJS, Node=NodeJS, Python≈Django/Flask, C#=.NET, K8s=Kubernetes, ML=Machine Learning, JS=JavaScript, TS=TypeScript, AWS=Amazon Web Services, RPA=UiPath/BluePrism
+4. Hard filters ("ONLY", "must", "exclude") are deal-breakers — auto-disqualify violators
+5. NEVER fabricate candidates. Use ONLY candidates from the pool above.
+6. If few match, say so and suggest broadening criteria.
+
+Return exactly {num_candidates} candidates (or fewer if not enough qualify):
+
+**#N. Full Name** | Score: X% | Category | Exp: X yrs | Location
+- **Key Skills:** relevant skills (bold top matches)
+- **Work:** recent roles & companies
+- **Match Analysis:** 2-3 sentences on why they fit, referencing actual skills & work history. Be honest about gaps.
+- **Fit:** ⭐⭐⭐⭐⭐ Excellent / ⭐⭐⭐⭐ Strong / ⭐⭐⭐ Good / ⭐⭐ Partial
+- **Contact:** email, phone
+
+End with:
+**📊 Summary** — Criteria parsed, candidates evaluated ({relevant_count}), qualified count, pool strength
+**💡 Recommendations** — Next steps, criteria to relax if pool is thin"""
+
+            result = await self._agenerate(prompt, temperature=0.15, max_tokens=6000)
+            text_response = result or f"I'm here to help! We have **{total} candidates** in the database. What would you like to know?"
         
         if return_candidates:
             # ── Parse which candidates Gemini ACTUALLY mentioned in its response ──
@@ -1154,6 +1889,7 @@ RESPONSE RULES:
                             'email': best_match.get('email', ''),
                             'phone': best_match.get('phone', ''),
                             'status': best_match.get('status', 'New'),
+                            'hasResume': best_match.get('hasResume', False),
                         })
             
             # Fallback: if parsing found nothing, send top-N from pool
@@ -1175,6 +1911,7 @@ RESPONSE RULES:
                         'email': c.get('email', ''),
                         'phone': c.get('phone', ''),
                         'status': c.get('status', 'New'),
+                        'hasResume': c.get('hasResume', False),
                     })
             
             return {
@@ -1296,7 +2033,7 @@ def get_gemini_service() -> Optional[GeminiService]:
     global _gemini_service
     if _gemini_service is None:
         import os
-        api_key = os.getenv("GEMINI_API_KEY", "")
+        api_key = os.getenv("GEMINI_API_KEY", "").strip()
         model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
         if api_key:
             _gemini_service = GeminiService(api_key=api_key, model_name=model)

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import config from '@/config';
 import { useAuthStore } from '@/store/authStore';
 
@@ -17,11 +17,7 @@ export function useAIStatus() {
     isLoading: true
   })
 
-  useEffect(() => {
-    checkAIStatus()
-  }, [])
-
-  const checkAIStatus = async () => {
+  const checkAIStatus = useCallback(async () => {
     try {
       const token = useAuthStore.getState().token
       const response = await fetch(`${config.endpoints.ai}/status`, {
@@ -42,6 +38,7 @@ export function useAIStatus() {
         })
       }
     } catch (error) {
+      console.error('AI status check failed:', error)
       setStatus({
         available: false,
         model: null,
@@ -49,7 +46,11 @@ export function useAIStatus() {
         isLoading: false
       })
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    checkAIStatus()
+  }, [checkAIStatus])
 
   return { ...status, refresh: checkAIStatus }
 }

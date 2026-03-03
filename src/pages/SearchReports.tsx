@@ -40,8 +40,10 @@ export default function SearchReports() {
 
   useEffect(() => { fetchHistory() }, [])
 
+  const [showClearConfirm, setShowClearConfirm] = useState(false)
+
   const handleClear = async () => {
-    if (!confirm('Clear all search history?')) return
+    setShowClearConfirm(false)
     setClearing(true)
     try {
       await authFetch(`${config.apiUrl}/api/search-history`, { method: 'DELETE' })
@@ -56,14 +58,14 @@ export default function SearchReports() {
       if (res.ok) {
         setSearches(prev => prev.filter(s => (s.id || s._id) !== id))
       }
-    } catch { console.error('Failed to delete search entry') }
+    } catch (err) { console.error('Failed to delete search entry:', err) }
   }
 
   const fmtDate = (iso: string) => {
     try {
       const d = new Date(iso)
-      return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' }) +
-        '\n' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+      return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', timeZone: 'Asia/Dubai' }) +
+        '\n' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Dubai' })
     } catch { return iso }
   }
 
@@ -91,10 +93,17 @@ export default function SearchReports() {
                 className="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-300 w-48"
               />
             </div>
-            {searches.length > 0 && (
-              <Button variant="outline" size="sm" onClick={handleClear} disabled={clearing} className="flex items-center gap-1.5 text-red-600 hover:text-red-700 hover:border-red-300">
+            {searches.length > 0 && !showClearConfirm && (
+              <Button variant="outline" size="sm" onClick={() => setShowClearConfirm(true)} disabled={clearing} className="flex items-center gap-1.5 text-red-600 hover:text-red-700 hover:border-red-300">
                 {clearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />} Clear All
               </Button>
+            )}
+            {showClearConfirm && (
+              <div className="flex items-center gap-2 text-sm">
+                <span className="text-gray-600">Clear all history?</span>
+                <Button variant="outline" size="sm" onClick={handleClear} className="text-red-600 hover:text-red-700 border-red-300 px-3 py-1 text-xs">Yes, clear</Button>
+                <Button variant="outline" size="sm" onClick={() => setShowClearConfirm(false)} className="px-3 py-1 text-xs">Cancel</Button>
+              </div>
             )}
           </div>
         </div>
@@ -128,7 +137,7 @@ export default function SearchReports() {
                 </thead>
                 <tbody>
                   {filtered.map((s) => {
-                    let topResults: any[] = []
+                    let topResults: (string | { name?: string; score?: number; matchScore?: number })[] = []
                     try { topResults = typeof s.top_results === 'string' ? JSON.parse(s.top_results) : (s.top_results || []) } catch { topResults = [] }
                     const colors = ['bg-teal-500', 'bg-sky-500', 'bg-purple-500', 'bg-amber-500', 'bg-rose-500', 'bg-emerald-500']
                     return (
@@ -146,9 +155,9 @@ export default function SearchReports() {
                         </td>
                         <td className="px-4 py-4">
                           <div className="space-y-1.5">
-                            {topResults.slice(0, 3).map((r: any, j: number) => {
-                              const name = r.name || r
-                              const score = r.score || r.matchScore
+                            {topResults.slice(0, 3).map((r, j: number) => {
+                              const name = typeof r === 'string' ? r : r.name || 'Unknown'
+                              const score = typeof r === 'string' ? undefined : (r.score || r.matchScore)
                               const initial = typeof name === 'string' ? name.charAt(0).toUpperCase() : '?'
                               const bgColor = colors[j % colors.length]
                               return (
@@ -165,7 +174,7 @@ export default function SearchReports() {
                         </td>
                         <td className="px-4 py-4 text-center">
                           <div className="flex items-center justify-center gap-1">
-                            <button onClick={() => navigate('/ai-assistant', { state: { prefillQuery: s.query } })} className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-600 transition-colors" title="View Results in AI Assistant">
+                            <button onClick={() => navigate('/ai-assistant', { state: { prefillQuery: s.query } })} className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-600 transition-colors" title="View Results in AI Search">
                               <Eye className="w-4 h-4" />
                             </button>
                             <button onClick={() => handleDeleteOne(s.id || s._id || '')} className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 transition-colors" title="Delete">

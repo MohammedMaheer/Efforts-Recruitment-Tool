@@ -43,14 +43,52 @@ export class ErrorBoundary extends Component<Props, State> {
   };
 
   private handleGoHome = () => {
-    window.location.href = '/';
+    // Use soft navigation to avoid full page reload in SPA
+    window.history.pushState({}, '', '/');
+    window.location.reload();
   };
+
+  private isChunkLoadError(): boolean {
+    const msg = this.state.error?.message || '';
+    return (
+      msg.includes('dynamically imported module') ||
+      msg.includes('Loading chunk') ||
+      msg.includes('Failed to fetch') ||
+      msg.includes('Loading CSS chunk')
+    );
+  }
 
   public render() {
     if (this.state.hasError) {
       // Custom fallback provided
       if (this.props.fallback) {
         return this.props.fallback;
+      }
+
+      // Chunk load failure — show a targeted "reload" message
+      if (this.isChunkLoadError()) {
+        return (
+          <div className="min-h-[400px] flex items-center justify-center p-8">
+            <div className="max-w-md w-full text-center">
+              <div className="w-16 h-16 bg-sky-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                <RefreshCw className="w-8 h-8 text-sky-600" />
+              </div>
+              <h2 className="text-xl font-semibold text-gray-900 mb-2">
+                New version available
+              </h2>
+              <p className="text-gray-600 mb-6">
+                The app has been updated. Please reload to get the latest version.
+              </p>
+              <button
+                onClick={() => window.location.reload()}
+                className="px-6 py-2 bg-sky-600 text-white rounded-lg hover:bg-sky-700 transition-colors flex items-center gap-2 mx-auto"
+              >
+                <RefreshCw className="w-4 h-4" />
+                Reload Now
+              </button>
+            </div>
+          </div>
+        );
       }
 
       // Default error UI

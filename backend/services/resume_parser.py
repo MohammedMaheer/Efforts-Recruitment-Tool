@@ -1,4 +1,4 @@
-﻿import PyPDF2
+import PyPDF2
 import docx
 import re
 import logging
@@ -26,6 +26,128 @@ def is_mojibake(text: str, threshold: float = 0.15) -> bool:
     mojibake_chars = sum(len(m) for m in MOJIBAKE_PATTERNS.findall(text))
     ratio = mojibake_chars / len(text)
     return ratio > threshold
+
+
+# ── Spaced-character corruption detection & repair ──────────────────────
+# pdfplumber layout mode sometimes emits single chars separated by spaces/dashes/bullets
+# e.g.  "S   A   R   A   V   A   N   A"  or  "S•A•R•A•V•A"
+# The separator class includes: whitespace, dashes, dots, underscores, bullets,
+# and other common PDF-artifact characters (•, ◦, ▪, ▸, ‣, etc.)
+_SEP_CLASS = r'[\s\-._\u2022\u2023\u2043\u25CF\u25CB\u25AA\u25AB\u25B8\u25B9\u2219\u00B7\u2027\u00A0\u2013\u2014\u2015\u007C\u002A\u2018\u2019\u201C\u201D]'
+_SPACED_CHAR_RE = re.compile(
+    r'(?:^|(?<=\s))'                         # start of string or after whitespace
+    r'[A-Za-z0-9]'                            # first char
+    r'(?:' + _SEP_CLASS + r'{1,20}[A-Za-z0-9]){4,}'  # 4+ reps of separator+char (up to 20 sep chars between letters)
+    r'(?:$|(?=\s))',                           # end or followed by whitespace
+    re.MULTILINE
+)
+
+def is_spaced_text(text: str, threshold: float = 0.25, min_length: int = 40) -> bool:
+    """Return True when a significant fraction of the text consists of
+    single characters separated by spaces / dashes / dots / bullets — a hallmark of
+    bad pdfplumber layout-mode extraction.
+    Use min_length=5 for short strings like names."""
+    if not text or len(text) < min_length:
+        return False
+    # Method 1: Regex matching of spaced-char runs
+    matches = _SPACED_CHAR_RE.findall(text)
+    matched_chars = sum(len(m) for m in matches)
+    ratio = matched_chars / len(text)
+    if ratio > threshold:
+        return True
+    # Method 2: Check ratio of non-alnum to alnum chars (catches bullet-stuffed text)
+    alnum = sum(1 for c in text if c.isalnum())
+    non_alnum = len(text) - alnum
+    if alnum > 10 and non_alnum / len(text) > 0.75:
+        # High ratio of non-alnum chars — check if the alnum chars are isolated
+        # (i.e., most are surrounded by non-alnum)
+        isolated = 0
+        for i, c in enumerate(text):
+            if c.isalnum():
+                prev_alnum = (i > 0 and text[i-1].isalnum())
+                next_alnum = (i < len(text)-1 and text[i+1].isalnum())
+                if not prev_alnum and not next_alnum:
+                    isolated += 1
+        if alnum > 0 and isolated / alnum > 0.5:
+            return True
+    return False
+
+
+def collapse_spaced_chars(text: str) -> str:
+    """Collapse spaced-character runs back into normal words.
+
+    Handles patterns like:
+      "S   A   R   A   V   A   N   A"  ->  "SARAVANA"
+      "S-A-R-A-V-A-N-A"               ->  "SARAVANA"
+      "S•••A•••R•••A"                  ->  "SARA"
+    Works per-line so normal sentences are untouched.
+    """
+    if not text:
+        return text
+
+    def _fix_line(line: str) -> str:
+        # First try the regex-based approach for well-formed patterns
+        def _collapse(m: re.Match) -> str:
+            raw = m.group(0)
+            letters = re.findall(r'[A-Za-z0-9]', raw)
+            return ''.join(letters)
+        fixed = _SPACED_CHAR_RE.sub(_collapse, line)
+
+        # If still heavily non-alnum, do aggressive: strip all non-alnum between isolated letters
+        alnum = sum(1 for c in fixed if c.isalnum())
+        if len(fixed) > 10 and alnum > 0:
+            non_alnum_ratio = (len(fixed) - alnum) / len(fixed)
+            if non_alnum_ratio > 0.7:
+                # Aggressive: extract only alphanumeric chars and spaces
+                result = []
+                for c in fixed:
+                    if c.isalnum() or c in ('\n', ' '):
+                        result.append(c)
+                fixed = ''.join(result)
+                # Collapse single-char sequences: "S A R A V A N A" -> "SARAVANA"
+                fixed = re.sub(r'\b(\w)\s+(?=\w\b)', r'\1', fixed)
+
+        return fixed
+
+    lines = text.split('\n')
+    return '\n'.join(_fix_line(l) for l in lines)
+
+
+def text_quality_score(text: str) -> float:
+    """Return a 0-1 quality score. Higher = more likely to be readable text.
+
+    Heuristics:
+    - Reward common English words
+    - Reward word-length variety (real text has short & long words)
+    - Penalise single-char "words" (spaced-char corruption artefact)
+    - Penalise high ratio of non-alnum characters (bullet-stuffed text)
+    """
+    if not text or len(text.strip()) < 20:
+        return 0.0
+    words = text.split()
+    if not words:
+        return 0.0
+
+    # Fraction of single-char tokens
+    single_char_ratio = sum(1 for w in words if len(w) == 1 and w.isalpha()) / len(words)
+
+    # Average word length (good text ~4-7)
+    avg_len = sum(len(w) for w in words) / len(words)
+    length_score = 1.0 if 3.5 <= avg_len <= 8 else max(0, 1 - abs(avg_len - 5.5) / 5)
+
+    # Common English stop-words present?
+    stops = {'the', 'and', 'in', 'of', 'to', 'a', 'is', 'for', 'with', 'on', 'at', 'an', 'or'}
+    lower_words = {w.lower().strip('.,;:') for w in words}
+    stop_hit = len(stops & lower_words) / len(stops)
+
+    # Penalise excessive non-alnum chars (bullet-stuffed text)
+    alnum_count = sum(1 for c in text if c.isalnum())
+    alnum_ratio = alnum_count / len(text) if text else 0
+    # Good text: ~70-85% alnum. Below 40% is suspicious.
+    alnum_penalty = max(0, min(1, (alnum_ratio - 0.2) / 0.4))  # 0 at <=20%, 1 at >=60%
+
+    score = (1 - single_char_ratio) * 0.3 + length_score * 0.2 + stop_hit * 0.2 + alnum_penalty * 0.3
+    return max(0.0, min(1.0, score))
 
 def try_fix_encoding(text: str) -> str:
     """Attempt to repair double-encoded UTF-8 text."""
@@ -124,16 +246,20 @@ class ResumeParser:
         """Clean and normalize extracted PDF text for better parsing accuracy"""
         if not text:
             return ""
-        
+
+        # Step 0: Detect and repair spaced-character corruption
+        if is_spaced_text(text):
+            logger.warning("Detected spaced-character corruption - collapsing")
+            text = collapse_spaced_chars(text)
+
         # Try to fix double-encoded UTF-8 (mojibake)
         if is_mojibake(text):
             text = try_fix_encoding(text)
-        
-        # Unicode normalization — use NFC to compose chars (preserves non-Latin)
+
+        # Unicode normalization
         text = unicodedata.normalize('NFC', text)
-        
+
         # Fix common PDF extraction artifacts
-        # Replace multiple spaces (from column layouts) with single space per line
         lines = text.split('\n')
         cleaned_lines = []
         for line in lines:
@@ -141,39 +267,43 @@ class ResumeParser:
             line = re.sub(r'  +', '  ', line)
             # Remove control characters except newline/tab
             line = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', line)
-            # Fix broken words from line wrapping (e.g., "Soft- ware" â†’ "Software")
-            line = re.sub(r'(\w)-\s+(\w)', r'\1\2', line)
+            # Fix broken words from line wrapping (e.g., "Soft- ware" -> "Software")
+            # Only join if both sides are >=2 chars to avoid mangling spaced-char leftovers
+            line = re.sub(r'(\w{2,})-\s+(\w{2,})', r'\1\2', line)
             cleaned_lines.append(line.strip())
-        
+
         text = '\n'.join(cleaned_lines)
-        
+
         # Remove excessive blank lines (more than 2 consecutive)
         text = re.sub(r'\n{3,}', '\n\n', text)
-        
-        # Fix bullet point characters
-        text = text.replace('â—', 'â€¢').replace('â– ', 'â€¢').replace('â–ª', 'â€¢').replace('â—¦', 'â€¢')
-        text = text.replace('', 'â€¢').replace('', 'â€¢')
-        
+
         # Normalize dashes
-        text = text.replace('â€“', '-').replace('â€”', '-').replace('â€•', '-')
-        
+        text = text.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
+
         # Normalize quotes
         text = text.replace('\u201c', '"').replace('\u201d', '"')
         text = text.replace('\u2018', "'").replace('\u2019', "'")
-        
+
         return text.strip()
-    
+
     def _extract_from_pdf(self, content: bytes) -> str:
-        """Extract text from PDF using multiple methods for best results"""
-        pdf_file = BytesIO(content)
-        text = ""
+        """Extract text from PDF using multiple methods with quality checks.
         
-        # Try pdfplumber first (better for complex layouts, tables, columns)
+        Strategy:
+        1. Try pdfplumber layout-aware extraction
+        2. If quality is poor (spaced chars), try pdfplumber basic mode
+        3. If still poor, fall back to PyPDF2
+        4. Pick the best quality result
+        """
+        pdf_file = BytesIO(content)
+        candidates = []  # (quality_score, text, method_name)
+
+        # --- Method 1: pdfplumber layout-aware ---
         try:
             import pdfplumber
             with pdfplumber.open(pdf_file) as pdf:
+                text = ""
                 for page in pdf.pages:
-                    # Use layout-aware text extraction for better column handling
                     page_text = page.extract_text(
                         layout=True,
                         x_density=7.25,
@@ -181,7 +311,6 @@ class ResumeParser:
                     )
                     if page_text:
                         text += page_text + "\n\n"
-                    
                     # Also extract text from tables if any
                     tables = page.extract_tables()
                     if tables:
@@ -191,45 +320,67 @@ class ResumeParser:
                                     row_text = ' | '.join([cell or '' for cell in row])
                                     if row_text.strip('| '):
                                         text += row_text + "\n"
-            
+
             if text.strip():
-                text = self._clean_extracted_text(text)
-                logger.info(f"ðŸ“„ PDF extracted with pdfplumber (layout-aware): {len(text)} chars")
-                return text
+                cleaned = self._clean_extracted_text(text)
+                score = text_quality_score(cleaned)
+                candidates.append((score, cleaned, "pdfplumber-layout"))
+                logger.info(f"pdfplumber layout: {len(cleaned)} chars, quality={score:.2f}")
+                if score >= 0.5:
+                    # Good enough, return immediately
+                    return cleaned
         except ImportError:
             pass
         except Exception as e:
-            logger.debug(f"pdfplumber layout extraction failed, trying basic: {e}")
-            # Try pdfplumber without layout mode
-            try:
-                pdf_file.seek(0)
-                import pdfplumber
-                with pdfplumber.open(pdf_file) as pdf:
-                    text = ""
-                    for page in pdf.pages:
-                        page_text = page.extract_text()
-                        if page_text:
-                            text += page_text + "\n\n"
-                if text.strip():
-                    text = self._clean_extracted_text(text)
-                    logger.info(f"ðŸ“„ PDF extracted with pdfplumber (basic): {len(text)} chars")
-                    return text
-            except Exception:
-                pass
-        
-        # Fallback to PyPDF2
-        pdf_file.seek(0)
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
-        text = ""
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n\n"
-        
-        text = self._clean_extracted_text(text)
-        logger.info(f"ðŸ“„ PDF extracted with PyPDF2: {len(text)} chars")
-        return text
-    
+            logger.debug(f"pdfplumber layout extraction failed: {e}")
+
+        # --- Method 2: pdfplumber basic (no layout) ---
+        try:
+            pdf_file.seek(0)
+            import pdfplumber
+            with pdfplumber.open(pdf_file) as pdf:
+                text = ""
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n\n"
+            if text.strip():
+                cleaned = self._clean_extracted_text(text)
+                score = text_quality_score(cleaned)
+                candidates.append((score, cleaned, "pdfplumber-basic"))
+                logger.info(f"pdfplumber basic: {len(cleaned)} chars, quality={score:.2f}")
+                if score >= 0.5:
+                    return cleaned
+        except Exception as e:
+            logger.debug(f"pdfplumber basic extraction failed: {e}")
+
+        # --- Method 3: PyPDF2 fallback ---
+        try:
+            pdf_file.seek(0)
+            pdf_reader = PyPDF2.PdfReader(pdf_file)
+            text = ""
+            for page in pdf_reader.pages:
+                page_text = page.extract_text()
+                if page_text:
+                    text += page_text + "\n\n"
+            if text.strip():
+                cleaned = self._clean_extracted_text(text)
+                score = text_quality_score(cleaned)
+                candidates.append((score, cleaned, "PyPDF2"))
+                logger.info(f"PyPDF2: {len(cleaned)} chars, quality={score:.2f}")
+        except Exception as e:
+            logger.debug(f"PyPDF2 extraction failed: {e}")
+
+        # Pick the best candidate by quality score
+        if candidates:
+            candidates.sort(key=lambda c: c[0], reverse=True)
+            best_score, best_text, best_method = candidates[0]
+            logger.info(f"Selected {best_method} (quality={best_score:.2f}, {len(best_text)} chars)")
+            return best_text
+
+        logger.warning("All PDF extraction methods failed")
+        return ""
+
     def _extract_from_docx(self, content: bytes) -> str:
         """Extract text from DOCX"""
         doc_file = BytesIO(content)

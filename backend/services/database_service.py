@@ -162,6 +162,13 @@ class DatabaseService:
             except Exception:
                 pass  # Column already exists
             
+            # Add shortlisted_at column for audit trail (when candidate was shortlisted)
+            try:
+                cursor.execute("ALTER TABLE candidates ADD COLUMN shortlisted_at TEXT")
+                logger.info("Added shortlisted_at column to candidates table")
+            except Exception:
+                pass  # Column already exists
+            
             # Resume storage table
             cursor.execute("""
                 CREATE TABLE IF NOT EXISTS resumes (
@@ -333,13 +340,23 @@ class DatabaseService:
             return None
 
     def update_candidate_status(self, candidate_id: str, status: str) -> bool:
-        """Update only the status field for a candidate"""
+        """Update only the status field for a candidate. Records shortlisted_at timestamp when shortlisting."""
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            now = datetime.now().isoformat()
             cursor.execute("""
                 UPDATE candidates SET status = ?, last_updated = ?
                 WHERE id = ? AND is_active = 1
-            """, (status, datetime.now().isoformat(), candidate_id))
+            """, (status, now, candidate_id))
+            # Record timestamp when candidate is shortlisted for audit trail
+            if status.lower() in ('shortlisted', 'shortlist') and cursor.rowcount > 0:
+                try:
+                    cursor.execute("""
+                        UPDATE candidates SET shortlisted_at = ?
+                        WHERE id = ? AND is_active = 1
+                    """, (now, candidate_id))
+                except Exception:
+                    pass  # Column may not exist yet — non-critical
             conn.commit()
             return cursor.rowcount > 0
 
@@ -888,11 +905,14 @@ class DatabaseService:
         try:
             cursor = conn.cursor()
             query = """
-                SELECT id, name, email, skills, experience, education,
-                       match_score, job_category, job_subcategory, status, location, summary,
-                       work_history, certifications, languages, phone, linkedin,
-                       created_at, applied_date
-                FROM candidates WHERE is_active = 1
+                SELECT c.id, c.name, c.email, c.skills, c.experience, c.education,
+                       c.match_score, c.job_category, c.job_subcategory, c.status, c.location, c.summary,
+                       c.work_history, c.certifications, c.languages, c.phone, c.linkedin,
+                       c.created_at, c.applied_date,
+                       CASE WHEN r.candidate_id IS NOT NULL THEN 1 ELSE 0 END AS has_resume_flag
+                FROM candidates c
+                LEFT JOIN resumes r ON c.id = r.candidate_id
+                WHERE c.is_active = 1
             """
             params: list = []
             if filters:
@@ -936,6 +956,7 @@ class DatabaseService:
                     'linkedin': row[16] or '',
                     'created_at': row[17] or '',
                     'applied_date': row[18] or '',
+                    'hasResume': bool(row[19]) if len(row) > 19 else False,
                 })
             return results
         finally:
@@ -1016,6 +1037,10 @@ class DatabaseService:
             params = []
             
             if filters:
+                if filters.get('status'):
+                    where_clause += " AND status = ?"
+                    params.append(filters['status'])
+                
                 if filters.get('job_category'):
                     where_clause += " AND job_category = ?"
                     params.append(filters['job_category'])
@@ -1071,6 +1096,9 @@ class DatabaseService:
             where_clause = "WHERE is_active = 1"
             params = []
             if filters:
+                if filters.get('status'):
+                    where_clause += " AND status = ?"
+                    params.append(filters['status'])
                 if filters.get('job_category'):
                     where_clause += " AND job_category = ?"
                     params.append(filters['job_category'])
@@ -1411,8 +1439,9 @@ class DatabaseService:
             deleted = cursor.rowcount
             conn.commit()
             return deleted
-        except Exception:
-            return 0
+        except Exception as e:
+            logger.error(f"Failed to clear processing log since {since_date}: {e}")
+            raise
         finally:
             conn.close()
 
@@ -1426,8 +1455,9 @@ class DatabaseService:
             deleted = cursor.rowcount
             conn.commit()
             return deleted
-        except Exception:
-            return 0
+        except Exception as e:
+            logger.error(f"Failed to clear no-candidate entries: {e}")
+            raise
         finally:
             conn.close()
 
@@ -1444,8 +1474,9 @@ class DatabaseService:
             deleted = cursor.rowcount
             conn.commit()
             return deleted
-        except Exception:
-            return 0
+        except Exception as e:
+            logger.error(f"Failed to clear blocked entries: {e}")
+            raise
         finally:
             conn.close()
 
@@ -1468,8 +1499,9 @@ class DatabaseService:
             deleted = cursor.rowcount
             conn.commit()
             return deleted
-        except Exception:
-            return 0
+        except Exception as e:
+            logger.error(f"Failed to clear orphaned processing entries: {e}")
+            raise
         finally:
             conn.close()
 
@@ -1936,6 +1968,19 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error getting search history: {e}")
             return []
+        finally:
+            conn.close()
+
+    def delete_search_entry(self, entry_id: str) -> bool:
+        """Delete a single search history entry by ID"""
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.execute("DELETE FROM search_history WHERE id = ?", (entry_id,))
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logger.error(f"Error deleting search entry {entry_id}: {e}")
+            return False
         finally:
             conn.close()
 

@@ -77,8 +77,8 @@
   @apply bg-gray-400/80;
 }
 
-/* Smooth transitions */
-* {
+/* Smooth transitions — scoped to interactive elements only */
+button, a, input, select, textarea, [role="button"] {
   @apply transition-colors duration-200;
 }
 
@@ -158,7 +158,7 @@ table td, table th {
   @apply overflow-x-auto;
 }
 
-/* AI Assistant — clickable candidate links in responses */
+/* AI Search — clickable candidate links in responses */
 .ai-response-content a.ai-candidate-link {
   @apply text-blue-600 font-semibold hover:text-blue-800 hover:underline cursor-pointer transition-colors;
 }

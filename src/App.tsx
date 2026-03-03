@@ -2,27 +2,28 @@
  * Main Application Component
  * Root component with routing, error handling, and global providers
  */
-import { useEffect, useState, lazy, Suspense } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { useEffect, useState, Suspense } from 'react'
+import { Routes, Route, Navigate, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/store/authStore'
 import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ToastContainer } from '@/components/ui/Toast'
+import { lazyRetry } from '@/lib/lazyRetry'
 import config from '@/config'
 import LoginPage from '@/pages/LoginPage'
 import OAuthCallback from '@/pages/OAuthCallback'
 import DashboardLayout from '@/components/layout/DashboardLayout'
 
-// Lazy-load route components for code splitting
-const Dashboard = lazy(() => import('@/pages/Dashboard'))
-const Candidates = lazy(() => import('@/pages/Candidates'))
-const CandidateDetail = lazy(() => import('@/pages/CandidateDetail'))
-const Shortlist = lazy(() => import('@/pages/Shortlist'))
-const Settings = lazy(() => import('@/pages/Settings'))
-const AIAssistant = lazy(() => import('@/pages/AIAssistant'))
-const UploadFiles = lazy(() => import('@/pages/UploadFiles'))
-const SearchReports = lazy(() => import('@/pages/SearchReports'))
-const JDBuilder = lazy(() => import('@/pages/JDBuilder'))
-const SetupWizard = lazy(() => import('@/pages/SetupWizard'))
+// Lazy-load route components for code splitting (with auto-retry on stale chunks)
+const Dashboard = lazyRetry(() => import('@/pages/Dashboard'))
+const Candidates = lazyRetry(() => import('@/pages/Candidates'))
+const CandidateDetail = lazyRetry(() => import('@/pages/CandidateDetail'))
+const Shortlist = lazyRetry(() => import('@/pages/Shortlist'))
+const Settings = lazyRetry(() => import('@/pages/Settings'))
+const AIAssistant = lazyRetry(() => import('@/pages/AIAssistant'))
+const UploadFiles = lazyRetry(() => import('@/pages/UploadFiles'))
+const SearchReports = lazyRetry(() => import('@/pages/SearchReports'))
+const JDBuilder = lazyRetry(() => import('@/pages/JDBuilder'))
+const SetupWizard = lazyRetry(() => import('@/pages/SetupWizard'))
 
 /** Route loading fallback */
 function RouteFallback() {
@@ -30,6 +31,17 @@ function RouteFallback() {
     <div className="flex items-center justify-center h-64">
       <div className="w-8 h-8 border-4 border-sky-600 border-t-transparent rounded-full animate-spin"></div>
     </div>
+  )
+}
+
+/** Route with error isolation — wraps Suspense in its own ErrorBoundary */
+function RouteWithErrorBoundary({ children }: { children: React.ReactNode }) {
+  return (
+    <ErrorBoundary>
+      <Suspense fallback={<RouteFallback />}>
+        {children}
+      </Suspense>
+    </ErrorBoundary>
   )
 }
 
@@ -68,7 +80,15 @@ function App() {
   const [isVerifying, setIsVerifying] = useState(true)
   const verifyToken = useAuthStore((state) => state.verifyToken)
   const token = useAuthStore((state) => state.token)
+  const navigate = useNavigate()
   
+  // Listen for session-expired events from the API layer (avoids hard reload)
+  useEffect(() => {
+    const handler = () => navigate('/login', { replace: true })
+    window.addEventListener('auth:session-expired', handler)
+    return () => window.removeEventListener('auth:session-expired', handler)
+  }, [navigate])
+
   // Warm up Cloud Run (fire-and-forget) then verify token
   useEffect(() => {
     const verify = async () => {
@@ -80,7 +100,7 @@ function App() {
       setIsVerifying(false)
     }
     verify()
-  }, [])
+  }, [token, verifyToken])
 
   // Show loading state while verifying token
   if (isVerifying) {
@@ -122,17 +142,17 @@ function App() {
           }
         >
           <Route index element={<Navigate to="/dashboard" replace />} />
-          <Route path="dashboard" element={<Suspense fallback={<RouteFallback />}><Dashboard /></Suspense>} />
-          <Route path="ai-assistant" element={<Suspense fallback={<RouteFallback />}><AIAssistant /></Suspense>} />
-          <Route path="upload" element={<Suspense fallback={<RouteFallback />}><UploadFiles /></Suspense>} />
-          <Route path="search-reports" element={<Suspense fallback={<RouteFallback />}><SearchReports /></Suspense>} />
-          <Route path="jd-builder" element={<Suspense fallback={<RouteFallback />}><JDBuilder /></Suspense>} />
-          <Route path="candidates" element={<Suspense fallback={<RouteFallback />}><Candidates /></Suspense>} />
-          <Route path="candidates/:id" element={<Suspense fallback={<RouteFallback />}><CandidateDetail /></Suspense>} />
-          <Route path="shortlist" element={<Suspense fallback={<RouteFallback />}><Shortlist /></Suspense>} />
+          <Route path="dashboard" element={<RouteWithErrorBoundary><Dashboard /></RouteWithErrorBoundary>} />
+          <Route path="ai-assistant" element={<RouteWithErrorBoundary><AIAssistant /></RouteWithErrorBoundary>} />
+          <Route path="upload" element={<RouteWithErrorBoundary><UploadFiles /></RouteWithErrorBoundary>} />
+          <Route path="search-reports" element={<RouteWithErrorBoundary><SearchReports /></RouteWithErrorBoundary>} />
+          <Route path="jd-builder" element={<RouteWithErrorBoundary><JDBuilder /></RouteWithErrorBoundary>} />
+          <Route path="candidates" element={<RouteWithErrorBoundary><Candidates /></RouteWithErrorBoundary>} />
+          <Route path="candidates/:id" element={<RouteWithErrorBoundary><CandidateDetail /></RouteWithErrorBoundary>} />
+          <Route path="shortlist" element={<RouteWithErrorBoundary><Shortlist /></RouteWithErrorBoundary>} />
           <Route path="email-integration" element={<Navigate to="/setup" replace />} />
-          <Route path="settings" element={<Suspense fallback={<RouteFallback />}><Settings /></Suspense>} />
-          <Route path="setup" element={<Suspense fallback={<RouteFallback />}><SetupWizard /></Suspense>} />
+          <Route path="settings" element={<RouteWithErrorBoundary><Settings /></RouteWithErrorBoundary>} />
+          <Route path="setup" element={<RouteWithErrorBoundary><SetupWizard /></RouteWithErrorBoundary>} />
         </Route>
 
         {/* Fallback Route */}

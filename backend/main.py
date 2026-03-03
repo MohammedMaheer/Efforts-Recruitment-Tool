@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from cachetools import TTLCache
 import time
 
-from services.resume_parser import ResumeParser
+from services.resume_parser import ResumeParser, is_spaced_text, collapse_spaced_chars, text_quality_score
 from services.matching_engine import MatchingEngine
 from services.email_parser import EmailParser
 from services.microsoft_graph import MicrosoftGraphService
@@ -33,7 +33,7 @@ from services.auth_service import get_auth_service
 from services.db_repair import audit_database, repair_database, quick_health_check
 from models.candidate import Candidate, JobDescription, MatchResult
 from core.config import get_settings
-from core.dependencies import require_auth, optional_auth
+from core.dependencies import require_auth, optional_auth, require_admin
 
 # Advanced AI services
 from api.advanced_routes import router as advanced_router
@@ -84,7 +84,6 @@ logger = logging.getLogger(__name__)
 
 # Performance: Response cache (5 minutes TTL)
 response_cache = TTLCache(maxsize=1000, ttl=300)
-cache_lock = asyncio.Lock()
 
 # Semaphore for database access to prevent SQLite lock contention
 db_semaphore = asyncio.Semaphore(10)
@@ -414,8 +413,11 @@ async def auto_sync_emails():
                                     new_count += 1
                                 else:
                                     candidate = db_service.smart_merge_candidate(existing, candidate)
+                                    existing_score = existing.get('matchScore') or existing.get('match_score') or 0
+                                    # Re-run AI if: no analysis, score is exactly 50 (likely default), or score is 0
                                     if (not existing.get('ai_analysis')
-                                            and (existing.get('matchScore') or existing.get('match_score') or 0) <= 0):
+                                            or existing_score <= 0
+                                            or existing_score == 50):
                                         needs_ai = True
                                 
                                 # AI processing
@@ -437,21 +439,32 @@ async def auto_sync_emails():
                                             ai_exp = ai_analysis.get('experience', 0) or 0
                                             existing_exp = candidate.get('experience', 0) or 0
                                             merged_exp = max(ai_exp, existing_exp)
+                                            # Use AI-extracted name if current name looks like email-derived garbage
+                                            curr_name = candidate.get('name', '')
+                                            ai_name = ai_analysis.get('name', '')
+                                            if ai_name and (not curr_name or curr_name.lower() == 'unknown' or '.' in curr_name.split()[0] if curr_name else True):
+                                                candidate['name'] = ai_name
+                                            # Validate AI summary isn't garbage email text
+                                            from services.email_scraper import sanitize_summary
+                                            ai_summary = ai_analysis.get('summary', '')
+                                            existing_summary = candidate.get('summary', '')
+                                            final_summary = sanitize_summary(ai_summary, candidate) or sanitize_summary(existing_summary, candidate) or ''
                                             candidate.update({
                                                 'job_category': ai_analysis.get('job_category', 'General'),
-                                                'matchScore': ai_analysis.get('quality_score', 50),
-                                                'summary': ai_analysis.get('summary', '') or candidate.get('summary', ''),
+                                                'job_subcategory': ai_analysis.get('job_subcategory', ''),
+                                                'matchScore': ai_analysis.get('quality_score'),
+                                                'summary': final_summary,
                                                 'skills': merged_skills,
                                                 'experience': merged_exp,
                                                 'education': ai_analysis.get('education', []) or candidate.get('education', []),
-                                                'phone': candidate.get('phone') or ai_analysis.get('phone', ''),
-                                                'location': candidate.get('location') or ai_analysis.get('location', ''),
-                                                'linkedin': candidate.get('linkedin') or ai_analysis.get('linkedin', ''),
+                                                'phone': ai_analysis.get('phone', '') or candidate.get('phone', ''),
+                                                'location': ai_analysis.get('location', '') or candidate.get('location', ''),
+                                                'linkedin': ai_analysis.get('linkedin', '') or candidate.get('linkedin', ''),
                                                 'certifications': ai_analysis.get('certifications', []),
                                                 'languages': ai_analysis.get('languages', []),
                                                 'work_history': ai_analysis.get('work_history', []),
                                             })
-                                            score = ai_analysis.get('quality_score', 50)
+                                            score = ai_analysis.get('quality_score')
                                             candidate['status'] = 'Strong' if score >= 70 else ('Partial' if score >= 40 else 'Reject')
                                             logger.info(f"✅ AI scored {candidate.get('name')}: {score}%")
                                     except Exception as ai_err:
@@ -769,12 +782,17 @@ async def auto_sync_emails():
                                             )
                                             if ai_analysis and ai_analysis.get('quality_score') is not None and ai_analysis.get('quality_score') > 0:
                                                 # Map quality_score to matchScore for database
-                                                score = ai_analysis.get('quality_score', 50)
+                                                score = ai_analysis.get('quality_score')
+                                                # Validate AI summary isn't garbage email text  
+                                                from services.email_scraper import sanitize_summary
+                                                ai_summary_2 = ai_analysis.get('summary', '')
+                                                existing_summary_2 = candidate.get('summary', '')
+                                                final_summary_2 = sanitize_summary(ai_summary_2, candidate) or sanitize_summary(existing_summary_2, candidate) or ''
                                                 # Email-parsed values take priority over LLM for contact info
                                                 candidate.update({
-                                                    'job_category': ai_analysis.get('job_category', 'General'),
+                                                    'job_category': normalize_category_backend(ai_analysis.get('job_category', 'General')),
                                                     'matchScore': score,
-                                                    'summary': ai_analysis.get('summary', candidate.get('summary', '')),
+                                                    'summary': final_summary_2,
                                                     'skills': ai_analysis.get('skills', candidate.get('skills', [])),
                                                     'experience': ai_analysis.get('experience', candidate.get('experience', 0)),
                                                     'education': ai_analysis.get('education', []),
@@ -789,21 +807,25 @@ async def auto_sync_emails():
                                     except asyncio.TimeoutError:
                                         logger.warning(f"AI timeout for {candidate.get('name')} - using fallback score")
                                         skills = candidate.get('skills', [])
-                                        exp = candidate.get('experience', 0)
+                                        exp = candidate.get('experience', 0) or 0
+                                        has_edu = bool(candidate.get('education'))
+                                        has_summary = bool(candidate.get('summary', '').strip())
                                         if skills or exp:
-                                            fallback_score = 35.0 + min(30, len(skills) * 2.5 + (10 if skills else 0)) + (min(20, 6 + exp * 2) if exp else 0)
-                                            candidate['matchScore'] = min(90, round(fallback_score, 1))
+                                            fallback_score = 40.0 + min(25, len(skills) * 2.5) + (min(20, 5 + exp * 2) if exp else 0) + (5 if has_edu else 0) + (3 if has_summary else 0)
+                                            candidate['matchScore'] = min(92, round(fallback_score, 1))
                                         else:
-                                            candidate['matchScore'] = 45
+                                            candidate['matchScore'] = 30
                                     except Exception as ai_err:
                                         logger.warning(f"AI error ({type(ai_err).__name__}): {str(ai_err)[:100]}")
                                         skills = candidate.get('skills', [])
-                                        exp = candidate.get('experience', 0)
+                                        exp = candidate.get('experience', 0) or 0
+                                        has_edu = bool(candidate.get('education'))
+                                        has_summary = bool(candidate.get('summary', '').strip())
                                         if skills or exp:
-                                            fallback_score = 35.0 + min(30, len(skills) * 2.5 + (10 if skills else 0)) + (min(20, 6 + exp * 2) if exp else 0)
-                                            candidate['matchScore'] = min(90, round(fallback_score, 1))
+                                            fallback_score = 40.0 + min(25, len(skills) * 2.5) + (min(20, 5 + exp * 2) if exp else 0) + (5 if has_edu else 0) + (3 if has_summary else 0)
+                                            candidate['matchScore'] = min(92, round(fallback_score, 1))
                                         else:
-                                            candidate['matchScore'] = 45
+                                            candidate['matchScore'] = 30
                                 
                                 # Save to database
                                 if existing:
@@ -1190,9 +1212,19 @@ async def _background_process_candidates(interval_minutes: int = 30):
                                         # Safely extract score — handle None, missing keys, quality_score alias
                                         raw_score = ai_result.get('match_score') or ai_result.get('quality_score') or ai_result.get('overall_score')
                                         try:
-                                            match_score = int(float(raw_score)) if raw_score is not None else 50
+                                            match_score = int(float(raw_score)) if raw_score is not None else 0
                                         except (ValueError, TypeError):
-                                            match_score = 50
+                                            match_score = 0
+                                        # Calculate fallback from AI-extracted data if score is 0
+                                        if match_score <= 0:
+                                            ai_skills = ai_result.get('skills', [])
+                                            ai_exp = ai_result.get('experience', 0) or 0
+                                            if isinstance(ai_exp, str):
+                                                try: ai_exp = int(float(ai_exp))
+                                                except: ai_exp = 0
+                                            has_edu = bool(ai_result.get('education'))
+                                            match_score = 25 + min(30, len(ai_skills) * 3) + min(25, ai_exp * 3) + (10 if has_edu else 0)
+                                            match_score = min(90, max(15, match_score))
                                         job_category = ai_result.get('job_category', ai_result.get('category', '')) or ''
                                         
                                         # Extract skills and experience from AI result for better data
@@ -1581,11 +1613,24 @@ logger.info(f"✅ CORS enabled for: {', '.join(allowed_origins)}")
 
 @app.middleware("http")
 async def add_performance_headers(request, call_next):
-    """Add performance monitoring headers"""
+    """Add performance monitoring headers and prevent browser caching of API data"""
     start_time = time.time()
-    response = await call_next(request)
+    try:
+        response = await call_next(request)
+    except RuntimeError as exc:
+        # Starlette raises RuntimeError("No response returned.") when the downstream
+        # handler crashes.  Return a proper 502 instead of letting it bubble up.
+        if "No response returned" in str(exc):
+            from starlette.responses import JSONResponse
+            logger.error(f"Middleware: downstream handler failed for {request.url.path}")
+            return JSONResponse({"detail": "Bad Gateway"}, status_code=502)
+        raise
     process_time = time.time() - start_time
     response.headers["X-Process-Time"] = str(round(process_time * 1000, 2))
+    # Prevent browsers from caching API responses — stale data causes ghost candidates
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
     return response
 
 # Initialize services
@@ -1700,7 +1745,7 @@ async def health_check():
     }
 
 @app.post("/api/admin/backup-db")
-async def manual_backup_db(auth=Depends(require_auth)):
+async def manual_backup_db(auth=Depends(require_admin)):
     """Manually trigger a database backup to GCS"""
     try:
         loop = asyncio.get_event_loop()
@@ -1711,7 +1756,8 @@ async def manual_backup_db(auth=Depends(require_auth)):
         else:
             return {"status": "warning", "message": "Backup skipped — GCS not available or no database file"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Backup failed: {str(e)}")
+        logger.error(f"Backup failed: {e}")
+        raise HTTPException(status_code=500, detail="Backup failed. Check server logs for details.")
 
 
 # ============================================
@@ -1734,7 +1780,7 @@ async def verify_setup(current_user: dict = Depends(require_auth)):
         return {
             "overall_status": "error",
             "ready_for_production": False,
-            "error": str(e)
+            "error": "Setup verification failed"
         }
 
 
@@ -1910,7 +1956,7 @@ async def test_service_connection(service: str, current_user: dict = Depends(req
             count = await asyncio.to_thread(db_service.get_total_candidates)
             results = {"service": service, "status": "connected", "candidate_count": count}
         except Exception as e:
-            results = {"service": service, "status": "error", "error": str(e)}
+            results = {"service": service, "status": "error", "error": "Database connection failed"}
     
     elif service == "email":
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
@@ -1924,7 +1970,7 @@ async def test_service_connection(service: str, current_user: dict = Depends(req
             test_result = await ai_service.analyze_candidate("Software engineer with 5 years Python experience")
             results = {"service": service, "status": "working", "sample_score": test_result.get('quality_score')}
         except Exception as e:
-            results = {"service": service, "status": "error", "error": str(e)}
+            results = {"service": service, "status": "error", "error": "AI service unavailable"}
     
     elif service == "sms":
         if os.getenv('TWILIO_ACCOUNT_SID'):
@@ -2038,7 +2084,8 @@ async def trigger_manual_scrape(process_all: bool = False, current_user: dict = 
             "accounts": results_by_account
         }
     except Exception as e:
-        raise HTTPException(500, f"Scraping error: {str(e)}")
+        logger.error(f"Scraping error: {e}")
+        raise HTTPException(500, "Email scraping failed. Check server logs for details.")
 
 
 # ====== DELETE INDIVIDUAL CANDIDATE ======
@@ -2069,12 +2116,12 @@ async def delete_candidate(candidate_id: str, current_user: dict = Depends(requi
         raise
     except Exception as e:
         logger.error(f"Delete candidate error: {e}")
-        raise HTTPException(500, f"Error deleting candidate: {str(e)}")
+        raise HTTPException(500, "Error deleting candidate. Check server logs for details.")
 
 
 # ====== PURGE INDEED RELAY / JUNK CANDIDATES ======
 @app.post("/api/candidates/purge-indeed")
-async def purge_indeed_candidates(current_user: dict = Depends(require_auth)):
+async def purge_indeed_candidates(current_user: dict = Depends(require_admin)):
     """
     Delete all candidates with Indeed relay emails (@indeedemail.com, conversation-* IDs).
     These are system-generated relay addresses, not real candidate emails.
@@ -2090,12 +2137,12 @@ async def purge_indeed_candidates(current_user: dict = Depends(require_auth)):
         }
     except Exception as e:
         logger.error(f"Purge failed: {e}")
-        raise HTTPException(500, f"Purge error: {str(e)}")
+        raise HTTPException(500, "Purge failed. Check server logs for details.")
 
 
 # ====== INTELLIGENT GIBBERISH PROFILE CLEANUP ======
 @app.post("/api/admin/cleanup-gibberish")
-async def cleanup_gibberish_profiles(current_user: dict = Depends(require_auth)):
+async def cleanup_gibberish_profiles(current_user: dict = Depends(require_admin)):
     """
     Comprehensive database repair: fix gibberish, garbled names, encoding issues,
     HTML in data, bad phones, duplicate emails, empty profiles, and more.
@@ -2151,11 +2198,11 @@ async def cleanup_gibberish_profiles(current_user: dict = Depends(require_auth))
         }
     except Exception as e:
         logger.error(f"DB Repair failed: {e}")
-        raise HTTPException(500, f"Cleanup error: {str(e)}")
+        raise HTTPException(500, "Database repair failed. Check server logs for details.")
 
 
 @app.get("/api/admin/database-audit")
-async def database_audit_report(current_user: dict = Depends(require_auth)):
+async def database_audit_report(current_user: dict = Depends(require_admin)):
     """
     Full database health audit — returns detailed issue report without modifying data.
     Shows gibberish profiles, encoding issues, empty fields, score distribution, etc.
@@ -2171,16 +2218,15 @@ async def database_audit_report(current_user: dict = Depends(require_auth)):
         return {"status": "success", **report}
     except Exception as e:
         logger.error(f"Audit failed: {e}")
-        raise HTTPException(500, f"Audit error: {str(e)}")
+        raise HTTPException(500, "Database audit failed. Check server logs for details.")
 
 
 @app.post("/api/admin/database-repair-full")
-async def full_database_repair(current_user: dict = Depends(require_auth)):
+async def full_database_repair(current_user: dict = Depends(require_admin)):
     """
     Full repair pipeline: cleanup → fix encoding → recover names → deduplicate → re-score.
     This is the nuclear option — fixes everything in one pass.
     """
-    import re as _re
     try:
         response_cache.clear()
         
@@ -2246,7 +2292,9 @@ async def full_database_repair(current_user: dict = Depends(require_auth)):
                                 ai_service.analyze_candidate(combined_text),
                                 timeout=AI_ANALYSIS_TIMEOUT
                             )
-                            new_score = analysis_result.get('quality_score', 50)
+                            new_score = analysis_result.get('quality_score') or analysis_result.get('match_score')
+                            if new_score is None:
+                                new_score = min(95, max(25, len(skills) * 5 + (experience or 0) * 3 + 20))
                             new_category = analysis_result.get('job_category', 'General')
                         except Exception:
                             new_score = min(95, max(25, len(skills) * 5 + (experience or 0) * 3 + 20))
@@ -2297,11 +2345,11 @@ async def full_database_repair(current_user: dict = Depends(require_auth)):
         }
     except Exception as e:
         logger.error(f"Full repair failed: {e}")
-        raise HTTPException(500, f"Full repair error: {str(e)}")
+        raise HTTPException(500, "Full database repair failed. Check server logs for details.")
 
 
 @app.post("/api/admin/relookup-from-email")
-async def relookup_garbled_from_email(current_user: dict = Depends(require_auth)):
+async def relookup_garbled_from_email(current_user: dict = Depends(require_admin)):
     """
     For candidates with garbled/empty data, search the original emails by sender address
     via Microsoft Graph and re-extract candidate info from the email body + attachments.
@@ -2494,11 +2542,11 @@ async def relookup_garbled_from_email(current_user: dict = Depends(require_auth)
         }
     except Exception as e:
         logger.error(f"Re-lookup failed: {e}")
-        raise HTTPException(500, f"Re-lookup error: {str(e)}")
+        raise HTTPException(500, "Re-lookup failed. Check server logs for details.")
 
 
 @app.patch("/api/admin/candidates/{candidate_id}")
-async def admin_update_candidate(candidate_id: str, request: Request, current_user: dict = Depends(require_auth)):
+async def admin_update_candidate(candidate_id: str, request: Request, current_user: dict = Depends(require_admin)):
     """Admin endpoint to directly update candidate fields (name, email, summary, etc.)."""
     updates = await request.json()
     allowed_fields = {'name', 'email', 'summary', 'resume_text', 'status', 'match_score', 'skills'}
@@ -2528,11 +2576,12 @@ async def admin_update_candidate(candidate_id: str, request: Request, current_us
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        logger.error(f"Admin update candidate error: {e}")
+        raise HTTPException(500, "Update failed. Check server logs for details.")
 
 
 @app.post("/api/candidates/reset-and-reparse")
-async def reset_and_reparse_all_emails(current_user: dict = Depends(require_auth)):
+async def reset_and_reparse_all_emails(current_user: dict = Depends(require_admin)):
     """
     Clear all candidates and re-parse ALL emails from inbox.
     Parses email body, attached resumes, and uses Local AI (with OpenAI fallback) for analysis.
@@ -2654,8 +2703,8 @@ async def reset_and_reparse_all_emails(current_user: dict = Depends(require_auth
                             timeout=AI_ANALYSIS_TIMEOUT
                         )
                         if ai_analysis:
-                            candidate['job_category'] = ai_analysis.get('job_category', candidate.get('job_category', 'General'))
-                            candidate['matchScore'] = ai_analysis.get('quality_score', 50)
+                            candidate['job_category'] = normalize_category_backend(ai_analysis.get('job_category', candidate.get('job_category', 'General')))
+                            candidate['matchScore'] = ai_analysis.get('quality_score')
                             # Update skills and experience from AI if better
                             if ai_analysis.get('skills'):
                                 ai_skills = ai_analysis['skills']
@@ -2665,12 +2714,20 @@ async def reset_and_reparse_all_emails(current_user: dict = Depends(require_auth
                                 candidate['experience'] = ai_analysis['experience']
                             ai_analyzed_count += 1
                     except asyncio.TimeoutError:
-                        # Local AI timeout - use smart defaults (NO OpenAI = zero cost)
-                        logger.warning(f"⏱️ Local AI timeout for {sender_email} - using smart defaults")
-                        candidate['matchScore'] = 45 + min(15, len(candidate.get('skills', [])) * 2)
+                        # Local AI timeout - calculate from available data
+                        logger.warning(f"⏱️ Local AI timeout for {sender_email} - using calculated fallback")
+                        _skills = candidate.get('skills', [])
+                        _exp = candidate.get('experience', 0) or 0
+                        _has_edu = bool(candidate.get('education'))
+                        _has_summary = bool(candidate.get('summary', '').strip())
+                        candidate['matchScore'] = min(92, max(15, 30 + min(25, len(_skills) * 3) + min(25, (_exp if isinstance(_exp, int) else 0) * 3) + (5 if _has_edu else 0) + (3 if _has_summary else 0)))
                     except Exception as ai_err:
-                        logger.warning(f"AI analysis error: {str(ai_err)[:50]} - using defaults")
-                        candidate['matchScore'] = 42
+                        logger.warning(f"AI analysis error: {str(ai_err)[:50]} - using calculated fallback")
+                        _skills = candidate.get('skills', [])
+                        _exp = candidate.get('experience', 0) or 0
+                        _has_edu = bool(candidate.get('education'))
+                        _has_summary = bool(candidate.get('summary', '').strip())
+                        candidate['matchScore'] = min(92, max(15, 30 + min(25, len(_skills) * 3) + min(25, (_exp if isinstance(_exp, int) else 0) * 3) + (5 if _has_edu else 0) + (3 if _has_summary else 0)))
                 
                 # Save resume file if present
                 resume_file = candidate.pop('resume_file_data', None)
@@ -2710,8 +2767,8 @@ async def reset_and_reparse_all_emails(current_user: dict = Depends(require_auth
         }
         
     except Exception as e:
-        logger.error(f"Reset and reparse error: {str(e)}")
-        raise HTTPException(500, f"Error: {str(e)}")
+        logger.error(f"Reset and reparse error: {e}")
+        raise HTTPException(500, "Reset and reparse failed. Check server logs for details.")
 
 # Candidate Management Endpoints (Database-backed)
 @app.get("/api/candidates")
@@ -2721,6 +2778,7 @@ async def get_candidates(
     job_category: Optional[str] = None,
     min_score: Optional[int] = None,
     search: Optional[str] = None,
+    status: Optional[str] = None,
     fields: Optional[str] = None,
     current_user: dict = Depends(require_auth)
 ):
@@ -2729,10 +2787,11 @@ async def get_candidates(
     Efficiently handles 100,000+ candidates
     Use fields=light for fast list views (skips resume_text, ai_analysis)
     Use search= to filter by name, email, skills, or job category
+    Use status= to filter by candidate status (e.g. Shortlisted, Reviewed)
     """
     is_light = fields == 'light'
     # Create cache key
-    cache_key = f"candidates_p{page}_l{limit}_c{job_category}_s{min_score}_q{search}_f{fields}"
+    cache_key = f"candidates_p{page}_l{limit}_c{job_category}_s{min_score}_q{search}_st{status}_f{fields}"
     
     # Check cache first
     if cache_key in response_cache:
@@ -2749,23 +2808,25 @@ async def get_candidates(
             filters['min_score'] = min_score
         if search:
             filters['search'] = search
+        if status:
+            filters['status'] = status
         
         # Use lightweight query for list views, full query for detail views
-        async with db_semaphore:
-            if is_light:
-                candidates, total_count = await asyncio.to_thread(
-                    db_service.get_candidates_light,
-                    page,
-                    limit,
-                    filters
-                )
-            else:
-                candidates, total_count = await asyncio.to_thread(
-                    db_service.get_candidates_paginated,
-                    page,
-                    limit,
-                    filters
-                )
+        # Reads don't need the db_semaphore — SQLite handles concurrent reads natively
+        if is_light:
+            candidates, total_count = await asyncio.to_thread(
+                db_service.get_candidates_light,
+                page,
+                limit,
+                filters
+            )
+        else:
+            candidates, total_count = await asyncio.to_thread(
+                db_service.get_candidates_paginated,
+                page,
+                limit,
+                filters
+            )
         
         result = {
             "page": page,
@@ -2781,7 +2842,7 @@ async def get_candidates(
         return result
     except Exception as e:
         logger.error(f"Error fetching candidates: {e}")
-        raise HTTPException(500, f"Error fetching candidates: {str(e)}")
+        raise HTTPException(500, "Error fetching candidates")
 
 @app.get("/api/candidates/new")
 async def get_new_candidates(since: str, limit: int = 500, current_user: dict = Depends(require_auth)):
@@ -2801,11 +2862,172 @@ async def get_new_candidates(since: str, limit: int = 500, current_user: dict = 
         }
     except Exception as e:
         logger.error(f"Error fetching new candidates since {since}: {e}")
-        raise HTTPException(500, f"Error fetching new candidates: {str(e)}")
+        raise HTTPException(500, "Error fetching new candidates. Check server logs for details.")
+
+
+@app.post("/api/admin/fix-corrupted-resume-text")
+async def fix_corrupted_resume_text(current_user: dict = Depends(require_admin)):
+    """
+    Scan ALL candidates for corrupted resume_text (spaced characters, gibberish).
+    For each corrupted entry that has a stored resume file, re-extract the text
+    using the improved parser. For entries without a resume file, attempt in-place
+    text repair (collapse spaced chars).
+    """
+    try:
+        response_cache.clear()
+        results = {
+            "scanned": 0,
+            "corrupted_found": 0,
+            "re_extracted": 0,
+            "text_repaired": 0,
+            "no_resume_file": 0,
+            "errors": 0,
+            "details": []
+        }
+
+        # Fetch all active candidates (with or without resume_text — we check names too)
+        def _fetch_all():
+            with db_service.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT id, name, email, resume_text
+                    FROM candidates
+                    WHERE is_active = 1
+                """)
+                return cursor.fetchall()
+
+        rows = await asyncio.to_thread(_fetch_all)
+        results["scanned"] = len(rows)
+
+        for row in rows:
+            cid, name, email, resume_text = row
+            try:
+                # Check name for spaced-char corruption
+                name_corrupted = bool(name and is_spaced_text(name, threshold=0.15, min_length=5))
+
+                # Skip if no resume_text and name is fine
+                if (not resume_text or len((resume_text or '').strip()) < 20) and not name_corrupted:
+                    continue
+
+                # Check if text is corrupted (spaced chars or very low quality)
+                quality = text_quality_score(resume_text) if resume_text else 0.0
+                is_spaced = is_spaced_text(resume_text) if resume_text else False
+
+                if not is_spaced and quality >= 0.3 and not name_corrupted:
+                    continue  # Text and name look fine
+
+                results["corrupted_found"] += 1
+                detail = {"id": cid, "name": name, "quality_before": round(quality, 3)}
+
+                # Try to get the stored resume file and re-extract
+                resume_data = await asyncio.to_thread(db_service.get_resume, cid)
+
+                if resume_data and resume_data.get("file_data"):
+                    try:
+                        new_text = await resume_parser.extract_text(
+                            resume_data["file_data"],
+                            resume_data.get("filename", "resume.pdf")
+                        )
+                        new_quality = text_quality_score(new_text)
+                        detail["quality_after"] = round(new_quality, 3)
+                        detail["method"] = "re-extract"
+
+                        if new_quality > quality and len(new_text.strip()) > 20:
+                            # Update the candidate's resume_text
+                            def _update_text(c_id, txt):
+                                with db_service.get_connection() as conn:
+                                    cursor = conn.cursor()
+                                    cursor.execute(
+                                        "UPDATE candidates SET resume_text = ?, last_updated = ? WHERE id = ?",
+                                        (txt[:10000], datetime.now().isoformat(), c_id)
+                                    )
+                                    conn.commit()
+                            await asyncio.to_thread(_update_text, cid, new_text)
+                            results["re_extracted"] += 1
+                            detail["status"] = "re-extracted"
+                        else:
+                            detail["status"] = "re-extract-no-improvement"
+                    except Exception as ex:
+                        detail["status"] = f"re-extract-error: {str(ex)[:80]}"
+                        results["errors"] += 1
+                else:
+                    # No resume file — try in-place text repair
+                    results["no_resume_file"] += 1
+                    if is_spaced:
+                        repaired = collapse_spaced_chars(resume_text)
+                        repaired_quality = text_quality_score(repaired)
+                        if repaired_quality >= quality:  # accept equal or better
+                            def _update_repaired(c_id, txt, fixed_name):
+                                with db_service.get_connection() as conn:
+                                    cursor = conn.cursor()
+                                    if fixed_name:
+                                        cursor.execute(
+                                            "UPDATE candidates SET resume_text = ?, name = ?, last_updated = ? WHERE id = ?",
+                                            (txt[:10000], fixed_name, datetime.now().isoformat(), c_id)
+                                        )
+                                    else:
+                                        cursor.execute(
+                                            "UPDATE candidates SET resume_text = ?, last_updated = ? WHERE id = ?",
+                                            (txt[:10000], datetime.now().isoformat(), c_id)
+                                        )
+                                    conn.commit()
+                            # Also fix the name if it's spaced
+                            fixed_name = None
+                            if name and is_spaced_text(name, threshold=0.15, min_length=5):
+                                fixed_name = collapse_spaced_chars(name).strip()
+                                detail["name_fixed"] = fixed_name
+                            await asyncio.to_thread(_update_repaired, cid, repaired, fixed_name)
+                            results["text_repaired"] += 1
+                            detail["method"] = "collapse-spaced"
+                            detail["quality_after"] = round(repaired_quality, 3)
+                            detail["status"] = "text-repaired"
+                        else:
+                            detail["status"] = "repair-no-improvement"
+                    else:
+                        detail["status"] = "no-resume-file"
+
+                # Fix name even if resume text wasn't repaired
+                if name and is_spaced_text(name, threshold=0.15, min_length=5) and detail.get("status") != "text-repaired":
+                    fixed_name = collapse_spaced_chars(name).strip()
+                    if fixed_name and fixed_name != name:
+                        def _fix_name(c_id, new_name):
+                            with db_service.get_connection() as conn:
+                                cursor = conn.cursor()
+                                cursor.execute(
+                                    "UPDATE candidates SET name = ?, last_updated = ? WHERE id = ?",
+                                    (new_name, datetime.now().isoformat(), c_id)
+                                )
+                                conn.commit()
+                        await asyncio.to_thread(_fix_name, cid, fixed_name)
+                        detail["name_fixed"] = fixed_name
+
+                results["details"].append(detail)
+
+            except Exception as e:
+                results["errors"] += 1
+                logger.warning(f"Fix resume text error for {cid}: {e}")
+
+        # Only include first 50 details to avoid huge response
+        results["details"] = results["details"][:50]
+
+        return {
+            "status": "success",
+            "message": (
+                f"Scanned {results['scanned']} candidates, "
+                f"found {results['corrupted_found']} corrupted, "
+                f"re-extracted {results['re_extracted']}, "
+                f"text-repaired {results['text_repaired']}, "
+                f"{results['errors']} errors"
+            ),
+            **results
+        }
+    except Exception as e:
+        logger.error(f"Fix corrupted resume text error: {e}")
+        raise HTTPException(500, "Fix corrupted resume text failed. Check server logs for details.")
 
 
 @app.post("/api/candidates/reprocess-garbled")
-async def reprocess_garbled_candidates(current_user: dict = Depends(require_auth)):
+async def reprocess_garbled_candidates(current_user: dict = Depends(require_admin)):
     """
     Comprehensive reprocessing of all poorly processed candidates:
     1. Cleanup gibberish/system profiles
@@ -2814,7 +3036,6 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_auth
     4. Regenerate AI analysis for candidates with no or stale analysis
     Runs cleanup first, then re-scores, all in one call.
     """
-    import re as _re
     try:
         response_cache.clear()
         results = {'cleaned': 0, 'rescored': 0, 'encoding_fixed': 0, 'errors': 0}
@@ -2887,12 +3108,14 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_auth
                                     _rescore_ai.analyze_candidate(combined_text),
                                     timeout=AI_ANALYSIS_TIMEOUT
                                 )
-                                new_score = analysis_result.get('quality_score') or analysis_result.get('match_score') or 50
+                                new_score = analysis_result.get('quality_score') or analysis_result.get('match_score')
                                 try:
-                                    new_score = int(float(new_score))
+                                    new_score = int(float(new_score)) if new_score else 0
                                 except Exception as e:
                                     logger.debug(f"Non-critical: failed to parse rescore value: {e}")
-                                    new_score = 50
+                                    new_score = 0
+                                if new_score <= 0:
+                                    new_score = min(95, max(25, len(skills) * 5 + (experience or 0) * 3 + 20))
                                 new_category = analysis_result.get('job_category', 'General')
                             except Exception:
                                 # Rule-based scoring
@@ -2922,7 +3145,136 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_auth
         }
     except Exception as e:
         logger.error(f"Reprocess garbled error: {e}")
-        raise HTTPException(500, f"Error: {str(e)}")
+        raise HTTPException(500, "Error")
+
+
+@app.post("/api/candidates/fix-summaries")
+async def fix_garbage_summaries(current_user: dict = Depends(require_auth)):
+    """
+    Find all candidates with garbage summaries (raw email body text like 'Dear HR...')
+    and regenerate proper summaries using Gemini AI or structured field generation.
+    """
+    try:
+        from services.email_scraper import is_garbage_summary, generate_structured_summary, sanitize_summary
+        
+        def _fetch_all_for_summary_fix():
+            with db_service.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, name, summary, resume_text, skills, experience, location, education, job_category, job_subcategory FROM candidates WHERE is_active = 1")
+                rows = cursor.fetchall()
+                col_names = [desc[0] for desc in cursor.description]
+                return [dict(zip(col_names, row)) for row in rows]
+        
+        candidates = await asyncio.to_thread(_fetch_all_for_summary_fix)
+        
+        garbage_count = 0
+        fixed_ai = 0
+        fixed_structured = 0
+        cleared = 0
+        
+        # Initialize AI service
+        ai_svc = None
+        try:
+            from services.gemini_service import GeminiService
+            ai_svc = GeminiService()
+            logger.info("🤖 Gemini AI available for summary regeneration")
+        except Exception as e:
+            logger.warning(f"Gemini not available, will use structured summaries: {e}")
+        
+        for candidate in candidates:
+            summary = candidate.get('summary', '') or ''
+            
+            if not is_garbage_summary(summary):
+                continue
+            
+            garbage_count += 1
+            candidate_id = candidate['id']
+            new_summary = ''
+            
+            # Parse skills back from JSON if stored as string
+            skills = candidate.get('skills', '[]')
+            if isinstance(skills, str):
+                try:
+                    skills = json.loads(skills)
+                except:
+                    skills = []
+            
+            # Try AI regeneration first if resume text is available
+            resume_text = candidate.get('resume_text', '') or ''
+            if ai_svc and resume_text and len(resume_text) > 50:
+                try:
+                    ai_result = await asyncio.wait_for(
+                        ai_svc.analyze_candidate(resume_text),
+                        timeout=30
+                    )
+                    if ai_result:
+                        ai_summary = ai_result.get('summary', '')
+                        if ai_summary and not is_garbage_summary(ai_summary):
+                            new_summary = ai_summary
+                            fixed_ai += 1
+                            
+                            # Also update skills/experience if AI provided better data
+                            ai_skills = ai_result.get('skills', [])
+                            if ai_skills and len(ai_skills) > len(skills):
+                                def _update_skills(cid, sk):
+                                    with db_service.get_connection() as conn:
+                                        conn.execute("UPDATE candidates SET skills = ? WHERE id = ?", 
+                                                    [json.dumps(sk), cid])
+                                        conn.commit()
+                                await asyncio.to_thread(_update_skills, candidate_id, ai_skills)
+                except Exception as e:
+                    logger.warning(f"AI summary regen failed for {candidate.get('name')}: {e}")
+            
+            # Fallback to structured summary from fields
+            if not new_summary:
+                candidate_data = {
+                    'name': candidate.get('name', ''),
+                    'skills': skills,
+                    'experience': candidate.get('experience', 0),
+                    'location': candidate.get('location', ''),
+                    'education': candidate.get('education', ''),
+                    'job_category': candidate.get('job_category', ''),
+                    'job_subcategory': candidate.get('job_subcategory', ''),
+                }
+                new_summary = generate_structured_summary(candidate_data)
+                if new_summary:
+                    fixed_structured += 1
+                else:
+                    cleared += 1
+            
+            # Update in DB
+            def _update_summary(cid, s):
+                with db_service.get_connection() as conn:
+                    conn.execute("UPDATE candidates SET summary = ? WHERE id = ?", [s, cid])
+                    conn.commit()
+            await asyncio.to_thread(_update_summary, candidate_id, new_summary)
+        
+        # Backup to GCS if we made changes
+        if garbage_count > 0:
+            try:
+                from google.cloud import storage
+                gcs_client = storage.Client()
+                bucket = gcs_client.bucket('efforts-recruitment-data')
+                blob = bucket.blob('db/recruitment.db')
+                blob.upload_from_filename('/app/data/recruitment.db')
+                logger.info("☁️ Database backed up to GCS after summary fix")
+            except Exception as e:
+                logger.warning(f"GCS backup after summary fix failed: {e}")
+        
+        result = {
+            "status": "success",
+            "total_garbage_found": garbage_count,
+            "fixed_with_ai": fixed_ai,
+            "fixed_with_structured": fixed_structured,
+            "cleared_empty": cleared,
+            "message": f"Fixed {garbage_count} garbage summaries: {fixed_ai} via AI, {fixed_structured} via structured generation, {cleared} cleared"
+        }
+        logger.info(f"✅ Summary cleanup: {result['message']}")
+        return result
+        
+    except Exception as e:
+        logger.error(f"Fix summaries error: {e}")
+        raise HTTPException(500, "Error")
 
 
 @app.post("/api/candidates/reprocess-scores")
@@ -2998,15 +3350,17 @@ async def reprocess_candidate_scores(current_user: dict = Depends(require_auth))
                             reprocess_ai.analyze_candidate(analysis_text),
                             timeout=AI_ANALYSIS_TIMEOUT
                         )
-                        new_score = ai_result.get('quality_score') or ai_result.get('match_score') or 50
+                        new_score = ai_result.get('quality_score') or ai_result.get('match_score')
                         try:
-                            new_score = int(float(new_score))
+                            new_score = int(float(new_score)) if new_score else 0
                         except Exception as e:
                             logger.debug(f"Non-critical: failed to parse reprocess score: {e}")
-                            new_score = 50
+                            new_score = 0
+                        if new_score <= 0:
+                            new_score = 15  # Minimal score — AI returned nothing useful
                         new_category = ai_result.get('job_category', 'General')
                     except Exception:
-                        new_score = 50
+                        new_score = 15
                         new_category = 'General'
                 
                 # Update database
@@ -3035,7 +3389,212 @@ async def reprocess_candidate_scores(current_user: dict = Depends(require_auth))
         
     except Exception as e:
         logger.error(f"Reprocess error: {str(e)}")
-        raise HTTPException(500, f"Error reprocessing: {str(e)}")
+        raise HTTPException(500, "Error reprocessing")
+
+
+# ── Canonical category list + normalization map (backend-side) ──
+CANONICAL_CATEGORIES = {
+    'Software Engineering', 'Data & Analytics', 'IT & Systems', 'Engineering',
+    'HR & Admin', 'Finance & Accounting', 'Sales', 'Operations',
+    'Project Management', 'Consulting', 'Healthcare', 'Design & Creative',
+    'QA & Testing', 'Marketing', 'Customer Service', 'Insurance & Safety',
+    'Retail & Hospitality', 'Education', 'Legal', 'Business Analyst', 'General',
+}
+
+BACKEND_CATEGORY_NORMALIZE: dict = {
+    'software development': 'Software Engineering', 'software engineer': 'Software Engineering',
+    'software engineering': 'Software Engineering', 'web developer': 'Software Engineering',
+    'web development': 'Software Engineering', 'frontend developer': 'Software Engineering',
+    'front-end developer': 'Software Engineering', 'backend developer': 'Software Engineering',
+    'full-stack developer': 'Software Engineering', 'full stack developer': 'Software Engineering',
+    'mobile developer': 'Software Engineering', 'mobile development': 'Software Engineering',
+    'devops engineer': 'Software Engineering', 'devops': 'Software Engineering',
+    'cloud engineer': 'Software Engineering', 'rpa developer': 'Software Engineering',
+    'developer': 'Software Engineering', 'programmer': 'Software Engineering',
+    'data analyst': 'Data & Analytics', 'data science': 'Data & Analytics',
+    'data scientist': 'Data & Analytics', 'data analytics': 'Data & Analytics',
+    'data engineering': 'Data & Analytics', 'data engineer': 'Data & Analytics',
+    'machine learning': 'Data & Analytics', 'ml engineer': 'Data & Analytics',
+    'ai engineer': 'Data & Analytics', 'business intelligence': 'Data & Analytics',
+    'bioinformatics': 'Data & Analytics',
+    'it': 'IT & Systems', 'information technology': 'IT & Systems',
+    'it support': 'IT & Systems', 'it/automation': 'IT & Systems',
+    'network engineering': 'IT & Systems', 'network engineer': 'IT & Systems',
+    'system administrator': 'IT & Systems', 'systems engineer': 'IT & Systems',
+    'cybersecurity': 'IT & Systems', 'information security': 'IT & Systems',
+    'database administrator': 'IT & Systems', 'technical support': 'IT & Systems',
+    'engineering': 'Engineering', 'mechanical engineering': 'Engineering',
+    'electrical engineering': 'Engineering', 'civil engineering': 'Engineering',
+    'chemical engineering': 'Engineering', 'petroleum engineer': 'Engineering',
+    'structural engineering': 'Engineering', 'mep engineer': 'Engineering',
+    'hvac engineer': 'Engineering', 'construction': 'Engineering',
+    'construction management': 'Engineering', 'architecture': 'Engineering',
+    'oil & gas': 'Engineering', 'telecommunications': 'Engineering',
+    'hr': 'HR & Admin', 'human resources': 'HR & Admin',
+    'hr/admin': 'HR & Admin', 'administration': 'HR & Admin',
+    'administrative': 'HR & Admin', 'talent acquisition': 'HR & Admin',
+    'recruitment': 'HR & Admin', 'office administrator': 'HR & Admin',
+    'executive assistant': 'HR & Admin',
+    'finance': 'Finance & Accounting', 'accounting': 'Finance & Accounting',
+    'accounting/finance': 'Finance & Accounting', 'financial services': 'Finance & Accounting',
+    'audit': 'Finance & Accounting', 'banking': 'Finance & Accounting',
+    'taxation': 'Finance & Accounting', 'bookkeeping': 'Finance & Accounting',
+    'sales': 'Sales', 'business development': 'Sales',
+    'sales & marketing': 'Sales', 'account management': 'Sales',
+    'real estate': 'Sales', 'technical sales': 'Sales',
+    'operations': 'Operations', 'supply chain': 'Operations',
+    'supply chain management': 'Operations', 'logistics': 'Operations',
+    'warehouse/logistics': 'Operations', 'procurement': 'Operations',
+    'inventory management': 'Operations',
+    'project management': 'Project Management', 'project manager': 'Project Management',
+    'product management': 'Project Management', 'product manager': 'Project Management',
+    'scrum master': 'Project Management', 'program manager': 'Project Management',
+    'consulting': 'Consulting', 'management consulting': 'Consulting',
+    'healthcare': 'Healthcare', 'medical': 'Healthcare',
+    'nursing': 'Healthcare', 'pharmacy': 'Healthcare',
+    'design': 'Design & Creative', 'graphic design': 'Design & Creative',
+    'ui/ux': 'Design & Creative', 'interior design': 'Design & Creative',
+    'media & creative': 'Design & Creative',
+    'quality assurance': 'QA & Testing', 'qa': 'QA & Testing',
+    'quality control': 'QA & Testing', 'testing': 'QA & Testing',
+    'marketing': 'Marketing', 'digital marketing': 'Marketing',
+    'social media': 'Marketing', 'content writing': 'Marketing',
+    'public relations': 'Marketing', 'communications': 'Marketing',
+    'customer service': 'Customer Service', 'customer support': 'Customer Service',
+    'call center': 'Customer Service', 'client relations': 'Customer Service',
+    'insurance': 'Insurance & Safety', 'safety officer': 'Insurance & Safety',
+    'safety': 'Insurance & Safety', 'security': 'Insurance & Safety',
+    'retail': 'Retail & Hospitality', 'hospitality': 'Retail & Hospitality',
+    'hotel management': 'Retail & Hospitality', 'food & beverage': 'Retail & Hospitality',
+    'education': 'Education', 'teaching': 'Education', 'training': 'Education',
+    'legal': 'Legal', 'lawyer': 'Legal',
+    'business analyst': 'Business Analyst', 'business analysis': 'Business Analyst',
+    'systems analyst': 'Business Analyst', 'crm administrator/business analyst': 'Business Analyst',
+    'insufficient data': 'General', 'other': 'General', 'n/a': 'General', 'not specified': 'General',
+}
+
+# Contains-based fuzzy fallback patterns (same as frontend)
+BACKEND_CATEGORY_CONTAINS: list = [
+    ('software', 'Software Engineering'), ('developer', 'Software Engineering'),
+    ('full stack', 'Software Engineering'), ('full-stack', 'Software Engineering'),
+    ('devops', 'Software Engineering'),
+    ('data scien', 'Data & Analytics'), ('data analy', 'Data & Analytics'),
+    ('data engineer', 'Data & Analytics'), ('machine learning', 'Data & Analytics'),
+    ('business intelligence', 'Data & Analytics'),
+    ('network', 'IT & Systems'), ('system admin', 'IT & Systems'),
+    ('cyber', 'IT & Systems'), ('information technology', 'IT & Systems'),
+    ('mechanical', 'Engineering'), ('electrical', 'Engineering'),
+    ('civil', 'Engineering'), ('petroleum', 'Engineering'),
+    ('structural', 'Engineering'), ('mep', 'Engineering'),
+    ('construction', 'Engineering'),
+    ('human resource', 'HR & Admin'), ('talent acqui', 'HR & Admin'),
+    ('recruit', 'HR & Admin'), ('administrat', 'HR & Admin'),
+    ('accounting', 'Finance & Accounting'), ('finance', 'Finance & Accounting'),
+    ('audit', 'Finance & Accounting'), ('banking', 'Finance & Accounting'),
+    ('sales', 'Sales'), ('business develop', 'Sales'), ('account manag', 'Sales'),
+    ('supply chain', 'Operations'), ('logistics', 'Operations'),
+    ('warehouse', 'Operations'), ('procurement', 'Operations'),
+    ('operations', 'Operations'),
+    ('project manag', 'Project Management'), ('program manag', 'Project Management'),
+    ('product manag', 'Project Management'), ('scrum', 'Project Management'),
+    ('consult', 'Consulting'),
+    ('healthcare', 'Healthcare'), ('medical', 'Healthcare'),
+    ('nurs', 'Healthcare'), ('pharma', 'Healthcare'),
+    ('design', 'Design & Creative'), ('graphic', 'Design & Creative'),
+    ('creative', 'Design & Creative'), ('ui/ux', 'Design & Creative'),
+    ('quality assur', 'QA & Testing'), ('quality control', 'QA & Testing'),
+    ('testing', 'QA & Testing'),
+    ('marketing', 'Marketing'), ('social media', 'Marketing'),
+    ('content writ', 'Marketing'), ('public relation', 'Marketing'),
+    ('customer serv', 'Customer Service'), ('customer supp', 'Customer Service'),
+    ('call center', 'Customer Service'),
+    ('insurance', 'Insurance & Safety'), ('safety', 'Insurance & Safety'),
+    ('retail', 'Retail & Hospitality'), ('hospitality', 'Retail & Hospitality'),
+    ('hotel', 'Retail & Hospitality'),
+    ('education', 'Education'), ('teaching', 'Education'), ('training', 'Education'),
+    ('legal', 'Legal'), ('lawyer', 'Legal'),
+    ('business analy', 'Business Analyst'),
+]
+
+
+def normalize_category_backend(raw: str) -> str:
+    """Normalize a category name to a canonical category. Zero AI cost."""
+    if not raw:
+        return 'General'
+    key = raw.lower().strip()
+    # Already canonical?
+    if raw in CANONICAL_CATEGORIES:
+        return raw
+    # Exact match
+    if key in BACKEND_CATEGORY_NORMALIZE:
+        return BACKEND_CATEGORY_NORMALIZE[key]
+    # Contains-based fuzzy
+    for pattern, category in BACKEND_CATEGORY_CONTAINS:
+        if pattern in key:
+            return category
+    return raw  # Return as-is if no match
+
+
+@app.post("/api/candidates/normalize-categories")
+async def normalize_all_categories(current_user: dict = Depends(require_auth)):
+    """
+    Normalize ALL candidate categories to canonical names.
+    This is a fast, zero-AI-cost operation that uses pattern matching.
+    Fixes messy/duplicate category names across the entire database.
+    """
+    try:
+        def _fetch_all_categories():
+            with db_service.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, name, job_category FROM candidates WHERE is_active = 1"
+                )
+                return cursor.fetchall()
+
+        rows = await asyncio.to_thread(_fetch_all_categories)
+        if not rows:
+            return {"status": "success", "message": "No candidates found", "updated": 0}
+
+        updated = 0
+        changes: dict = {}
+
+        for cid, name, raw_cat in rows:
+            if not raw_cat:
+                continue
+            new_cat = normalize_category_backend(raw_cat)
+            if new_cat != raw_cat:
+                def _do_update(c_id, c_cat):
+                    with db_service.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "UPDATE candidates SET job_category = ? WHERE id = ?",
+                            (c_cat, c_id),
+                        )
+                        conn.commit()
+                await asyncio.to_thread(_do_update, cid, new_cat)
+                updated += 1
+                key = f"{raw_cat} → {new_cat}"
+                changes[key] = changes.get(key, 0) + 1
+
+        # Persist to GCS
+        if updated > 0:
+            try:
+                await asyncio.to_thread(backup_db_to_gcs)
+                logger.info(f"✅ GCS backup after category normalization ({updated} updates)")
+            except Exception as e:
+                logger.warning(f"Non-critical: GCS backup after normalize failed: {e}")
+
+        return {
+            "status": "success",
+            "message": f"Normalized {updated} candidates' categories",
+            "updated": updated,
+            "total_checked": len(rows),
+            "changes": changes,
+        }
+
+    except Exception as e:
+        logger.error(f"Normalize categories error: {e}")
+        raise HTTPException(500, "Error normalizing categories")
 
 
 @app.post("/api/candidates/recategorize-general")
@@ -3239,7 +3798,7 @@ async def recategorize_general_candidates(current_user: dict = Depends(require_a
 
     except Exception as e:
         logger.error(f"Recategorize error: {str(e)}")
-        raise HTTPException(500, f"Error re-categorizing: {str(e)}")
+        raise HTTPException(500, "Error re-categorizing")
 
 
 @app.post("/api/candidates/reprocess-with-gemini")
@@ -3346,12 +3905,19 @@ async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_
                 )
                 
                 if result:
-                    new_score = result.get('quality_score') or result.get('match_score') or result.get('overall_score') or 50
+                    new_score = result.get('quality_score') or result.get('match_score') or result.get('overall_score')
                     try:
-                        new_score = int(float(new_score))
+                        new_score = int(float(new_score)) if new_score else 0
                         new_score = max(10, min(95, new_score))  # Sane bounds
                     except (ValueError, TypeError):
-                        new_score = 50
+                        new_score = 0
+                    if new_score <= 0:
+                        # Calculate from AI-extracted data
+                        _sk = result.get('skills', [])
+                        _ex = result.get('experience', 0) or 0
+                        try: _ex = int(float(_ex))
+                        except: _ex = 0
+                        new_score = max(15, min(90, 25 + len(_sk) * 3 + _ex * 3 + (10 if result.get('education') else 0)))
                     
                     new_category = result.get('job_category', result.get('category', '')) or 'General'
                     new_skills = result.get('skills', [])
@@ -3430,7 +3996,7 @@ async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_
         raise
     except Exception as e:
         logger.error(f"Gemini bulk reprocess error: {str(e)}")
-        raise HTTPException(500, f"Error: {str(e)}")
+        raise HTTPException(500, "Error")
 
 
 @app.get("/api/candidates/{candidate_id}")
@@ -3452,7 +4018,7 @@ async def get_candidate(candidate_id: str, current_user: dict = Depends(require_
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Error: {str(e)}")
+        raise HTTPException(500, "Error")
 
 
 @app.get("/api/candidates/{candidate_id}/resume")
@@ -3477,7 +4043,110 @@ async def download_resume(candidate_id: str, current_user: dict = Depends(requir
         raise
     except Exception as e:
         logger.error(f"Resume download error: {str(e)}")
-        raise HTTPException(500, f"Error downloading resume: {str(e)}")
+        raise HTTPException(500, "Error downloading resume")
+
+
+@app.post("/api/candidates/{candidate_id}/resume")
+async def upload_resume_for_candidate(candidate_id: str, file: UploadFile = File(...), current_user: dict = Depends(require_auth)):
+    """Upload a resume file for an existing candidate. Also re-parses the resume and updates candidate data."""
+    try:
+        filename = file.filename or "resume.pdf"
+        ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
+        if ext not in ('pdf', 'docx', 'doc'):
+            raise HTTPException(400, "Only PDF and DOCX files are supported.")
+        
+        content = await file.read()
+        if len(content) > 10 * 1024 * 1024:
+            raise HTTPException(400, "File too large. Max 10MB.")
+        if len(content) < 100:
+            raise HTTPException(400, "File too small or empty.")
+        
+        # Verify candidate exists
+        def _check_exists():
+            with db_service.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT id, name FROM candidates WHERE id = ?", [candidate_id])
+                return cursor.fetchone()
+        
+        existing = await asyncio.to_thread(_check_exists)
+        if not existing:
+            raise HTTPException(404, "Candidate not found")
+        
+        # Save the resume binary file
+        content_type = 'application/pdf' if ext == 'pdf' else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        await asyncio.to_thread(db_service.save_resume, candidate_id, filename, content, content_type)
+        
+        # Parse the resume to extract text and structured data
+        try:
+            parsed = await resume_parser.parse_resume(content, filename)
+            resume_text = parsed.get('raw_text', '') or ''
+            
+            updates = {}
+            if resume_text:
+                updates['resume_text'] = resume_text[:10000]
+            
+            # Run AI analysis on the resume text
+            if resume_text and len(resume_text) > 50:
+                try:
+                    ai_result = await asyncio.wait_for(
+                        ai_service.analyze_candidate(resume_text),
+                        timeout=AI_ANALYSIS_TIMEOUT
+                    )
+                    if ai_result:
+                        if ai_result.get('summary'):
+                            from services.email_scraper import is_garbage_summary
+                            if not is_garbage_summary(ai_result['summary']):
+                                updates['summary'] = ai_result['summary']
+                        if ai_result.get('skills'):
+                            updates['skills'] = json.dumps(ai_result['skills'])
+                        if ai_result.get('experience'):
+                            updates['experience'] = ai_result['experience']
+                        if ai_result.get('quality_score'):
+                            updates['match_score'] = ai_result['quality_score']
+                        if ai_result.get('job_category') and ai_result['job_category'] != 'General':
+                            updates['job_category'] = ai_result['job_category']
+                        if ai_result.get('job_subcategory'):
+                            updates['job_subcategory'] = ai_result['job_subcategory']
+                        if ai_result.get('education'):
+                            updates['education'] = json.dumps(ai_result['education']) if isinstance(ai_result['education'], list) else ai_result['education']
+                        if ai_result.get('location'):
+                            updates['location'] = ai_result['location']
+                        if ai_result.get('phone'):
+                            updates['phone'] = ai_result['phone']
+                        if ai_result.get('certifications'):
+                            updates['certifications'] = json.dumps(ai_result['certifications'])
+                        if ai_result.get('languages'):
+                            updates['languages'] = json.dumps(ai_result['languages'])
+                except Exception as ai_err:
+                    logger.warning(f"AI analysis failed for uploaded resume: {ai_err}")
+            
+            # Update candidate with extracted data
+            if updates:
+                def _update_candidate():
+                    with db_service.get_connection() as conn:
+                        set_clause = ', '.join(f"{k} = ?" for k in updates.keys())
+                        values = list(updates.values()) + [candidate_id]
+                        conn.execute(f"UPDATE candidates SET {set_clause} WHERE id = ?", values)
+                        conn.commit()
+                await asyncio.to_thread(_update_candidate)
+                
+        except Exception as parse_err:
+            logger.warning(f"Resume parsing failed (file still saved): {parse_err}")
+        
+        # Backup to GCS
+        try:
+            await asyncio.to_thread(backup_db_to_gcs)
+        except Exception:
+            pass
+        
+        logger.info(f"✅ Resume uploaded for candidate {candidate_id}: {filename}")
+        return {"status": "success", "message": f"Resume '{filename}' uploaded successfully", "candidate_id": candidate_id}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Resume upload for candidate error: {e}")
+        raise HTTPException(500, "Error")
 
 
 # Resume upload endpoints
@@ -3510,8 +4179,9 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
 
         # AI analysis
         resume_text = parsed.get('raw_text', '') or parsed.get('summary', '')
-        ai_score = 50.0
+        ai_score = None
         job_category = 'General'
+        job_subcategory = ''
         summary = parsed.get('summary', '')
 
         if resume_text.strip():
@@ -3521,8 +4191,9 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
                     timeout=AI_ANALYSIS_TIMEOUT
                 )
                 if ai_analysis:
-                    ai_score = ai_analysis.get('quality_score', 50.0)
+                    ai_score = ai_analysis.get('quality_score')
                     job_category = ai_analysis.get('job_category', 'General')
+                    job_subcategory = ai_analysis.get('job_subcategory', '')
                     summary = ai_analysis.get('summary', summary)
                     # Merge AI skills with parsed skills instead of overwriting
                     if ai_analysis.get('skills'):
@@ -3535,8 +4206,34 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
                         parsed['skills'] = merged_skills
                     if ai_analysis.get('experience'):
                         parsed['experience'] = ai_analysis['experience']
+                    # Prefer AI-extracted contact info if parser missed it
+                    if not parsed.get('phone') and ai_analysis.get('phone'):
+                        parsed['phone'] = ai_analysis['phone']
+                    if not parsed.get('location') and ai_analysis.get('location'):
+                        parsed['location'] = ai_analysis['location']
+                    if not parsed.get('name', '').strip() or parsed.get('name') == 'Unknown':
+                        if ai_analysis.get('name'):
+                            parsed['name'] = ai_analysis['name']
+                    if ai_analysis.get('certifications'):
+                        parsed['certifications'] = ai_analysis['certifications']
+                    if ai_analysis.get('languages'):
+                        parsed['languages'] = ai_analysis['languages']
+                    if ai_analysis.get('linkedin'):
+                        parsed['linkedin'] = ai_analysis['linkedin']
             except Exception as ai_err:
                 logger.warning(f"AI analysis failed for upload: {str(ai_err)[:100]}")
+
+        # Calculate fallback score if AI didn't return one
+        if ai_score is None:
+            skills_count = len(parsed.get('skills', []))
+            exp = parsed.get('experience', 0) or 0
+            if isinstance(exp, str):
+                nums = re.findall(r'\d+', str(exp))
+                exp = int(nums[0]) if nums else 0
+            has_edu = bool(parsed.get('education'))
+            ai_score = 25 + min(30, skills_count * 3) + min(25, exp * 3) + (10 if has_edu else 0)
+            ai_score = min(90, max(15, ai_score))
+            logger.info(f"📊 Calculated fallback score for upload: {ai_score} (skills={skills_count}, exp={exp})")
 
         # Infer category from skills if still General
         if job_category == 'General' and parsed.get('skills'):
@@ -3561,7 +4258,7 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
             'status': status,
             'matchScore': round(ai_score, 1),
             'job_category': job_category,
-            'job_subcategory': parsed.get('job_subcategory', ''),
+            'job_subcategory': job_subcategory or parsed.get('job_subcategory', ''),
             'appliedDate': datetime.now().isoformat(),
             'last_updated': datetime.now().isoformat(),
             'raw_email_subject': f"Resume Upload: {filename}",
@@ -3622,7 +4319,7 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
         raise
     except Exception as e:
         logger.error(f"Resume upload error: {str(e)}")
-        raise HTTPException(500, f"Error processing resume: {str(e)}")
+        raise HTTPException(500, "Error processing resume")
 
 
 @app.post("/api/resumes/upload-multiple")
@@ -3655,8 +4352,9 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
             candidate_id = f"upload_{parsed['email']}_{int(datetime.now().timestamp())}"
 
             resume_text = parsed.get('raw_text', '') or parsed.get('summary', '')
-            ai_score = 50.0
+            ai_score = None
             job_category = 'General'
+            job_subcategory = ''
             summary = parsed.get('summary', '')
 
             if resume_text.strip():
@@ -3666,8 +4364,9 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
                         timeout=AI_ANALYSIS_TIMEOUT
                     )
                     if ai_analysis:
-                        ai_score = ai_analysis.get('quality_score', 50.0)
+                        ai_score = ai_analysis.get('quality_score')
                         job_category = ai_analysis.get('job_category', 'General')
+                        job_subcategory = ai_analysis.get('job_subcategory', '')
                         summary = ai_analysis.get('summary', summary)
                         if ai_analysis.get('skills'):
                             existing_skills = set(s.lower() for s in parsed.get('skills', []))
@@ -3679,8 +4378,33 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
                             parsed['skills'] = merged_skills
                         if ai_analysis.get('experience'):
                             parsed['experience'] = ai_analysis['experience']
+                        # Prefer AI-extracted contact info if parser missed it
+                        if not parsed.get('phone') and ai_analysis.get('phone'):
+                            parsed['phone'] = ai_analysis['phone']
+                        if not parsed.get('location') and ai_analysis.get('location'):
+                            parsed['location'] = ai_analysis['location']
+                        if not parsed.get('name', '').strip() or parsed.get('name') == 'Unknown':
+                            if ai_analysis.get('name'):
+                                parsed['name'] = ai_analysis['name']
+                        if ai_analysis.get('certifications'):
+                            parsed['certifications'] = ai_analysis['certifications']
+                        if ai_analysis.get('languages'):
+                            parsed['languages'] = ai_analysis['languages']
+                        if ai_analysis.get('linkedin'):
+                            parsed['linkedin'] = ai_analysis['linkedin']
                 except Exception as e:
-                    logger.debug(f"Non-critical: AI analysis merge failed: {e}")
+                    logger.warning(f"AI analysis failed for multi-upload {filename}: {e}")
+
+            # Calculate fallback score if AI didn't return one
+            if ai_score is None:
+                skills_count = len(parsed.get('skills', []))
+                exp = parsed.get('experience', 0) or 0
+                if isinstance(exp, str):
+                    nums = re.findall(r'\d+', str(exp))
+                    exp = int(nums[0]) if nums else 0
+                has_edu = bool(parsed.get('education'))
+                ai_score = 25 + min(30, skills_count * 3) + min(25, exp * 3) + (10 if has_edu else 0)
+                ai_score = min(90, max(15, ai_score))
 
             if job_category == 'General' and parsed.get('skills'):
                 email_data = {'subject': filename, 'body': resume_text[:500]}
@@ -3703,7 +4427,7 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
                 'status': status,
                 'matchScore': round(ai_score, 1),
                 'job_category': job_category,
-                'job_subcategory': parsed.get('job_subcategory', ''),
+                'job_subcategory': job_subcategory or parsed.get('job_subcategory', ''),
                 'appliedDate': datetime.now().isoformat(),
                 'last_updated': datetime.now().isoformat(),
                 'raw_email_subject': f"Resume Upload: {filename}",
@@ -3868,7 +4592,7 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
         raise
     except Exception as e:
         logger.error(f"AI analysis error: {e}")
-        raise HTTPException(500, f"Error analyzing candidate: {str(e)}")
+        raise HTTPException(500, "Error analyzing candidate")
 
 
 @app.post("/api/ai/match-job-file")
@@ -4032,7 +4756,7 @@ async def match_candidates_to_job_file(
         raise
     except Exception as e:
         logger.error(f"Job file matching error: {e}")
-        raise HTTPException(500, f"Error matching candidates to job description: {str(e)}")
+        raise HTTPException(500, "Error matching candidates to job description")
 
 
 @app.post("/api/ai/match-job")
@@ -4169,7 +4893,7 @@ async def match_candidates_to_job_description(
         raise
     except Exception as e:
         logger.error(f"Job matching error: {e}")
-        raise HTTPException(500, f"Error matching candidates: {str(e)}")
+        raise HTTPException(500, "Error matching candidates")
 
 
 @app.post("/api/ai/compare-candidates")
@@ -4257,7 +4981,7 @@ async def compare_candidates(
         raise
     except Exception as e:
         logger.error(f"Comparison error: {e}")
-        raise HTTPException(500, f"Error comparing candidates: {str(e)}")
+        raise HTTPException(500, "Error comparing candidates")
 
 
 @app.post("/api/ai/chat")
@@ -4265,7 +4989,7 @@ async def ai_chat(
     message: str = Body(..., embed=True),
     include_candidates: bool = Body(True, embed=True),
     conversation_history: list = Body([], embed=True),
-    num_candidates: int = Body(10, embed=True),
+    num_candidates: int = Body(15, embed=True),
     current_user: dict = Depends(require_auth)
 ):
     """
@@ -4273,6 +4997,28 @@ async def ai_chat(
     2-STAGE APPROACH: Pre-filter candidates by query relevance → Send subset to AI
     3-TIER FALLBACK: Gemini → OpenAI → Rule-based
     """
+    # ── Input validation ──
+    if not message or not message.strip():
+        raise HTTPException(400, "Message cannot be empty")
+    message = message.strip()
+    if len(message) > 2000:
+        raise HTTPException(400, "Message too long (max 2000 characters)")
+    num_candidates = max(1, min(num_candidates, 50))  # Clamp 1-50
+    conversation_history = (conversation_history or [])[-10:]  # Keep last 10 turns max
+
+    # ── Simple rate limiting (10 requests per minute per user) ──
+    import time as _time
+    user_id = current_user.get("id", "anon")
+    if not hasattr(app.state, "_chat_rate_limits"):
+        app.state._chat_rate_limits = {}
+    now = _time.time()
+    user_hits = app.state._chat_rate_limits.get(user_id, [])
+    user_hits = [t for t in user_hits if now - t < 60]  # Keep last 60s
+    if len(user_hits) >= 10:
+        raise HTTPException(429, "Too many requests. Please wait a moment before sending another message.")
+    user_hits.append(now)
+    app.state._chat_rate_limits[user_id] = user_hits
+
     try:
         candidates_data = None
         context = None
@@ -4340,7 +5086,8 @@ async def ai_chat(
         except asyncio.TimeoutError:
             logger.warning(f"Gemini chat timeout (>{AI_TIMEOUT}s)")
         except Exception as gemini_err:
-            logger.warning(f"Gemini chat error: {gemini_err}")
+            import traceback as _tb
+            logger.warning(f"Gemini chat error: {gemini_err}\n{_tb.format_exc()}")
         
         # TIER 2: Try Local LLM (Ollama) — Free, for local dev
         try:
@@ -4480,7 +5227,22 @@ async def clear_search_history(current_user: dict = Depends(require_auth)):
         await asyncio.to_thread(db_service.clear_search_history)
         return {"status": "success", "message": "Search history cleared"}
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Clear search history error: {e}")
+        return {"status": "error", "message": "Failed to clear search history"}
+
+@app.delete("/api/search-history/{entry_id}")
+async def delete_search_entry(entry_id: str, current_user: dict = Depends(require_auth)):
+    """Delete a single search history entry"""
+    try:
+        deleted = await asyncio.to_thread(db_service.delete_search_entry, entry_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail=f"Search entry {entry_id} not found")
+        return {"status": "success", "message": f"Search entry {entry_id} deleted"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Delete search entry error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete search entry")
 
 # ── Pipeline Stats API ──────────────────────────────────────────────────
 @app.get("/api/stats/pipeline")
@@ -4699,7 +5461,7 @@ async def batch_import_candidates(
                                 # Email-parsed values take priority over LLM for contact info
                                 batch_candidates[idx].update({
                                     'job_category': analysis.get('job_category', 'General'),
-                                    'matchScore': analysis.get('quality_score', 50),
+                                    'matchScore': analysis.get('quality_score'),
                                     'skills': analysis.get('skills', []),
                                     'experience': analysis.get('experience', 0),
                                     'education': analysis.get('education', []),
@@ -4735,7 +5497,7 @@ async def batch_import_candidates(
         
     except Exception as e:
         logger.error(f"Batch import error: {e}")
-        raise HTTPException(500, f"Batch import failed: {str(e)}")
+        raise HTTPException(500, "Batch import failed")
 
 # LinkedIn Profile Import Endpoint (for browser extension)
 class LinkedInProfileImport(BaseModel):
@@ -4799,7 +5561,7 @@ async def import_linkedin_profile(profile: LinkedInProfileImport, current_user: 
             "source": profile.source,
             "skills": analysis.get('skills', profile.skills) if analysis else (profile.skills or []),
             "experience": profile.experience or 0,
-            "matchScore": analysis.get('quality_score', 50) if analysis else 50,
+            "matchScore": analysis.get('quality_score') if analysis else 0,
             "status": "new",
             "appliedDate": profile.scraped_at or datetime.now().isoformat(),
             "summary": profile.headline or "",
@@ -4833,7 +5595,7 @@ async def import_linkedin_profile(profile: LinkedInProfileImport, current_user: 
         
     except Exception as e:
         logger.error(f"LinkedIn import error: {e}")
-        raise HTTPException(500, f"Failed to import LinkedIn profile: {str(e)}")
+        raise HTTPException(500, "Failed to import LinkedIn profile")
 
 # Stream candidates endpoint for large exports
 @app.get("/api/candidates/stream")
@@ -4906,7 +5668,7 @@ async def match_candidates(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Error matching candidates: {str(e)}")
+        raise HTTPException(500, "Error matching candidates")
 
 @app.post("/api/matching/evaluate-candidate")
 async def evaluate_candidate(candidate_id: str, job_description_id: str, current_user: dict = Depends(require_auth)):
@@ -4942,7 +5704,7 @@ async def evaluate_candidate(candidate_id: str, job_description_id: str, current
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Error evaluating candidate: {str(e)}")
+        raise HTTPException(500, "Error evaluating candidate")
 
 # NOTE: Candidate management routes are defined earlier (line ~770) with proper database queries
 # Do not duplicate them here - removed duplicate empty routes
@@ -4971,7 +5733,7 @@ async def connect_email_account(request: EmailConnectRequest, current_user: dict
         
         return result
     except Exception as e:
-        raise HTTPException(500, f"Error connecting email: {str(e)}")
+        raise HTTPException(500, "Error connecting email")
 
 @app.post("/api/email/sync")
 async def sync_email_applications(request: EmailSyncRequest, current_user: dict = Depends(require_auth)):
@@ -5109,8 +5871,15 @@ async def sync_email_applications(request: EmailSyncRequest, current_user: dict 
                             )
                         except asyncio.TimeoutError:
                             logger.warning(f"⏱️ Local AI timeout for {candidate_data['name']} - using smart defaults")
+                            # Calculate fallback from available data instead of hardcoding 45
+                            skills = candidate_data.get('skills', [])
+                            exp = candidate_data.get('experience', 0) or 0
+                            if isinstance(exp, str):
+                                nums = re.findall(r'\d+', str(exp))
+                                exp = int(nums[0]) if nums else 0
+                            calc_score = 25 + min(30, (len(skills) if isinstance(skills, list) else 3) * 3) + min(25, exp * 3)
                             ai_analysis = {
-                                'quality_score': 45,
+                                'quality_score': min(90, max(15, calc_score)),
                                 'job_category': 'General'
                             }
                         except Exception:
@@ -5122,7 +5891,7 @@ async def sync_email_applications(request: EmailSyncRequest, current_user: dict 
                             candidate_data['experience'] = ai_analysis.get('experience', candidate_data['experience'])
                             candidate_data['education'] = ai_analysis.get('education', candidate_data['education'])
                             candidate_data['job_category'] = ai_analysis.get('job_category', 'General')
-                            candidate_data['matchScore'] = ai_analysis.get('quality_score', 50)
+                            candidate_data['matchScore'] = ai_analysis.get('quality_score')
                             candidate_data['summary'] = ai_analysis.get('summary', candidate_data.get('summary', ''))
                             ai_processed_count += 1
                     
@@ -5164,7 +5933,7 @@ async def sync_email_applications(request: EmailSyncRequest, current_user: dict 
         import traceback
         logger.error(f"Error syncing emails: {str(e)}")
         logger.error(traceback.format_exc())
-        raise HTTPException(500, f"Error syncing emails: {str(e)}")
+        raise HTTPException(500, "Error syncing emails")
 
 @app.post("/api/auth/auto-authenticate")
 async def auto_authenticate(current_user: dict = Depends(require_auth)):
@@ -5218,7 +5987,7 @@ async def auto_authenticate(current_user: dict = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Auto-authentication error: {str(e)}")
-        raise HTTPException(500, f"Error during auto-authentication: {str(e)}")
+        raise HTTPException(500, "Error during auto-authentication")
 
 
 async def trigger_reset_and_reparse(email_address: str, incremental: bool = False):
@@ -5476,7 +6245,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
                                 timeout=AI_ANALYSIS_TIMEOUT
                             )
                             if ai_analysis and ai_analysis.get('quality_score', 0) > 0:
-                                score = ai_analysis.get('quality_score', 50)
+                                score = ai_analysis.get('quality_score')
                                 candidate.update({
                                     'job_category': ai_analysis.get('job_category', 'General'),
                                     'matchScore': score,
@@ -5723,7 +6492,7 @@ async def oauth2_callback_get(code: str = None, error: str = None, error_descrip
 
 
 @app.get("/api/email/oauth2/url")
-async def get_oauth2_url_simple(request: Request = None):
+async def get_oauth2_url_simple(request: Request = None, current_user: dict = Depends(require_auth)):
     """
     Get Microsoft OAuth2 authorization URL using config from .env
     Simple endpoint - no parameters needed. Auto-detects production redirect URI.
@@ -5733,8 +6502,6 @@ async def get_oauth2_url_simple(request: Request = None):
         tenant_id = os.getenv('MICROSOFT_TENANT_ID', 'common')
         # Use env var if set, otherwise auto-detect from FRONTEND_URL or default to production Firebase
         default_redirect = 'https://efforts-recruitment.web.app/auth/callback'
-        if os.getenv('ENVIRONMENT') != 'production':
-            default_redirect = 'http://localhost:3000/auth/callback'
         redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', os.getenv('OAUTH_REDIRECT_URI', default_redirect))
         
         if not client_id:
@@ -5751,7 +6518,7 @@ async def get_oauth2_url_simple(request: Request = None):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Error generating authorization URL: {str(e)}")
+        raise HTTPException(500, "Error generating authorization URL")
 
 @app.get("/api/email/oauth2/authorize")
 async def get_oauth2_authorization_url(provider: str, redirect_uri: str):
@@ -5787,7 +6554,7 @@ async def get_oauth2_authorization_url(provider: str, redirect_uri: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Error generating authorization URL: {str(e)}")
+        raise HTTPException(500, "Error generating authorization URL")
 
 @app.post("/api/email/oauth2/callback")
 async def oauth2_callback(request: OAuth2CallbackRequest):
@@ -5849,7 +6616,7 @@ async def oauth2_callback(request: OAuth2CallbackRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Error processing OAuth2 callback: {str(e)}")
+        raise HTTPException(500, "Error processing OAuth2 callback")
 
 @app.post("/api/email/sync-now")
 async def sync_emails_now(current_user: dict = Depends(require_auth)):
@@ -5882,7 +6649,7 @@ async def sync_emails_now(current_user: dict = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Sync error: {str(e)}")
-        raise HTTPException(500, f"Error starting sync: {str(e)}")
+        raise HTTPException(500, "Error starting sync")
 
 @app.post("/api/email/deep-sync")
 async def deep_sync_emails(current_user: dict = Depends(require_auth)):
@@ -5935,7 +6702,7 @@ async def deep_sync_emails(current_user: dict = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Deep sync error: {str(e)}")
-        raise HTTPException(500, f"Error starting deep sync: {str(e)}")
+        raise HTTPException(500, "Error starting deep sync")
 
 @app.post("/api/email/cross-verify")
 async def cross_verify_inbox(current_user: dict = Depends(require_auth)):
@@ -5974,7 +6741,7 @@ async def cross_verify_inbox(current_user: dict = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Cross-verify error: {str(e)}")
-        raise HTTPException(500, f"Error starting cross-verify: {str(e)}")
+        raise HTTPException(500, "Error starting cross-verify")
 
 
 async def _backfill_resumes_task(email_address: str):
@@ -6255,7 +7022,7 @@ async def backfill_resumes(current_user: dict = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Backfill error: {str(e)}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, "Internal server error")
 
 
 @app.get("/api/email/backfill-debug")
@@ -6335,7 +7102,7 @@ async def deduplicate_candidates(current_user: dict = Depends(require_auth)):
         return result
     except Exception as e:
         logger.error(f"Dedup error: {str(e)}")
-        raise HTTPException(500, f"Error deduplicating: {str(e)}")
+        raise HTTPException(500, "Error deduplicating")
 
 
 @app.post("/api/cron/sync")
@@ -6491,7 +7258,7 @@ async def get_sync_status(current_user: dict = Depends(require_auth)):
             'candidate_count': 0,
             'sync_interval_minutes': int(os.getenv('SYNC_INTERVAL_MINUTES', '30')),
             'status': 'error',
-            'error': str(e)
+            'error': 'Failed to fetch sync status'
         }
 
 
@@ -6558,14 +7325,31 @@ async def process_single_email(message_id: str, graph_service):
                 if ai_analysis:
                     candidate.update({
                         'job_category': ai_analysis.get('job_category', 'General'),
-                        'matchScore': ai_analysis.get('quality_score', 50),
+                        'matchScore': ai_analysis.get('quality_score'),
                         'summary': ai_analysis.get('summary', candidate.get('summary', '')),
                         'skills': ai_analysis.get('skills', candidate.get('skills', [])),
-                        'experience': ai_analysis.get('experience', candidate.get('experience', 0))
+                        'experience': ai_analysis.get('experience', candidate.get('experience', 0)),
+                        'phone': ai_analysis.get('phone', '') or candidate.get('phone', ''),
+                        'location': ai_analysis.get('location', '') or candidate.get('location', ''),
                     })
+                    if ai_analysis.get('name') and (not candidate.get('name') or candidate.get('name') == 'Unknown'):
+                        candidate['name'] = ai_analysis['name']
+                    score = ai_analysis.get('quality_score')
+                    if score:
+                        candidate['status'] = 'Strong' if score >= 70 else ('Partial' if score >= 40 else 'Reject')
             except Exception as ai_err:
                 logger.warning(f"AI analysis failed: {str(ai_err)[:50]}")
-                candidate['matchScore'] = 50
+                # Calculate fallback instead of hardcoding 50
+                skills = candidate.get('skills', [])
+                exp = candidate.get('experience', 0) or 0
+                if isinstance(exp, str):
+                    nums = re.findall(r'\d+', str(exp))
+                    exp = int(nums[0]) if nums else 0
+                if skills or exp:
+                    fallback = 25 + min(30, len(skills) * 3) + min(25, exp * 3)
+                    candidate['matchScore'] = min(90, max(15, fallback))
+                else:
+                    candidate['matchScore'] = 30
         
         # Save to database
         if existing:
@@ -6638,8 +7422,8 @@ async def email_webhook(request: Request):
         return {"status": "processed"}
         
     except Exception as e:
-        logger.error(f"Webhook error: {str(e)}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Webhook error: {str(e)}", exc_info=True)
+        return {"status": "error", "message": "Internal webhook processing error"}
 
 
 @app.post("/api/email/subscribe-webhook")
@@ -6678,7 +7462,7 @@ async def subscribe_to_email_webhook(current_user: dict = Depends(require_auth))
                 "notificationUrl": webhook_url,
                 "resource": "me/mailFolders/inbox/messages",
                 "expirationDateTime": expiration,
-                "clientState": "recruitment-tool-secret"
+                "clientState": os.getenv('WEBHOOK_CLIENT_STATE', 'recruitment-tool-secret')
             }
             
             response = await client.post(
@@ -6709,7 +7493,7 @@ async def subscribe_to_email_webhook(current_user: dict = Depends(require_auth))
         raise
     except Exception as e:
         logger.error(f"Subscription error: {str(e)}")
-        raise HTTPException(500, f"Error creating webhook subscription: {str(e)}")
+        raise HTTPException(500, "Error creating webhook subscription")
 
 
 @app.post("/api/email/outlook/connect")
@@ -6761,7 +7545,7 @@ async def get_outlook_auth_url(
             'authorization_url': auth_url
         }
     except Exception as e:
-        raise HTTPException(500, f"Error generating auth URL: {str(e)}")
+        raise HTTPException(500, "Error generating auth URL")
 
 @app.post("/api/email/outlook/sync")
 async def sync_outlook_applications(
@@ -6782,7 +7566,7 @@ async def sync_outlook_applications(
             'message': 'Use /api/email/sync with Outlook credentials'
         }
     except Exception as e:
-        raise HTTPException(500, f"Error syncing Outlook: {str(e)}")
+        raise HTTPException(500, "Error syncing Outlook")
 
 @app.post("/api/email/setup-auto-sync")
 async def setup_auto_sync(
@@ -6812,7 +7596,7 @@ async def setup_auto_sync(
         
         return result
     except Exception as e:
-        raise HTTPException(500, f"Error setting up auto-sync: {str(e)}")
+        raise HTTPException(500, "Error setting up auto-sync")
 
 @app.get("/api/email/supported-providers")
 async def get_supported_email_providers():
@@ -6886,7 +7670,7 @@ async def get_oauth_automation_status(current_user: dict = Depends(require_auth)
         return {
             'is_configured': False,
             'auth_status': 'error',
-            'error': str(e)
+            'error': 'Failed to check OAuth status'
         }
 
 
@@ -6922,7 +7706,7 @@ async def force_token_refresh(current_user: dict = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Error refreshing token: {e}")
-        raise HTTPException(500, f"Token refresh error: {str(e)}")
+        raise HTTPException(500, "Token refresh error")
 
 
 @app.post("/api/oauth/sync")
@@ -6955,7 +7739,7 @@ async def trigger_oauth_sync(current_user: dict = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Error triggering OAuth sync: {e}")
-        raise HTTPException(500, f"Sync error: {str(e)}")
+        raise HTTPException(500, "Sync error")
 
 
 @app.get("/api/oauth/stats")
@@ -6975,7 +7759,7 @@ async def get_oauth_stats(current_user: dict = Depends(require_auth)):
                 'message': 'OAuth automation not initialized'
             }
     except Exception as e:
-        return {'status': 'error', 'message': str(e)}
+        return {'status': 'error', 'message': 'Failed to fetch OAuth stats'}
 
 
 @app.post("/api/oauth/start-automation")
@@ -6995,7 +7779,7 @@ async def start_oauth_automation(current_user: dict = Depends(require_auth)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, "Internal server error")
 
 
 @app.post("/api/oauth/stop-automation")
@@ -7016,7 +7800,7 @@ async def stop_oauth_automation(current_user: dict = Depends(require_auth)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, "Internal server error")
 
 
 @app.post("/api/email/manual-sync")
@@ -7088,7 +7872,7 @@ async def manual_email_sync(current_user: dict = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Manual sync error: {e}")
-        raise HTTPException(500, f"Manual sync error: {str(e)}")
+        raise HTTPException(500, "Manual sync error")
 
 
 @app.post("/api/email/smart-refetch")
@@ -7261,7 +8045,7 @@ async def smart_email_refetch(current_user: dict = Depends(require_auth)):
                                 timeout=45
                             )
                             if ai_analysis and ai_analysis.get('quality_score', 0) > 0:
-                                score = ai_analysis.get('quality_score', 50)
+                                score = ai_analysis.get('quality_score')
                                 candidate.update({
                                     'job_category': ai_analysis.get('job_category', 'General'),
                                     'matchScore': score,
@@ -7337,7 +8121,7 @@ async def smart_email_refetch(current_user: dict = Depends(require_auth)):
         raise
     except Exception as e:
         logger.error(f"Smart re-fetch error: {e}")
-        raise HTTPException(500, f"Smart re-fetch error: {str(e)}")
+        raise HTTPException(500, "Smart re-fetch error")
 
 
 # Authentication endpoints
@@ -7405,13 +8189,13 @@ async def login(request: LoginRequest):
             # Evict stale entries if dict grows too large
             if len(_login_attempts) > 10000:
                 _login_attempts.clear()
-            raise HTTPException(401, str(e))
+            raise HTTPException(401, "Invalid credentials")
         
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Login error: {e}")
-        raise HTTPException(500, f"Login error: {str(e)}")
+        raise HTTPException(500, "Login failed. Please try again later.")
 
 @app.post("/api/auth/register")
 async def register(request: RegisterRequest):
@@ -7442,12 +8226,12 @@ async def register(request: RegisterRequest):
         return result
         
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e) if str(e) else "Invalid registration data")
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Registration error: {e}")
-        raise HTTPException(500, f"Registration error: {str(e)}")
+        raise HTTPException(500, "Registration error")
 
 @app.get("/api/auth/me")
 async def get_current_user(current_user: dict = Depends(require_auth)):
@@ -7482,10 +8266,10 @@ async def update_profile(profile: UserProfile, current_user: dict = Depends(requ
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e) if str(e) else "Invalid profile data")
     except Exception as e:
         logger.error(f"Profile update error: {e}")
-        raise HTTPException(500, f"Error updating profile: {str(e)}")
+        raise HTTPException(500, "Error updating profile")
 
 @app.put("/api/users/password")
 async def update_password(password_update: PasswordUpdate, current_user: dict = Depends(require_auth)):
@@ -7507,16 +8291,130 @@ async def update_password(password_update: PasswordUpdate, current_user: dict = 
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(400, str(e))
+        raise HTTPException(400, str(e) if str(e) else "Invalid password data")
     except Exception as e:
         logger.error(f"Password update error: {e}")
-        raise HTTPException(500, f"Error updating password: {str(e)}")
+        raise HTTPException(500, "Error updating password")
 
 # Candidate management endpoints - status update only, other routes defined earlier
 VALID_CANDIDATE_STATUSES = {'New', 'Reviewed', 'Shortlisted', 'Interviewing', 'Offered', 'Hired', 'Rejected', 'Withdrawn', 'Strong', 'Partial', 'Reject'}
 
 class CandidateStatusUpdate(BaseModel):
     status: str  # 'Shortlisted', 'Strong', 'Partial', 'Reject', 'Interviewing', 'Offered', 'Hired', 'Rejected'
+
+
+async def _send_rejection_email(candidate: Dict):
+    """Send a professional, empathetic rejection email to a candidate via Microsoft Graph.
+    The email is polite, encourages future applications, and matches the Efforts Solutions brand."""
+    try:
+        candidate_email = candidate.get('email', '')
+        candidate_name = candidate.get('name', 'Candidate')
+        if not candidate_email:
+            logger.warning(f"⚠️ Cannot send rejection email - no email for {candidate_name}")
+            return {'status': 'skipped', 'reason': 'no_email'}
+
+        client_id = os.getenv('MICROSOFT_CLIENT_ID')
+        client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
+        tenant_id = os.getenv('MICROSOFT_TENANT_ID')
+        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or 'hr@effortz.com'
+        company_name = os.getenv('COMPANY_NAME', _settings.company_name) or 'Efforts Solutions'
+        recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name) or 'Recruitment Team'
+
+        if not all([client_id, client_secret, tenant_id]):
+            logger.warning("⚠️ Cannot send rejection email - Microsoft Graph credentials not configured")
+            return {'status': 'skipped', 'reason': 'no_credentials'}
+
+        job_title = candidate.get('jobCategory', '') or candidate.get('job_category', '') or ''
+        job_sub = candidate.get('jobSubcategory', '') or candidate.get('job_subcategory', '') or ''
+        display_title = job_sub if job_sub else job_title
+
+        # Personalised subject
+        subject = "Application Update - Efforts Solutions"
+        if display_title:
+            subject = f"Application Update for {display_title} - Efforts Solutions"
+
+        # Professional HTML rejection email — personalised with name and role
+        first_name = candidate_name.split()[0] if candidate_name else 'Candidate'
+        role_mention = f' for the {display_title} position' if display_title else ''
+        body_html = f"""
+<div style="font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #000000; max-width: 650px;">
+  <p style="margin: 0 0 12px 0;">Hi {first_name},</p>
+  <p style="margin: 0 0 12px 0;">&nbsp;</p>
+  <p style="margin: 0 0 12px 0;">Thank you for taking the time to apply{role_mention} at {company_name}. We truly appreciate your interest in joining our team and the effort you put into your application.</p>
+  <p style="margin: 0 0 12px 0;">After careful review, we have decided to move forward with other candidates whose profile more closely matches the current requirements for this role. Please know that this decision does not diminish the value of your experience and skills.</p>
+  <p style="margin: 0 0 12px 0;">We would be happy to consider you for future opportunities that align better with your expertise. We encourage you to keep an eye on our openings and apply again in the future.</p>
+  <p style="margin: 0 0 12px 0;">We wish you all the best in your career journey and future endeavours.</p>
+  <p style="margin: 0 0 4px 0;">&nbsp;</p>
+  <p style="margin: 0; color: #808080;">Warm Regards,</p>
+  <p style="margin: 0 0 4px 0;">&nbsp;</p>
+  <p style="margin: 0;"><strong>{recruiter_name}</strong></p>
+  <p style="margin: 0; color: #808080;">HR &amp; Admin Department</p>
+  <p style="margin: 0; color: #808080;">{company_name}, M12 Burooj Tower, Al Khalidhiya, Abu Dhabi, UAE</p>
+  <p style="margin: 0; color: #808080;">T: +971 2 546 8880 | E: <a href="mailto:hr@effortz.com" style="color: #0563C1;">hr@effortz.com</a> | W: <a href="https://effortz.com" style="color: #0563C1;">effortz.com</a> | <a href="https://safeye.ai" style="color: #0563C1;">safeye.ai</a></p>
+  <p style="margin: 6px 0 0 0;">
+    <strong>ICV Certified</strong> &#9989; | <strong>ISO 9001</strong> &#9989; | <strong>ISO/IEC 27001</strong> &#9989; | <strong>ISO 45001</strong> &#9989; | <strong>MCC Approved</strong> &#9989;
+  </p>
+  <p style="margin: 4px 0 0 0; font-size: 12px; color: #808080;">Enterprise Solutions | IT Outsourcing | Digital Solutions | ICT/ELV Managed Services | AI/ML/IOT/ERP/ECM/BPM/OCR/RPA</p>
+  <hr style="border: none; border-top: 2px solid #1a3c6e; margin: 12px 0 8px 0;" />
+  <p style="margin: 0; font-size: 10px; color: #999999;">This email and its contents are confidential and intended solely for the recipient. Sharing this message without the sender's written consent is strictly prohibited. If received in error, please reply and delete it immediately.</p>
+</div>"""
+
+        # Setup Graph service and authenticate (same logic as shortlist email)
+        graph = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=sender_email)
+        token_storage = get_token_storage()
+        token_data = token_storage.get_token(sender_email)
+
+        authenticated = False
+
+        # Strategy 1: App credentials
+        if not authenticated:
+            try:
+                app_result = await graph.authenticate_with_credentials()
+                if app_result.get('status') == 'success':
+                    authenticated = True
+            except Exception:
+                pass
+
+        # Strategy 2: Delegated token
+        if not authenticated and token_data and token_data.get('access_token'):
+            if token_data.get('is_expired') and token_data.get('refresh_token'):
+                refresh_result = await graph.refresh_access_token(token_data['refresh_token'])
+                if refresh_result['status'] == 'success':
+                    token_storage.save_token(
+                        email=sender_email,
+                        access_token=refresh_result['access_token'],
+                        refresh_token=refresh_result.get('refresh_token', token_data['refresh_token']),
+                        expires_in=refresh_result['expires_in'],
+                        auth_type='delegated'
+                    )
+                    token_data = token_storage.get_token(sender_email)
+            if token_data and token_data.get('access_token') and not token_data.get('is_expired'):
+                graph.access_token = token_data['access_token']
+                graph.auth_type = token_data.get('auth_type', 'delegated')
+                graph.token_expiry = datetime.now() + timedelta(hours=1)
+                authenticated = True
+
+        if not authenticated:
+            return {'status': 'failed', 'reason': 'no_token'}
+
+        result = await graph.send_mail(
+            to_email=candidate_email,
+            subject=subject,
+            body=body_html,
+            content_type='HTML'
+        )
+
+        if result.get('status') == 'success':
+            logger.warning(f"✅ Rejection email sent to {candidate_name} ({candidate_email})")
+        else:
+            logger.warning(f"⚠️ Failed to send rejection email to {candidate_email}: {result.get('message')}")
+
+        return result
+
+    except Exception as e:
+        logger.error(f"❌ Error sending rejection email: {str(e)}")
+        return {'status': 'error', 'message': str(e)}
+
 
 async def _send_shortlist_email(candidate: Dict):
     """Send smart shortlist notification email to candidate via Microsoft Graph.
@@ -7532,7 +8430,7 @@ async def _send_shortlist_email(candidate: Dict):
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID')
-        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
+        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or 'hr@effortz.com'
         company_name = os.getenv('COMPANY_NAME', _settings.company_name) or 'Efforts Solutions'
         recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name) or 'Recruitment Team'
 
@@ -7569,14 +8467,23 @@ async def _send_shortlist_email(candidate: Dict):
         details_requested.append(f"Willingness to work from {work_office}")
         details_requested.append("Your current salary and expected salary for this role")
 
-        bullets_html = "".join([f"<p style='margin: 4px 0 4px 10px;'>* {d}</p>" for d in details_requested])
+        bullets_html = "".join([f"<p style='margin: 4px 0 4px 10px;'>&bull; {d}</p>" for d in details_requested])
 
-        # Professional HTML email matching Efforts Solutions signature
+        # Build personalised opening sentence matching the reference template
+        # Example: "currently we are looking for immediate an .net core resource for my client office which is based in Abu Dhabi location"
+        if display_title and is_uae:
+            opening = f"Thank you for your interest, currently we are looking for immediate {display_title} resource for our client office which is based in Abu Dhabi location. If interested, could you please share the following details with us:"
+        elif display_title:
+            opening = f"Thank you for your interest, currently we are looking for {display_title} resource for our office based in Chennai. If interested, could you please share the following details with us:"
+        else:
+            opening = "Thank you for your interest. To proceed further, could you please share the following details with us:"
+
+        # Professional HTML email matching Efforts Solutions signature — personalised with role + location
         body_html = f"""
 <div style="font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #000000; max-width: 650px;">
   <p style="margin: 0 0 12px 0;">Hi,</p>
   <p style="margin: 0 0 12px 0;">&nbsp;</p>
-  <p style="margin: 0 0 12px 0;">Thank you for your interest. To proceed further, could you please share the following details with us:</p>
+  <p style="margin: 0 0 12px 0;">{opening}</p>
   <p style="margin: 0 0 4px 0;">&nbsp;</p>
   {bullets_html}
   <p style="margin: 12px 0 4px 0;">&nbsp;</p>
@@ -7586,9 +8493,9 @@ async def _send_shortlist_email(candidate: Dict):
   <p style="margin: 0; color: #808080;">Best Regards,</p>
   <p style="margin: 0 0 4px 0;">&nbsp;</p>
   <p style="margin: 0 0 4px 0;">&nbsp;</p>
-  <p style="margin: 0;"><strong>Shenaz Farhana</strong></p>
+  <p style="margin: 0;"><strong>{recruiter_name}</strong></p>
   <p style="margin: 0; color: #808080;">HR &amp; Admin Department</p>
-  <p style="margin: 0; color: #808080;">Efforts Solutions IT, M12 Burooj Tower, Al Khalidhiya, Abu Dhabi, UAE</p>
+  <p style="margin: 0; color: #808080;">{company_name}, M12 Burooj Tower, Al Khalidhiya, Abu Dhabi, UAE</p>
   <p style="margin: 0; color: #808080;">T: +971 2 546 8880 | E: <a href="mailto:hr@effortz.com" style="color: #0563C1;">hr@effortz.com</a> | W: <a href="https://effortz.com" style="color: #0563C1;">effortz.com</a> | <a href="https://safeye.ai" style="color: #0563C1;">safeye.ai</a></p>
   <p style="margin: 6px 0 0 0;">
     <strong>ICV Certified</strong> &#9989; | <strong>ISO 9001</strong> &#9989; | <strong>ISO/IEC 27001</strong> &#9989; | <strong>ISO 45001</strong> &#9989; | <strong>MCC Approved</strong> &#9989;
@@ -7605,7 +8512,21 @@ async def _send_shortlist_email(candidate: Dict):
 
         authenticated = False
 
-        if token_data and token_data.get('access_token'):
+        # Strategy 1: Try application credentials FIRST (most reliable for server-side sending)
+        # This works when Mail.Send APPLICATION permission is granted in Azure AD
+        if not authenticated:
+            try:
+                app_result = await graph.authenticate_with_credentials()
+                if app_result.get('status') == 'success':
+                    logger.info(f"✅ Email auth: app credentials for {sender_email}")
+                    authenticated = True
+                else:
+                    logger.info(f"ℹ️ App credentials unavailable: {app_result.get('error', 'unknown')}")
+            except Exception as app_err:
+                logger.info(f"ℹ️ App credentials error: {app_err}")
+
+        # Strategy 2: Try delegated token (user's OAuth token)
+        if not authenticated and token_data and token_data.get('access_token'):
             # Check if token is expired and try to refresh
             if token_data.get('is_expired') and token_data.get('refresh_token'):
                 logger.info("🔄 Token expired, refreshing before sending email...")
@@ -7627,20 +8548,6 @@ async def _send_shortlist_email(candidate: Dict):
                 graph.auth_type = token_data.get('auth_type', 'delegated')
                 graph.token_expiry = datetime.now() + timedelta(hours=1)
                 authenticated = True
-
-        # Fallback: Use application credentials (client_credentials flow)
-        # This works when Mail.Send APPLICATION permission is granted in Azure AD
-        if not authenticated:
-            logger.warning("🔑 No delegated token, trying application credentials (Mail.Send app permission)...")
-            try:
-                app_result = await graph.authenticate_with_credentials()
-                if app_result.get('status') == 'success':
-                    logger.warning(f"✅ Authenticated via app credentials for {sender_email}")
-                    authenticated = True
-                else:
-                    logger.warning(f"⚠️ App credentials auth failed: {app_result.get('error')}")
-            except Exception as app_err:
-                logger.warning(f"⚠️ App credentials auth error: {app_err}")
 
         if not authenticated:
             logger.warning("⚠️ No auth method available for sending email. Check delegated token or app permissions.")
@@ -7677,6 +8584,9 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
         if status_update.status not in VALID_CANDIDATE_STATUSES:
             raise HTTPException(400, f"Invalid status '{status_update.status}'. Must be one of: {', '.join(sorted(VALID_CANDIDATE_STATUSES))}")
 
+        # AUDIT LOG: Record who changed what status and when
+        logger.info(f"🔒 STATUS CHANGE AUDIT: candidate={candidate_id} new_status='{status_update.status}' user='{current_user.get('username', 'unknown')}' timestamp={datetime.utcnow().isoformat()}")
+
         # Persist status in database
         updated = await asyncio.to_thread(
             db_service.update_candidate_status,
@@ -7705,6 +8615,27 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
             else:
                 email_result = {'status': 'skipped', 'reason': 'candidate_not_found'}
 
+        # Auto-send rejection email when candidate is rejected
+        if status_update.status.lower() in ('rejected', 'reject'):
+            candidate = await asyncio.to_thread(db_service.get_candidate_by_id, candidate_id)
+            if candidate:
+                try:
+                    email_result = await _send_rejection_email(candidate)
+                    logger.warning(f"📧 Rejection email result for {candidate.get('name','?')}: {email_result}")
+                except Exception as email_err:
+                    logger.error(f"❌ Rejection email error: {email_err}")
+                    email_result = {'status': 'error', 'message': str(email_err)}
+            else:
+                email_result = {'status': 'skipped', 'reason': 'candidate_not_found'}
+
+        # Persist to GCS immediately so status survives redeploys
+        if _settings.is_production:
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, backup_db_to_gcs)
+            except Exception as gcs_err:
+                logger.warning(f"⚠️ Post-status-update GCS backup failed (non-fatal): {gcs_err}")
+
         return {
             'status': 'success',
             'message': f'Candidate {candidate_id} status updated to {status_update.status}',
@@ -7716,7 +8647,7 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
         raise
     except Exception as e:
         logger.error(f"Status update error: {str(e)}")
-        raise HTTPException(500, f"Error updating candidate status: {str(e)}")
+        raise HTTPException(500, "Error updating candidate status")
 
 
 # ============================================================================
@@ -7803,7 +8734,7 @@ async def test_email_send(current_user: dict = Depends(require_auth)):
 
     except Exception as e:
         logger.error(f"Test email error: {e}")
-        return {'status': 'error', 'message': str(e)}
+        return {'status': 'error', 'message': 'Email sending failed. Check server logs for details.'}
 
 
 # ============================================================================
@@ -7905,7 +8836,7 @@ Return JSON:
         }
     except Exception as e:
         logger.error(f"Email template generation error: {e}")
-        raise HTTPException(500, f"Error generating email template: {str(e)}")
+        raise HTTPException(500, "Error generating email template")
 
 
 @app.post("/api/candidates/bulk-shortlist")
@@ -7919,6 +8850,9 @@ async def bulk_shortlist_candidates(
     so every candidate gets a fully branded, location-aware, personalized email.
     """
     try:
+        # AUDIT LOG: Record bulk shortlist request
+        logger.info(f"🔒 BULK SHORTLIST AUDIT: count={len(request.candidate_ids)} user='{current_user.get('username', 'unknown')}' send_emails={request.send_emails} timestamp={datetime.utcnow().isoformat()} ids={request.candidate_ids[:10]}{'...' if len(request.candidate_ids) > 10 else ''}")
+
         results = []
         shortlisted = 0
         emails_sent = 0
@@ -7990,7 +8924,7 @@ async def bulk_shortlist_candidates(
         }
     except Exception as e:
         logger.error(f"Bulk shortlist error: {e}")
-        raise HTTPException(500, f"Error in bulk shortlist: {str(e)}")
+        raise HTTPException(500, "Error in bulk shortlist")
 
 
 @app.post("/api/candidates/reset-shortlist")
@@ -8017,7 +8951,29 @@ async def reset_all_shortlisted(current_user: dict = Depends(require_auth)):
         return {"status": "success", "reset_count": count, "candidates": [{"id": r[0], "name": r[1]} for r in rows]}
     except Exception as e:
         logger.error(f"Reset shortlist error: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, "Internal server error")
+
+
+@app.get("/api/audit/shortlist-log")
+async def get_shortlist_audit_log(current_user: dict = Depends(require_auth)):
+    """Return all currently-shortlisted candidates with their shortlisted_at timestamp for audit purposes."""
+    try:
+        def _get_log():
+            with db_service.get_connection() as conn:
+                cursor = conn.execute("""
+                    SELECT id, name, email, status, shortlisted_at, last_updated
+                    FROM candidates
+                    WHERE status = 'Shortlisted' AND is_active = 1
+                    ORDER BY shortlisted_at DESC NULLS LAST
+                """)
+                rows = cursor.fetchall()
+                cols = [desc[0] for desc in cursor.description]
+                return [dict(zip(cols, row)) for row in rows]
+        log = await asyncio.to_thread(_get_log)
+        return {"status": "success", "count": len(log), "shortlisted": log}
+    except Exception as e:
+        logger.error(f"Shortlist audit log error: {e}")
+        raise HTTPException(500, "Internal server error")
 
 
 # NOTE: Resume download route is defined earlier (line ~953) with proper database query
@@ -8039,6 +8995,158 @@ _ai_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai_worker")
 # Bounded to 100 entries to prevent memory leaks from crashed analyses
 _analysis_in_progress: dict = {}  # candidate_id -> asyncio.Event
 _MAX_CONCURRENT_ANALYSES = 100
+
+
+@app.post("/api/candidates/{candidate_id}/rescore")
+async def rescore_single_candidate(candidate_id: str, current_user: dict = Depends(require_auth)):
+    """
+    Re-run Gemini AI scoring for a single candidate.
+    Updates matchScore, jobCategory, skills, experience in the database.
+    Called when user clicks 'Refresh' on candidate detail page.
+    """
+    try:
+        def _get_candidate_for_rescore():
+            with db_service.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "SELECT id, name, email, skills, summary, education, work_history, "
+                    "experience, resume_text, match_score, job_category "
+                    "FROM candidates WHERE id = ? AND is_active = 1",
+                    (candidate_id,),
+                )
+                return cursor.fetchone()
+
+        row = await asyncio.to_thread(_get_candidate_for_rescore)
+        if not row:
+            raise HTTPException(404, "Candidate not found")
+
+        cid, name, email, skills_json, summary, education, work_history, experience, resume_text, old_score, old_category = row
+
+        # Build analysis text — prefer resume_text from PDF
+        text_parts = []
+        if resume_text and len(str(resume_text).strip()) > 50:
+            text_parts.append(str(resume_text)[:3000])
+        else:
+            if name and name != "Unknown":
+                text_parts.append(f"Name: {name}")
+            if summary:
+                text_parts.append(f"Summary: {summary}")
+            try:
+                skills = json.loads(skills_json) if isinstance(skills_json, str) else (skills_json or [])
+                if skills and isinstance(skills, list) and skills != ["R"]:
+                    text_parts.append(f"Skills: {', '.join(skills)}")
+            except Exception:
+                skills = []
+            if education:
+                text_parts.append(f"Education: {education}")
+            if work_history:
+                try:
+                    wh = json.loads(work_history) if isinstance(work_history, str) else work_history
+                    for job in (wh if isinstance(wh, list) else []):
+                        if isinstance(job, dict):
+                            text_parts.append(f"Work: {job.get('title', '')} at {job.get('company', '')} ({job.get('duration', '')})")
+                except Exception:
+                    pass
+
+        analysis_text = "\n".join(text_parts)
+
+        if len(analysis_text.strip()) < 20:
+            return {
+                "status": "skipped",
+                "message": "Not enough data to re-score",
+                "matchScore": old_score,
+                "jobCategory": old_category,
+            }
+
+        # Use Gemini (preferred) or fallback AI service
+        rescore_ai = ai_service
+        try:
+            gemini_svc = get_gemini_service()
+            if gemini_svc and gemini_svc.available:
+                rescore_ai = gemini_svc
+        except Exception:
+            pass
+
+        new_score = old_score
+        new_category = old_category
+        new_skills = None
+        new_experience = None
+
+        try:
+            ai_result = await asyncio.wait_for(
+                rescore_ai.analyze_candidate(analysis_text),
+                timeout=AI_ANALYSIS_TIMEOUT,
+            )
+            if ai_result:
+                raw_score = ai_result.get("quality_score") or ai_result.get("match_score")
+                try:
+                    parsed_score = int(float(raw_score)) if raw_score else 0
+                except (TypeError, ValueError):
+                    parsed_score = 0
+                if parsed_score > 0:
+                    new_score = parsed_score
+                new_category = ai_result.get("job_category", old_category) or old_category
+                ai_skills = ai_result.get("skills", [])
+                if isinstance(ai_skills, list) and len(ai_skills) > 0:
+                    new_skills = ai_skills
+                ai_exp = ai_result.get("experience")
+                if ai_exp is not None:
+                    try:
+                        new_experience = int(float(ai_exp))
+                    except (TypeError, ValueError):
+                        pass
+        except asyncio.TimeoutError:
+            logger.warning(f"Rescore timeout for {name}")
+        except Exception as e:
+            logger.warning(f"Rescore AI error for {name}: {e}")
+
+        # Update database
+        def _update_rescore(sid, scat, sskills, sexp, scid):
+            with db_service.get_connection() as conn:
+                cursor = conn.cursor()
+                parts = ["match_score = ?", "job_category = ?"]
+                vals = [sid, scat]
+                if sskills is not None:
+                    parts.append("skills = ?")
+                    vals.append(json.dumps(sskills))
+                if sexp is not None:
+                    parts.append("experience = ?")
+                    vals.append(sexp)
+                vals.append(scid)
+                cursor.execute(f"UPDATE candidates SET {', '.join(parts)} WHERE id = ?", vals)
+                conn.commit()
+
+        await asyncio.to_thread(_update_rescore, new_score, new_category, new_skills, new_experience, candidate_id)
+
+        # Clear cached AI analysis so it regenerates with new data
+        def _clear_ai_analysis(cid):
+            with db_service.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE candidates SET ai_analysis = NULL WHERE id = ?", (cid,))
+                conn.commit()
+        try:
+            await asyncio.to_thread(_clear_ai_analysis, candidate_id)
+        except Exception:
+            pass  # OK if no cached analysis
+
+        logger.info(f"✅ Rescored {name}: {old_score}→{new_score}%, {old_category}→{new_category}")
+
+        return {
+            "status": "success",
+            "candidate_id": candidate_id,
+            "old_score": old_score,
+            "new_score": new_score,
+            "old_category": old_category,
+            "new_category": new_category,
+            "matchScore": new_score,
+            "jobCategory": new_category,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Rescore error for {candidate_id}: {e}")
+        raise HTTPException(500, "Error re-scoring candidate")
 
 
 @app.get("/api/candidates/{candidate_id}/ai-analysis")
@@ -8089,7 +9197,7 @@ async def get_candidate_ai_analysis(candidate_id: str, refresh: bool = False, cu
         raise
     except Exception as e:
         logger.error(f"AI analysis error for {candidate_id}: {e}")
-        raise HTTPException(500, f"Error generating AI analysis: {str(e)}")
+        raise HTTPException(500, "Error generating AI analysis")
 
 
 async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
@@ -8246,7 +9354,7 @@ async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
         raise
     except Exception as e:
         logger.error(f"AI analysis error for {candidate_id}: {e}")
-        raise HTTPException(500, f"Error generating AI analysis: {str(e)}")
+        raise HTTPException(500, "Error generating AI analysis")
 
 
 @app.post("/api/ai/analyze-match")
@@ -8422,7 +9530,7 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
             "note": "Configure Ollama or OpenAI for AI-generated interview questions"
         }
     except Exception as e:
-        raise HTTPException(500, f"Error generating questions: {str(e)}")
+        raise HTTPException(500, "Error generating questions")
 
 class SummarizeResumeRequest(BaseModel):
     resume_text: str
@@ -8459,7 +9567,7 @@ async def summarize_resume(request: SummarizeResumeRequest, current_user: dict =
             "note": "Configure Ollama or OpenAI for AI-powered summaries"
         }
     except Exception as e:
-        raise HTTPException(500, f"Error summarizing resume: {str(e)}")
+        raise HTTPException(500, "Error summarizing resume")
 
 @app.post("/api/ai/batch-analyze")
 async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int = 50, current_user: dict = Depends(require_auth)):
@@ -8532,7 +9640,7 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
             "concurrent_processing": True
         }
     except Exception as e:
-        raise HTTPException(500, f"Error: {str(e)}")
+        raise HTTPException(500, "Error")
 
 @app.get("/api/ai/status")
 async def ai_status(current_user: dict = Depends(require_auth)):
@@ -8667,7 +9775,7 @@ async def llm_status(current_user: dict = Depends(require_auth)):
     except Exception as e:
         return {
             "available": False,
-            "error": str(e),
+            "error": "LLM service unavailable",
             "setup": "Install Ollama from https://ollama.com/download, then: ollama pull qwen2.5:7b"
         }
 
@@ -8861,6 +9969,14 @@ async def ai_smart_search(
             if str(c.get('jobCategory', '')).lower() in q_lower:
                 score += 10
                 match_reasons.append(f"Category: {c.get('jobCategory', '')}")
+            # Location matching in keyword fallback
+            c_location = str(c.get('location', '')).lower()
+            if c_location:
+                for q_word in q_lower.split():
+                    if len(q_word) > 2 and q_word in c_location:
+                        score += 15
+                        match_reasons.append(f"Location: {c.get('location', '')}")
+                        break
             scored.append({
                 "candidate": c,
                 "relevance_score": min(score, 100),
@@ -8877,7 +9993,7 @@ async def ai_smart_search(
         }
     except Exception as e:
         logger.error(f"Smart search error: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, "Internal server error")
 
 if __name__ == "__main__":
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

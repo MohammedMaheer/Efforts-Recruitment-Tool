@@ -105,15 +105,6 @@ export function getMatchScoreBgColor(score: number): string {
 }
 
 /**
- * Get score ring/border color
- */
-export function getMatchScoreRingColor(score: number): string {
-  if (score >= 70) return 'ring-emerald-500'
-  if (score >= 40) return 'ring-amber-500'
-  return 'ring-red-500'
-}
-
-/**
  * Get status badge colors
  */
 export function getStatusBadgeColor(status: string): { bg: string; text: string; border: string } {
@@ -320,7 +311,7 @@ export function isEmpty(value: string | null | undefined): boolean {
 /**
  * Debounce function
  */
-export function debounce<T extends (...args: unknown[]) => unknown>(
+export function debounce<T extends (...args: never[]) => unknown>(
   func: T,
   wait: number
 ): (...args: Parameters<T>) => void {
@@ -339,7 +330,7 @@ export function debounce<T extends (...args: unknown[]) => unknown>(
 /**
  * Throttle function
  */
-export function throttle<T extends (...args: unknown[]) => unknown>(
+export function throttle<T extends (...args: never[]) => unknown>(
   func: T,
   limit: number
 ): (...args: Parameters<T>) => void {
@@ -368,22 +359,98 @@ export function sleep(ms: number): Promise<void> {
 // ============================================================================
 
 export const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
+  // Canonical names (from normalizeCategory)
+  'Software Engineering': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
+  'DevOps & Cloud': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
+  'Data & Analytics': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
+  'Cybersecurity': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
+  'QA & Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+  'IT & Systems': { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
+  'Product Management': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
+  'Design & Creative': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
+  'Project Management': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
+  'Business Analysis': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
+  'Consulting': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
+  'Marketing & Communications': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
+  'Content & Communications': { bg: 'bg-lime-50', text: 'text-lime-700', border: 'border-lime-200' },
+  'Sales & Business Development': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+  'Finance & Accounting': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  'HR & Admin': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
+  'Legal & Compliance': { bg: 'bg-stone-50', text: 'text-stone-700', border: 'border-stone-200' },
+  'Operations & Supply Chain': { bg: 'bg-zinc-50', text: 'text-zinc-700', border: 'border-zinc-200' },
+  'Healthcare': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
+  'Education & Training': { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
+  'Engineering': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
+  'Customer Service': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
+  'Media & Entertainment': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
+  'Real Estate': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
+  'Insurance & Safety': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
+  'Retail & Hospitality': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
+  // Legacy / fallback aliases (old names still used in some places)
   'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'DevOps Engineer': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
+  'Finance': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
+  'Design': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
   'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
   'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
-  'Product Manager': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
-  'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  'Finance': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
+  'Operations': { bg: 'bg-zinc-50', text: 'text-zinc-700', border: 'border-zinc-200' },
   'Customer Support': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Design': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
+  'Hospitality': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
   'General': { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' },
 }
 
 /**
- * Get category color scheme
+ * Get category color scheme — matches both canonical (normalizeCategory) and legacy names
  */
 export function getCategoryColor(category: string): { bg: string; text: string; border: string } {
   return categoryColors[category] || categoryColors['General']
+}
+
+// ============================================================================
+// Score Utilities
+// ============================================================================
+
+/** Get text color class for a score value */
+export function getScoreColor(score: number): string {
+  if (score >= 90) return 'text-emerald-600'
+  if (score >= 75) return 'text-green-600'
+  if (score >= 60) return 'text-amber-600'
+  if (score >= 40) return 'text-orange-600'
+  return 'text-red-600'
+}
+
+/** Get SVG stroke color class for a score ring */
+export function getScoreRingColor(score: number): string {
+  if (score >= 90) return 'stroke-emerald-500'
+  if (score >= 75) return 'stroke-green-500'
+  if (score >= 60) return 'stroke-amber-500'
+  if (score >= 40) return 'stroke-orange-500'
+  return 'stroke-red-500'
+}
+
+/** Get fit label text and CSS class for a score */
+export function getFitLabel(score: number): { text: string; cls: string } {
+  if (score >= 90) return { text: 'Strong Fit', cls: 'bg-emerald-100 text-emerald-700' }
+  if (score >= 75) return { text: 'Good Fit', cls: 'bg-green-100 text-green-700' }
+  if (score >= 60) return { text: 'Medium Fit', cls: 'bg-amber-100 text-amber-700' }
+  if (score >= 40) return { text: 'Weak Fit', cls: 'bg-orange-100 text-orange-700' }
+  return { text: 'Poor Fit', cls: 'bg-red-100 text-red-700' }
+}
+
+// ============================================================================
+// Location Utilities
+// ============================================================================
+
+/** Clean up bad location values extracted from email body parsing */
+export function cleanLocation(loc: string | undefined | null): string {
+  if (!loc) return ''
+  let cleaned = loc.trim()
+  // Strip Arabic/non-Latin text in parentheses (e.g. UAE Arabic name)
+  cleaned = cleaned.replace(/\s*\([^)]*[\u0600-\u06FF][^)]*\)\s*/g, '').trim()
+  // Remove locations that are just common pronouns / noise words extracted from email body
+  const noise = /^(you|me|us|we|they|them|him|her|i|my|your|our|here|there|null|undefined|n\/a|none|na|unknown|test|email|sir|madam|dear|hi|hello|the|a|an|from|to|for)$/i
+  if (noise.test(cleaned)) return ''
+  // Too short to be a real location
+  if (cleaned.length <= 1) return ''
+  return cleaned
 }

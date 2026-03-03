@@ -2,7 +2,6 @@ import { NavLink } from 'react-router-dom'
 import { motion } from 'framer-motion'
 import {
   LayoutDashboard,
-  Upload,
   Search,
   ClipboardList,
   FileEdit,
@@ -16,8 +15,7 @@ import { useAuthStore } from '@/store/authStore'
 
 const navigation = [
   { name: 'Dashboard', description: 'Overview & Analytics', href: '/dashboard', icon: LayoutDashboard },
-  { name: 'Upload Files', description: 'Bulk upload & email scraping', href: '/upload', icon: Upload },
-  { name: 'AI Assistant', description: 'AI-Powered Search', href: '/ai-assistant', icon: Search },
+  { name: 'AI Search', description: 'AI-Powered Search', href: '/ai-assistant', icon: Search },
   { name: 'Candidates', description: 'All candidates', href: '/candidates', icon: Users },
   { name: 'Shortlist', description: 'Shortlisted candidates', href: '/shortlist', icon: Star },
   { name: 'Search Reports', description: 'Previous searches & results', href: '/search-reports', icon: ClipboardList },

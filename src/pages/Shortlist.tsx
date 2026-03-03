@@ -37,63 +37,15 @@ import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
 import { generateQuickProfilePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
 import { toast } from '@/components/ui/Toast'
 import { candidateApi } from '@/services/api'
+import { getScoreColor, getFitLabel } from '@/lib/utils'
+import { ScoreRing } from '@/components/ui/ScoreRing'
 
 type SortKey = 'score' | 'name' | 'experience' | 'date'
 type SortDir = 'asc' | 'desc'
 
-// Score color utilities
-const getScoreColor = (score: number) => {
-  if (score >= 90) return 'text-emerald-600'
-  if (score >= 75) return 'text-green-600'
-  if (score >= 60) return 'text-amber-600'
-  if (score >= 40) return 'text-orange-600'
-  return 'text-red-600'
-}
-
-const getScoreRingColor = (score: number) => {
-  if (score >= 90) return 'stroke-emerald-500'
-  if (score >= 75) return 'stroke-green-500'
-  if (score >= 60) return 'stroke-amber-500'
-  if (score >= 40) return 'stroke-orange-500'
-  return 'stroke-red-500'
-}
-
-const getFitLabel = (score: number) => {
-  if (score >= 90) return { text: 'Strong Fit', cls: 'bg-emerald-100 text-emerald-700' }
-  if (score >= 75) return { text: 'Good Fit', cls: 'bg-green-100 text-green-700' }
-  if (score >= 60) return { text: 'Medium Fit', cls: 'bg-amber-100 text-amber-700' }
-  if (score >= 40) return { text: 'Weak Fit', cls: 'bg-orange-100 text-orange-700' }
-  return { text: 'Poor Fit', cls: 'bg-red-100 text-red-700' }
-}
-
-// Circular progress ring component
-function ScoreRing({ score, size = 56 }: { score: number; size?: number }) {
-  const radius = (size - 8) / 2
-  const circumference = 2 * Math.PI * radius
-  const dashoffset = circumference - (score / 100) * circumference
-  return (
-    <div className="relative" style={{ width: size, height: size }}>
-      <svg className="transform -rotate-90" width={size} height={size}>
-        <circle cx={size/2} cy={size/2} r={radius} strokeWidth="4" fill="none" className="stroke-gray-200" />
-        <circle
-          cx={size/2} cy={size/2} r={radius} strokeWidth="4" fill="none"
-          className={getScoreRingColor(score)}
-          strokeLinecap="round"
-          strokeDasharray={circumference}
-          strokeDashoffset={dashoffset}
-          style={{ transition: 'stroke-dashoffset 0.6s ease' }}
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className={`text-sm font-bold ${getScoreColor(score)}`}>{Math.round(score)}%</span>
-      </div>
-    </div>
-  )
-}
-
 export default function Shortlist() {
   const navigate = useNavigate()
-  const { candidates, loading, refetch } = useCandidates({ autoFetch: true })
+  const { candidates, loading, error, refetch } = useCandidates({ autoFetch: true })
   const shortlistedIds = useCandidateStore((s) => s.shortlistedIds)
   const toggleShortlist = useCandidateStore((s) => s.toggleShortlist)
   const addNotification = useNotificationStore((s) => s.addNotification)
@@ -176,15 +128,14 @@ export default function Shortlist() {
   const handleBulkRemove = useCallback(async () => {
     if (selectedIds.size === 0) return
     setBulkRemoving(true)
-    let removed = 0
     const idsToRemove = [...selectedIds]
-    for (const id of idsToRemove) {
-      try {
+    const results = await Promise.allSettled(
+      idsToRemove.map(async (id) => {
         await candidateApi.updateStatus(id, 'Reviewed')
         if (shortlistedIds.includes(id)) toggleShortlist(id)
-        removed++
-      } catch { /* skip */ }
-    }
+      })
+    )
+    const removed = results.filter(r => r.status === 'fulfilled').length
     setSelectedIds(new Set())
     if (selectedCandidate && idsToRemove.includes(selectedCandidate.id)) setSelectedCandidate(null)
     await refetch()
@@ -206,7 +157,7 @@ export default function Shortlist() {
 
   const handleExportCSV = useCallback(() => {
     if (shortlistedCandidates.length === 0) return
-    const escape = (v: any) => {
+    const escape = (v: string | number | boolean | null | undefined) => {
       const s = String(v ?? '')
       return s.includes(',') || s.includes('"') || s.includes('\n') ? `"${s.replace(/"/g, '""')}"` : s
     }
@@ -249,6 +200,21 @@ export default function Shortlist() {
       addNotification({ type: 'success', title: 'PDF Exported', message: `${shortlistedCandidates.length} candidates exported` })
     } catch { addNotification({ type: 'error', title: 'Error', message: 'Failed to generate PDF' }) }
   }, [shortlistedCandidates, addNotification])
+
+  const handleResetAll = useCallback(async () => {
+    if (shortlistedCandidates.length === 0) return
+    const typed = prompt(`⚠️ This will remove ALL ${shortlistedCandidates.length} candidates from the shortlist (reset to Strong).\n\nType "${shortlistedCandidates.length}" to confirm:`)
+    if (typed !== String(shortlistedCandidates.length)) return
+    try {
+      await candidateApi.resetShortlist()
+      setSelectedIds(new Set())
+      setSelectedCandidate(null)
+      await refetch()
+      addNotification({ type: 'success', title: 'Reset Complete', message: `All candidates removed from shortlist` })
+    } catch {
+      addNotification({ type: 'error', title: 'Error', message: 'Failed to reset shortlist' })
+    }
+  }, [shortlistedCandidates, refetch, addNotification])
 
   // Stats
   const stats = useMemo(() => {
@@ -296,6 +262,10 @@ export default function Shortlist() {
             <Button variant="outline" size="sm" onClick={handleExportPDF} disabled={stats.total === 0}>
               <FileText className="w-3.5 h-3.5 mr-1.5" />PDF
             </Button>
+            <Button variant="outline" size="sm" onClick={handleResetAll} disabled={stats.total === 0}
+              className="text-red-600 border-red-200 hover:bg-red-50">
+              <Trash2 className="w-3.5 h-3.5 mr-1.5" />Reset All
+            </Button>
             <Button variant="outline" size="sm" onClick={() => refetch()} disabled={loading}>
               <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${loading ? 'animate-spin' : ''}`} />Refresh
             </Button>
@@ -322,7 +292,7 @@ export default function Shortlist() {
       </div>
 
       {/* Empty state */}
-      {stats.total === 0 && !loading && (
+      {stats.total === 0 && !loading && !error && (
         <div className="flex-1 flex items-center justify-center">
           <div className="text-center max-w-md">
             <div className="w-20 h-20 bg-gradient-to-br from-indigo-50 to-purple-50 rounded-2xl flex items-center justify-center mx-auto mb-5">
@@ -330,11 +300,34 @@ export default function Shortlist() {
             </div>
             <h3 className="text-lg font-semibold text-gray-900 mb-2">No candidates shortlisted</h3>
             <p className="text-sm text-gray-500 mb-6">
-              Use the AI Assistant to find and shortlist top candidates, or browse the candidate list.
+              Use the AI Search to find and shortlist top candidates, or browse the candidate list.
             </p>
             <div className="flex justify-center gap-3">
               <Button onClick={() => navigate('/ai-assistant')}>
-                <Sparkles className="w-4 h-4 mr-1.5" />AI Assistant
+                <Sparkles className="w-4 h-4 mr-1.5" />AI Search
+              </Button>
+              <Button variant="outline" onClick={() => navigate('/candidates')}>
+                <Users className="w-4 h-4 mr-1.5" />Browse Candidates
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Error state with retry */}
+      {error && !loading && stats.total === 0 && (
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-center max-w-md">
+            <div className="w-20 h-20 bg-gradient-to-br from-red-50 to-orange-50 rounded-2xl flex items-center justify-center mx-auto mb-5">
+              <RefreshCw className="w-10 h-10 text-red-300" />
+            </div>
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Failed to load candidates</h3>
+            <p className="text-sm text-gray-500 mb-6">
+              {error.includes('Session expired') ? 'Your session has expired. Please log in again.' : 'The server may be busy. Please try again.'}
+            </p>
+            <div className="flex justify-center gap-3">
+              <Button onClick={() => refetch()}>
+                <RefreshCw className="w-4 h-4 mr-1.5" />Retry
               </Button>
               <Button variant="outline" onClick={() => navigate('/candidates')}>
                 <Users className="w-4 h-4 mr-1.5" />Browse Candidates
@@ -355,7 +348,7 @@ export default function Shortlist() {
       {stats.total > 0 && (
         <div className="flex-1 flex overflow-hidden">
           {/* Left Panel: Candidate List */}
-          <div className="w-[380px] flex-shrink-0 border-r border-gray-200 bg-gray-50/50 flex flex-col">
+          <div className="w-[340px] flex-shrink-0 border-r border-gray-200 bg-gray-50/50 flex flex-col">
             {/* Search + Controls */}
             <div className="p-3 space-y-2 border-b border-gray-200 bg-white">
               <div className="relative">
@@ -576,7 +569,7 @@ function CandidateDetailPanel({
           <Download className="w-3.5 h-3.5 mr-1.5" />PDF Report
         </Button>
         <Button size="sm" variant="outline" onClick={async () => {
-          try { await downloadOriginalResume(candidate) } catch { toast.error('Download failed', 'No resume available for this candidate') }
+          try { await downloadOriginalResume(candidate) } catch (err) { console.error('Resume download failed:', err); toast.error('Download failed', 'No resume available for this candidate') }
         }} className="text-xs">
           <FileDown className="w-3.5 h-3.5 mr-1.5" />Resume
         </Button>

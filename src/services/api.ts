@@ -96,9 +96,10 @@ class ApiClient {
             const authStore = useAuthStore.getState();
             if (authStore.isAuthenticated) {
               authStore.logout();
-              // Redirect to login page
+              // Use soft navigation instead of full page reload to preserve state
               if (typeof window !== 'undefined' && !window.location.pathname.includes('/login')) {
-                window.location.href = '/login';
+                // Dispatch a custom event that App.tsx can listen for
+                window.dispatchEvent(new CustomEvent('auth:session-expired'));
               }
             }
           }
@@ -478,7 +479,7 @@ export const statsApi = {
   /**
    * Get dashboard statistics
    */
-  async getDashboard(): Promise<ApiResponse<any>> {
+  async getDashboard(): Promise<ApiResponse<Record<string, unknown>>> {
     return client.get('/api/stats');
   },
 
@@ -879,10 +880,10 @@ export const linkedInApi = {
     resume_text?: string;
     profile_image?: string;
     headline?: string;
-    education?: any[];
-    work_experience?: any[];
-    certifications?: any[];
-    languages?: any[];
+    education?: { degree?: string; institution?: string; field?: string; year?: string }[];
+    work_experience?: { title?: string; company?: string; duration?: string; description?: string }[];
+    certifications?: string[];
+    languages?: string[];
     scraped_at?: string;
   }) {
     return client.post('/api/candidates/linkedin', profileData);
@@ -891,10 +892,10 @@ export const linkedInApi = {
   async getLinkedInCandidates() {
     const response = await client.get('/api/candidates');
     // Filter to only LinkedIn imports
-    const data = response.data as any;
-    const candidates = data?.candidates || [];
-    return candidates.filter((c: any) => 
-      c.source === 'linkedin_extension' || c.linkedin?.includes('linkedin.com')
+    const data = response.data as Record<string, unknown>;
+    const candidates = (data?.candidates || []) as Record<string, unknown>[];
+    return candidates.filter((c) => 
+      c.source === 'linkedin_extension' || (c.linkedin as string)?.includes('linkedin.com')
     );
   },
 };
@@ -961,7 +962,7 @@ export const aiApi = {
   /**
    * AI chat with database context
    */
-  async chat(message: string, includeCandidates = true, conversationHistory?: Array<{ role: string; content: string }>, numCandidates = 10): Promise<ApiResponse<{
+  async chat(message: string, includeCandidates = true, conversationHistory?: Array<{ role: string; content: string }>, numCandidates = 15): Promise<ApiResponse<{
     response: string;
     ai_powered: boolean;
     context_included: boolean;

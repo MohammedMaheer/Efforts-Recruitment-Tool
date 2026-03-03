@@ -84,7 +84,7 @@ passlib[bcrypt]>=1.7.4  # Password hashing
 cryptography>=41.0.0
 
 # Google Gemini AI (primary for deployment)
-google-generativeai>=0.8.0
+google-genai>=1.0.0,<2.0.0
 
 # Compression
 brotli>=1.1.0  # Brotli compression (optional, gzip built-in)

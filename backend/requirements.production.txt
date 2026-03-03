@@ -75,7 +75,7 @@ python-dotenv==1.0.0
 openai==1.7.2
 
 # ================== GOOGLE GEMINI (PRIMARY FOR DEPLOYMENT) ==================
-google-generativeai>=0.8.0
+google-genai>=1.0.0,<2.0.0
 
 # ================== GCS (DATABASE PERSISTENCE) ==================
 google-cloud-storage>=2.14.0

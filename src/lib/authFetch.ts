@@ -26,6 +26,7 @@ export async function authFetch(
   
   return fetch(input, {
     ...init,
+    cache: 'no-store' as RequestCache,
     headers: {
       ...authHeaders,
       ...init?.headers,

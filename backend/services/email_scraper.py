@@ -22,6 +22,148 @@ from services.email_parser import EmailParser
 # NOTE: OpenAI service removed - using local keyword matching for job categorization (zero API cost)
 
 
+# ============================================================================
+# GARBAGE SUMMARY DETECTION & STRUCTURED SUMMARY GENERATION
+# ============================================================================
+
+# Patterns that indicate a summary is actually raw email body text, not a real summary
+_GARBAGE_SUMMARY_PATTERNS = [
+    r'(?i)^dear\s',
+    r'(?i)dear\s+(?:hr|hiring|sir|madam|team|recruiter|manager)',
+    r'(?i)hope\s+you\s+are\s+doing\s+well',
+    r'(?i)i\s+am\s+writing\s+to\s+(?:inquire|apply|express|submit)',
+    r'(?i)please\s+find\s+(?:my|attached|enclosed)',
+    r'(?i)i\s+(?:am\s+)?interested\s+in\s+(?:the|any|your)\s+(?:job|position|opening|opportunit)',
+    r'(?i)(?:with\s+reference|in\s+response)\s+to\s+(?:your|the)\s+(?:job|posting|advertisement)',
+    r'(?i)i\s+would\s+like\s+to\s+(?:apply|express\s+my\s+interest)',
+    r'(?i)(?:kind|best|warm)\s*regards',
+    r'(?i)thanks?\s*(?:&|and)\s*regards',
+    r'(?i)looking\s+forward\s+to\s+(?:hearing|your\s+(?:response|reply))',
+    r'(?i)current\s+or\s+upcoming\s+job\s+opportunit',
+    r'(?i)any\s+(?:current|suitable|relevant)\s+(?:job\s+)?(?:openings?|opportunit|vacanc)',
+    r'(?i)herewith\s+(?:i\s+)?(?:am\s+)?(?:attaching|sending|submitting)',
+    r'(?i)for\s+your\s+(?:reference|consideration|review|kind\s+perusal)',
+    r'(?i)this\s+is\s+to\s+inform\s+you',
+]
+
+_GARBAGE_SUMMARY_COMPILED = [re.compile(p) for p in _GARBAGE_SUMMARY_PATTERNS]
+
+
+def is_garbage_summary(summary: str) -> bool:
+    """Check if a summary is actually raw email body text rather than a real professional summary."""
+    if not summary or len(summary.strip()) < 10:
+        return True  # Empty/too-short is garbage
+    
+    s = summary.strip()
+    
+    # Check against known email body patterns
+    for pattern in _GARBAGE_SUMMARY_COMPILED:
+        if pattern.search(s):
+            return True
+    
+    # If the first 200 chars contain multiple email-like phrases, it's garbage
+    first_chunk = s[:200].lower()
+    email_indicators = 0
+    for phrase in ['dear ', 'hope you', 'i am writing', 'please find', 'regards',
+                   'sincerely', 'thank you', 'to whom', 'greetings', 'respected',
+                   'i hereby', 'application for', 'kindly consider', 'job opening',
+                   'resume attached', 'cv attached', 'find my details below',
+                   'for your reference', 'i would like']:
+        if phrase in first_chunk:
+            email_indicators += 1
+    
+    if email_indicators >= 2:
+        return True
+    
+    return False
+
+
+def generate_structured_summary(candidate_data: dict) -> str:
+    """Generate a clean structured summary from extracted candidate fields.
+    
+    Returns a professional-looking summary like:
+    'Professional with 3+ years of experience skilled in Python, React, SQL. Based in Dubai.'
+    
+    Returns empty string if insufficient data to generate anything meaningful.
+    """
+    name = candidate_data.get('name', '') or ''
+    skills = candidate_data.get('skills', []) or []
+    experience = candidate_data.get('experience', 0) or 0
+    location = candidate_data.get('location', '') or ''
+    education = candidate_data.get('education', []) or []
+    job_subcategory = candidate_data.get('job_subcategory', '') or ''
+    job_category = candidate_data.get('job_category', '') or ''
+    
+    # Need at least SOME data to generate a meaningful summary
+    if not skills and not experience and not education and not job_subcategory:
+        return ''
+    
+    parts = []
+    
+    # Role-based intro
+    role = job_subcategory or job_category or ''
+    if role and role != 'General':
+        if experience and experience > 0:
+            parts.append(f"{role} professional with {experience}+ years of experience")
+        else:
+            parts.append(f"{role} professional")
+    elif experience and experience > 0:
+        parts.append(f"Professional with {experience}+ years of experience")
+    else:
+        parts.append("Professional candidate")
+    
+    # Skills
+    if skills:
+        top_skills = skills[:6]
+        parts.append(f"skilled in {', '.join(top_skills)}")
+    
+    # Education
+    if education:
+        edu_text = education
+        if isinstance(edu_text, list) and edu_text:
+            edu_item = edu_text[0] if isinstance(edu_text[0], str) else str(edu_text[0])
+            if edu_item and len(edu_item) > 3:
+                parts.append(f"with education in {edu_item}")
+        elif isinstance(edu_text, str) and len(edu_text) > 3:
+            try:
+                edu_list = json.loads(edu_text)
+                if isinstance(edu_list, list) and edu_list:
+                    edu_item = edu_list[0] if isinstance(edu_list[0], str) else str(edu_list[0])
+                    if edu_item and len(edu_item) > 3:
+                        parts.append(f"with education in {edu_item}")
+            except (json.JSONDecodeError, TypeError):
+                if len(edu_text) < 100:
+                    parts.append(f"with education in {edu_text}")
+    
+    # Location
+    if location:
+        parts.append(f"based in {location}")
+    
+    if len(parts) <= 1 and not skills:
+        return ''  # Not enough data
+    
+    summary = '. '.join([parts[0] + (', ' + parts[1] if len(parts) > 1 else '')] + 
+                        [p for p in parts[2:]]) + '.'
+    
+    # Clean up double periods
+    summary = summary.replace('..', '.')
+    
+    return summary
+
+
+def sanitize_summary(summary: str, candidate_data: dict = None) -> str:
+    """Validate a summary and return either the clean summary or a generated one.
+    
+    If the summary looks like email body text (garbage), generates a structured
+    summary from candidate data instead. Returns empty string if no good data available.
+    """
+    if not summary or is_garbage_summary(summary):
+        if candidate_data:
+            return generate_structured_summary(candidate_data)
+        return ''
+    return summary.strip()
+
+
 def clean_html_to_text(html_content: str) -> str:
     """Convert HTML content to clean plain text"""
     if not html_content:
@@ -202,8 +344,8 @@ def parse_indeed_email(body: str, subject: str) -> Optional[Dict]:
     # Extract education
     result['education'] = extract_education_from_text(clean_body)
     
-    # Use cleaned body as summary
-    result['summary'] = clean_body[:500] if clean_body else ''
+    # Generate structured summary from extracted fields (NOT raw email body)
+    result['summary'] = generate_structured_summary(result)
     
     return result if result['name'] or result['email'] else None
 
@@ -317,7 +459,8 @@ def parse_linkedin_email(body: str, subject: str) -> Optional[Dict]:
     found_skills = _extract_skills_from_text(body_lower)
     result['skills'] = found_skills
     
-    result['summary'] = clean_body[:500]
+    # Generate structured summary from extracted fields (NOT raw email body)
+    result['summary'] = generate_structured_summary(result)
     
     return result if result['name'] or result['email'] else None
 
@@ -465,7 +608,8 @@ def _generic_portal_parser(clean_body: str, subject: str, source: str) -> Option
     # ---- Education ----
     result['education'] = extract_education_from_text(clean_body)
 
-    result['summary'] = clean_body[:500] if clean_body else ''
+    # Generate structured summary from extracted fields (NOT raw email body)
+    result['summary'] = generate_structured_summary(result)
     return result if result['name'] or result['email'] else None
 
 
@@ -1298,11 +1442,12 @@ class EmailScraperService:
             
             # Note: actual_candidate_email was already determined earlier (before ID generation)
             
-            # Clean summary - use clean body text
-            summary = resume_data.get('summary', '') or clean_body[:500]
-            # Make sure summary doesn't have HTML
-            if '<' in summary:
-                summary = clean_html_to_text(summary)
+            # Clean summary - validate it's not garbage email body text
+            raw_summary = resume_data.get('summary', '')
+            if raw_summary and '<' in raw_summary:
+                raw_summary = clean_html_to_text(raw_summary)
+            # Sanitize: reject email body text, generate structured summary as fallback
+            summary = sanitize_summary(raw_summary, resume_data)
             
             # Get raw text for AI analysis (prefer resume text over email body)
             raw_text = resume_data.get('raw_text', '') or clean_body[:1000]

@@ -26,7 +26,6 @@ export const config = {
   endpoints: {
     auth: `${API_URL}/api/auth`,
     candidates: `${API_URL}/api/candidates`,
-    jobs: `${API_URL}/api/jobs`,
     scraper: `${API_URL}/api/scraper`,
     ai: `${API_URL}/api/ai`,
     stats: `${API_URL}/api/stats`,

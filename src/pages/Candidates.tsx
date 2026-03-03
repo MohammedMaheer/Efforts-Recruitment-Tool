@@ -17,9 +17,10 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/Table'
-import { getMatchScoreColor, getStatusBadgeColor } from '@/lib/utils'
+import { getMatchScoreColor, getStatusBadgeColor, getCategoryColor } from '@/lib/utils'
 import { generateQuickProfilePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
 import { candidateApi } from '@/services/api'
+import { normalizeCategory } from '@/lib/categoryUtils'
 import type { Candidate } from '@/types'
 
 // Quick contact helper - opens contact without navigating away
@@ -59,38 +60,30 @@ const isValidPhone = (phone: string | undefined | null): boolean => {
   return true
 }
 
-// Category colors for visual distinction
-const categoryColors: Record<string, { bg: string; text: string; border: string }> = {
-  'Software Engineer': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'DevOps Engineer': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Data Scientist': { bg: 'bg-green-50', text: 'text-green-700', border: 'border-green-200' },
-  'Cybersecurity': { bg: 'bg-red-50', text: 'text-red-700', border: 'border-red-200' },
-  'QA / Testing': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
-  'IT & Systems': { bg: 'bg-slate-50', text: 'text-slate-700', border: 'border-slate-200' },
-  'Product Manager': { bg: 'bg-indigo-50', text: 'text-indigo-700', border: 'border-indigo-200' },
-  'Design': { bg: 'bg-rose-50', text: 'text-rose-700', border: 'border-rose-200' },
-  'Project Management': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  'Business Analyst': { bg: 'bg-sky-50', text: 'text-sky-700', border: 'border-sky-200' },
-  'Consulting': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
-  'Marketing': { bg: 'bg-pink-50', text: 'text-pink-700', border: 'border-pink-200' },
-  'Content & Communications': { bg: 'bg-lime-50', text: 'text-lime-700', border: 'border-lime-200' },
-  'Sales': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
-  'Finance': { bg: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-200' },
-  'HR': { bg: 'bg-teal-50', text: 'text-teal-700', border: 'border-teal-200' },
-  'Legal': { bg: 'bg-stone-50', text: 'text-stone-700', border: 'border-stone-200' },
-  'Operations': { bg: 'bg-zinc-50', text: 'text-zinc-700', border: 'border-zinc-200' },
-  'Healthcare': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Education': { bg: 'bg-yellow-50', text: 'text-yellow-700', border: 'border-yellow-200' },
-  'Engineering': { bg: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-200' },
-  'Customer Support': { bg: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-200' },
-  'Media & Creative': { bg: 'bg-fuchsia-50', text: 'text-fuchsia-700', border: 'border-fuchsia-200' },
-  'Real Estate': { bg: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-200' },
-  'Hospitality': { bg: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-200' },
-  'General': { bg: 'bg-gray-50', text: 'text-gray-700', border: 'border-gray-200' },
-}
-
-const getCategoryColor = (category: string) => {
-  return categoryColors[category] || categoryColors['General']
+// ── Main category grouping ──
+// Groups canonical sub-categories into broader main categories for the UI
+const MAIN_CATEGORY_MAP: Record<string, string> = {
+  'Software Engineering': 'Technology',
+  'Data & Analytics': 'Technology',
+  'IT & Systems': 'Technology',
+  'QA & Testing': 'Technology',
+  'Engineering': 'Engineering & Technical',
+  'Project Management': 'Engineering & Technical',
+  'Finance & Accounting': 'Business & Finance',
+  'Business Analyst': 'Business & Finance',
+  'Consulting': 'Business & Finance',
+  'Sales': 'Sales & Marketing',
+  'Marketing': 'Sales & Marketing',
+  'HR & Admin': 'People & Administration',
+  'Customer Service': 'People & Administration',
+  'Education': 'People & Administration',
+  'Operations': 'Operations & Logistics',
+  'Healthcare': 'Specialist Services',
+  'Legal': 'Specialist Services',
+  'Insurance & Safety': 'Specialist Services',
+  'Design & Creative': 'Creative & Media',
+  'Retail & Hospitality': 'Other',
+  'General': 'Other',
 }
 
 type SortOption = 'score-desc' | 'score-asc' | 'date-newest' | 'date-oldest' | 'name-asc' | 'name-desc'
@@ -120,6 +113,11 @@ export default function Candidates() {
     if (toastTimer.current) clearTimeout(toastTimer.current)
     setToast({ message, type, visible: true })
     toastTimer.current = setTimeout(() => setToast(prev => ({ ...prev, visible: false })), 4000)
+  }, [])
+
+  // Cleanup toast timer on unmount
+  useEffect(() => {
+    return () => { if (toastTimer.current) clearTimeout(toastTimer.current) }
   }, [])
 
   const handleReprocessWithGemini = useCallback(async () => {
@@ -197,6 +195,7 @@ export default function Candidates() {
       // Date range filter
       if (dateRange.start || dateRange.end) {
         const appliedDate = new Date(candidate.appliedDate).getTime()
+        if (Number.isNaN(appliedDate)) return false  // Exclude candidates with invalid dates from date-filtered results
         if (dateRange.start) {
           const startDate = new Date(dateRange.start).getTime()
           if (appliedDate < startDate) return false
@@ -211,7 +210,7 @@ export default function Candidates() {
       if (candidate.matchScore < filters.minScore) return false
       if (filters.status !== 'all' && candidate.status !== filters.status) return false
       if (candidate.experience < filters.minExperience) return false
-      if (selectedCategory !== 'all' && candidate.jobCategory !== selectedCategory) return false
+      if (selectedCategory !== 'all' && normalizeCategory(candidate.jobCategory || 'General') !== selectedCategory) return false
       
       // Search filter (slower, do last)
       if (searchLower) {
@@ -235,11 +234,11 @@ export default function Candidates() {
     return sortedCandidates.slice(0, displayLimit)
   }, [sortedCandidates, displayLimit])
 
-  // Group candidates by job category
+  // Group candidates by normalized category
   const groupedCandidates = useMemo(() => {
     const groups: Record<string, typeof candidates> = {}
     sortedCandidates.forEach((candidate) => {
-      const category = candidate.jobCategory || 'General'
+      const category = normalizeCategory(candidate.jobCategory || 'General')
       if (!groups[category]) {
         groups[category] = []
       }
@@ -248,9 +247,9 @@ export default function Candidates() {
     return groups
   }, [sortedCandidates])
 
-  // Get unique categories for filter dropdown
+  // Get unique categories for filter dropdown (using normalized names)
   const categories = useMemo(() => {
-    const cats = new Set(candidates.map(c => c.jobCategory || 'General'))
+    const cats = new Set(candidates.map(c => normalizeCategory(c.jobCategory || 'General')))
     return ['all', ...Array.from(cats).sort()]
   }, [candidates])
 
@@ -509,37 +508,65 @@ export default function Candidates() {
         )}
       </Card>
 
-      {/* Category Overview Cards - Only show in grouped view */}
+      {/* Category Overview Cards - Hierarchical main → sub grouping */}
       {viewMode === 'grouped' && Object.keys(categoryStats).length > 0 && (
-        <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-          {Object.entries(categoryStats).map(([category, stats]) => {
-            const colors = getCategoryColor(category)
-            return (
-              <Card 
-                key={category} 
-                className={`p-3 cursor-pointer transition-all hover:shadow-md ${colors.bg} border ${colors.border}`}
-                onClick={() => setSelectedCategory(selectedCategory === category ? 'all' : category)}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <span className={`text-xs font-semibold ${colors.text} truncate`}>{category}</span>
-                  <Badge variant="secondary" className="text-xs">{stats.total}</Badge>
-                </div>
-                <div className="flex items-center gap-2">
-                  <div className="flex-1">
-                    <Progress 
-                      value={stats.avgScore} 
-                      className="h-1.5"
-                      indicatorClassName={
-                        stats.avgScore >= 70 ? 'bg-emerald-500' :
-                        stats.avgScore >= 40 ? 'bg-amber-500' : 'bg-red-500'
-                      }
-                    />
-                  </div>
-                  <span className="text-xs font-medium text-gray-600">{stats.avgScore}%</span>
-                </div>
-              </Card>
+        <div className="space-y-3">
+          {(() => {
+            // Group sub-categories under main categories
+            const mainGroups: Record<string, { sub: string; stats: typeof categoryStats[string] }[]> = {}
+            Object.entries(categoryStats).forEach(([sub, stats]) => {
+              const main = MAIN_CATEGORY_MAP[sub] || 'Other'
+              if (!mainGroups[main]) mainGroups[main] = []
+              mainGroups[main].push({ sub, stats })
+            })
+            // Sort main groups by total count descending
+            const mainOrder = Object.entries(mainGroups).sort(
+              ([, a], [, b]) => b.reduce((s, x) => s + x.stats.total, 0) - a.reduce((s, x) => s + x.stats.total, 0)
             )
-          })}
+            return mainOrder.map(([mainCat, subs]) => {
+              const mainTotal = subs.reduce((s, x) => s + x.stats.total, 0)
+              const mainAvg = Math.round(subs.reduce((s, x) => s + x.stats.avgScore * x.stats.total, 0) / mainTotal)
+              return (
+                <div key={mainCat}>
+                  <div className="flex items-center gap-2 mb-1.5">
+                    <h3 className="text-sm font-bold text-gray-800">{mainCat}</h3>
+                    <Badge variant="secondary" className="text-xs">{mainTotal}</Badge>
+                    <span className="text-xs text-gray-400 ml-1">avg {mainAvg}%</span>
+                  </div>
+                  <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-2 ml-6">
+                    {subs.map(({ sub, stats }) => {
+                      const colors = getCategoryColor(sub)
+                      return (
+                        <Card
+                          key={sub}
+                          className={`p-2.5 cursor-pointer transition-all hover:shadow-md ${colors.bg} border ${colors.border} ${selectedCategory === sub ? 'ring-2 ring-sky-400 shadow-md' : ''}`}
+                          onClick={() => setSelectedCategory(selectedCategory === sub ? 'all' : sub)}
+                        >
+                          <div className="flex items-center justify-between mb-1.5">
+                            <span className={`text-xs font-semibold ${colors.text} truncate`}>{sub}</span>
+                            <Badge variant="secondary" className="text-[10px] px-1.5">{stats.total}</Badge>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <div className="flex-1">
+                              <Progress
+                                value={stats.avgScore}
+                                className="h-1"
+                                indicatorClassName={
+                                  stats.avgScore >= 70 ? 'bg-emerald-500' :
+                                  stats.avgScore >= 40 ? 'bg-amber-500' : 'bg-red-500'
+                                }
+                              />
+                            </div>
+                            <span className="text-[10px] font-medium text-gray-500">{stats.avgScore}%</span>
+                          </div>
+                        </Card>
+                      )
+                    })}
+                  </div>
+                </div>
+              )
+            })
+          })()}
         </div>
       )}
 
@@ -737,12 +764,13 @@ export default function Candidates() {
                                     onClick={async (e) => {
                                       e.stopPropagation()
                                       if (shortlistingIds.has(candidate.id)) return
-                                      const alreadyShortlisted = candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
+                                      const alreadyShortlisted = candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
                                       try {
                                         setShortlistingIds(prev => new Set(prev).add(candidate.id))
                                         if (alreadyShortlisted) {
                                           // Unshortlist
-                                          await candidateApi.updateStatus(candidate.id, 'Reviewed')
+                                          const res = await candidateApi.updateStatus(candidate.id, 'Reviewed')
+                                          if (res.error) throw new Error(res.error.message || 'Failed to update status')
                                           setShortlistedIds(prev => {
                                             const next = new Set(prev)
                                             next.delete(candidate.id)
@@ -759,6 +787,7 @@ export default function Candidates() {
                                         } else {
                                           // Shortlist
                                           const res = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+                                          if (res.error) throw new Error(res.error.message || 'Failed to shortlist')
                                           setShortlistedIds(prev => new Set(prev).add(candidate.id))
                                           const emailStatus = (res as any)?.data?.email_sent?.status || (res as any)?.email_sent?.status
                                           if (emailStatus === 'queued' || emailStatus === 'success') {
@@ -975,7 +1004,8 @@ export default function Candidates() {
                               setShortlistingIds(prev => new Set(prev).add(candidate.id))
                               if (alreadyShortlisted) {
                                 // Unshortlist
-                                await candidateApi.updateStatus(candidate.id, 'Reviewed')
+                                const res = await candidateApi.updateStatus(candidate.id, 'Reviewed')
+                                if (res.error) throw new Error(res.error.message || 'Failed to update status')
                                 setShortlistedIds(prev => {
                                   const next = new Set(prev)
                                   next.delete(candidate.id)
@@ -991,6 +1021,7 @@ export default function Candidates() {
                               } else {
                                 // Shortlist
                                 const res = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+                                if (res.error) throw new Error(res.error.message || 'Failed to shortlist')
                                 setShortlistedIds(prev => new Set(prev).add(candidate.id))
                                 const emailStatus = (res as any)?.data?.email_sent?.status || (res as any)?.email_sent?.status
                                 if (emailStatus === 'queued' || emailStatus === 'success') {

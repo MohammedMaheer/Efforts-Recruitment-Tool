@@ -127,7 +127,7 @@ export default function SetupWizard() {
   const [loading, setLoading] = useState(true)
   const [expandedSections, setExpandedSections] = useState<Set<string>>(new Set(['quick_start']))
   const [testingService, setTestingService] = useState<string | null>(null)
-  const [platformStats, setPlatformStats] = useState<any>(null)
+  const [platformStats, setPlatformStats] = useState<{ total_candidates?: number; avg_score?: number; categories?: Record<string, number>; job_categories?: number; strong_matches?: number } | null>(null)
 
   // Email integration
   const [selectedProvider, setSelectedProvider] = useState<string>('')
@@ -136,7 +136,7 @@ export default function SetupWizard() {
   const [isConnecting, setIsConnecting] = useState(false)
   const [isSyncing, setIsSyncing] = useState(false)
   const [connectionStatus, setConnectionStatus] = useState<'idle' | 'connected' | 'error'>('idle')
-  const [syncResult, setSyncResult] = useState<any>(null)
+  const [syncResult, setSyncResult] = useState<{ candidates_found?: number; new_applications?: number; resumes_parsed?: number; updated_profiles?: number } | null>(null)
   const [oauthStatus, setOauthStatus] = useState<OAuthStatus | null>(null)
   const [isRefreshingToken, setIsRefreshingToken] = useState(false)
   const [isManualSyncing, setIsManualSyncing] = useState(false)
@@ -256,7 +256,8 @@ export default function SetupWizard() {
         addNotification({ type: 'error', title: 'Sync Failed', message: data.message || 'Failed to start sync' })
       }
       await fetchOAuthStatus()
-    } catch {
+    } catch (err) {
+      console.error('Manual sync failed:', err)
       addNotification({ type: 'error', title: 'Error', message: 'Failed to trigger manual sync' })
     } finally {
       setIsManualSyncing(false)
@@ -277,8 +278,10 @@ export default function SetupWizard() {
       } else {
         setConnectionStatus('error')
       }
-    } catch {
+    } catch (err) {
+      console.error('Email connect failed:', err)
       setConnectionStatus('error')
+      addNotification({ type: 'error', title: 'Connection Failed', message: 'Could not connect to email provider. Check your credentials.' })
     } finally {
       setIsConnecting(false)
     }
@@ -297,7 +300,8 @@ export default function SetupWizard() {
         setSyncResult(data)
         addNotification({ type: 'success', title: 'Sync Complete', message: `Found ${data.candidates_found || 0} candidates` })
       } else throw new Error('Sync failed')
-    } catch {
+    } catch (err) {
+      console.error('Email sync failed:', err)
       addNotification({ type: 'error', title: 'Sync Failed', message: 'Check your credentials and try again.' })
     } finally {
       setIsSyncing(false)
@@ -313,7 +317,8 @@ export default function SetupWizard() {
       })
       if (response.ok) addNotification({ type: 'info', title: 'Auto-Sync Enabled', message: 'New applications imported every minute' })
       else throw new Error()
-    } catch {
+    } catch (err) {
+      console.error('Auto-sync setup failed:', err)
       addNotification({ type: 'error', title: 'Error', message: 'Failed to setup auto-sync.' })
     }
   }

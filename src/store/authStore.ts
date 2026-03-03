@@ -61,10 +61,10 @@ export const useAuthStore = create<AuthState>()(
             isAuthenticated: true,
             isLoading: false
           })
-        } catch (error: any) {
+        } catch (error: unknown) {
           clearTimeout(timeoutId)
           set({ isLoading: false })
-          if (error?.name === 'AbortError') {
+          if (error instanceof DOMException && error.name === 'AbortError') {
             throw new Error('Server is starting up. Please wait a moment and try again.')
           }
           console.error('Login error:', error)
@@ -86,7 +86,7 @@ export const useAuthStore = create<AuthState>()(
           clearTimeout(timeoutId)
           
           if (!response.ok) {
-            const error = await response.json()
+            const error = await response.json().catch(() => ({}))
             throw new Error(error.detail || 'Registration failed')
           }
           
@@ -97,10 +97,10 @@ export const useAuthStore = create<AuthState>()(
             isAuthenticated: true,
             isLoading: false
           })
-        } catch (error: any) {
+        } catch (error: unknown) {
           clearTimeout(timeoutId)
           set({ isLoading: false })
-          if (error?.name === 'AbortError') {
+          if (error instanceof DOMException && error.name === 'AbortError') {
             throw new Error('Registration timed out. Please check your connection and try again.')
           }
           console.error('Registration error:', error)
@@ -173,7 +173,7 @@ export const useAuthStore = create<AuthState>()(
         })
         
         if (!response.ok) {
-          const error = await response.json()
+          const error = await response.json().catch(() => ({}))
           throw new Error(error.detail || 'Failed to update profile')
         }
         
@@ -195,7 +195,7 @@ export const useAuthStore = create<AuthState>()(
         })
         
         if (!response.ok) {
-          const error = await response.json()
+          const error = await response.json().catch(() => ({}))
           throw new Error(error.detail || 'Failed to change password')
         }
       },
@@ -214,11 +214,11 @@ export const useAuthStore = create<AuthState>()(
           sessionStorage.removeItem(name)
         },
       },
-      partialize: (state) => ({ 
-        user: state.user, 
+      partialize: (state) => ({
+        user: state.user,
         token: state.token,
-        isAuthenticated: state.isAuthenticated 
-      } as unknown as AuthState),
+        isAuthenticated: state.isAuthenticated,
+      }) as Partial<AuthState> as AuthState,
     }
   )
 )

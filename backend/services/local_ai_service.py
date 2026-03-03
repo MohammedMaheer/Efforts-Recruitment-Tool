@@ -181,13 +181,22 @@ class LocalAIService:
             
             # Use all-mpnet-base-v2 for higher accuracy (vs MiniLM)
             # Falls back to MiniLM if mpnet fails
+            # Models are baked into /app/models at Docker build time — no network needed
+            import os
+            model_cache_dir = os.environ.get('SENTENCE_TRANSFORMERS_HOME', None)
             try:
                 logger.info("Loading all-mpnet-base-v2 (high accuracy model)...")
-                self.sentence_model = SentenceTransformer('all-mpnet-base-v2', device=self.device)
+                self.sentence_model = SentenceTransformer(
+                    'all-mpnet-base-v2', device=self.device,
+                    cache_folder=model_cache_dir,
+                )
                 logger.info("âœ… all-mpnet-base-v2 loaded - HIGH ACCURACY semantic AI enabled!")
             except Exception as e:
                 logger.warning(f"mpnet failed, trying MiniLM: {e}")
-                self.sentence_model = SentenceTransformer('all-MiniLM-L6-v2', device=self.device)
+                self.sentence_model = SentenceTransformer(
+                    'all-MiniLM-L6-v2', device=self.device,
+                    cache_folder=model_cache_dir,
+                )
                 logger.info("âœ… all-MiniLM-L6-v2 loaded - FAST semantic AI enabled!")
             
             # Apply Intel optimizations if available

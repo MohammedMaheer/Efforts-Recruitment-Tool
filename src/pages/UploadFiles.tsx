@@ -16,26 +16,28 @@ export default function UploadFiles() {
   const { refetch } = useCandidates({ autoFetch: false })
   const [activeTab, setActiveTab] = useState<'upload' | 'email'>('upload')
   const [isUploading, setIsUploading] = useState(false)
-  const [uploadResults, setUploadResults] = useState<any[]>([])
+  const [uploadResults, setUploadResults] = useState<{ status: string; message?: string; filename?: string; candidate_name?: string; job_category?: string; ai_score?: number }[]>([])
   const [dragActive, setDragActive] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploadStats, setUploadStats] = useState({ today: 0, success: 0, failed: 0 })
 
   // Email scraping state
   const [scrapeStatus, setScrapeStatus] = useState<'idle' | 'running' | 'done' | 'error'>('idle')
-  const [scrapeResults, setScrapeResults] = useState<any>(null)
+  const [scrapeResults, setScrapeResults] = useState<{ resumes_found?: number; count?: number; emails_scanned?: number; error?: string } | null>(null)
   const [scrapeMaxEmails, setScrapeMaxEmails] = useState(50)
   const [scrapeDays, setScrapeDays] = useState(30)
 
   useEffect(() => {
     const s = uploadResults.filter(r => r.status === 'success').length
     const f = uploadResults.filter(r => r.status !== 'success').length
-    if (uploadResults.length) setUploadStats(prev => ({ today: prev.today + uploadResults.length, success: prev.success + s, failed: prev.failed + f }))
+    if (uploadResults.length) setUploadStats({ today: uploadResults.length, success: s, failed: f })
   }, [uploadResults])
 
   const handleFileUpload = useCallback(async (files: FileList | File[]) => {
     const validFiles = Array.from(files).filter(f => /\.(pdf|docx?)$/i.test(f.name))
     if (!validFiles.length) { toast.warning('Invalid file type', 'Please upload PDF or DOCX files only.'); return }
+    const oversized = validFiles.filter(f => f.size > 10 * 1024 * 1024)
+    if (oversized.length) { toast.error('File too large', `${oversized.length} file(s) exceed the 10MB limit.`); return }
     setIsUploading(true); setUploadResults([])
     try {
       const formData = new FormData()
@@ -49,8 +51,9 @@ export default function UploadFiles() {
         const err = await response.json().catch(() => ({ detail: 'Upload failed' }))
         setUploadResults([{ status: 'error', message: err.detail || 'Upload failed' }])
       }
-    } catch (error: any) {
-      setUploadResults([{ status: 'error', message: error.message || 'Network error' }])
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Network error'
+      setUploadResults([{ status: 'error', message }])
     } finally { setIsUploading(false) }
   }, [refetch])
 
@@ -79,8 +82,9 @@ export default function UploadFiles() {
         setScrapeResults({ error: (await response.json().catch(() => ({}))).detail || 'Scrape failed' })
         setScrapeStatus('error')
       }
-    } catch (error: any) {
-      setScrapeResults({ error: error.message || 'Network error' }); setScrapeStatus('error')
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Network error'
+      setScrapeResults({ error: message }); setScrapeStatus('error')
     }
   }
 
@@ -175,7 +179,7 @@ export default function UploadFiles() {
                     <Upload className="w-8 h-8 text-sky-600" />
                   </div>
                   <p className="text-lg font-medium text-gray-900 mb-2">{dragActive ? 'Drop files here' : 'Drop files here or click to browse'}</p>
-                  <p className="text-sm text-gray-500">Supports PDF, DOC, DOCX files. Max 100MB per file.</p>
+                  <p className="text-sm text-gray-500">Supports PDF, DOC, DOCX files. Max 10MB per file.</p>
                   <div className="flex items-center justify-center gap-3 mt-4">
                     <Badge className="bg-gray-100 text-gray-600 border-0">.pdf</Badge>
                     <Badge className="bg-gray-100 text-gray-600 border-0">.doc</Badge>

@@ -39,14 +39,22 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
   const onStatsChangeRef = useRef(onStatsChange);
   onStatsChangeRef.current = onStatsChange;
 
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const fetchStats = useCallback(async () => {
     try {
+      // Abort any previous in-flight request
+      abortControllerRef.current?.abort();
+      const controller = new AbortController();
+      abortControllerRef.current = controller;
+
       const token = useAuthStore.getState().token;
       const response = await fetch(`${config.apiUrl}/api/stats/live`, {
         headers: {
           'Content-Type': 'application/json',
           ...(token ? { Authorization: `Bearer ${token}` } : {}),
         },
+        signal: controller.signal,
       });
       
       if (!response.ok) {
@@ -73,6 +81,7 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
       
       return data;
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return null;
       const message = err instanceof Error ? err.message : 'Failed to fetch stats';
       setError(message);
       setLoading(false);
@@ -104,6 +113,7 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
         clearInterval(pollingRef.current);
         pollingRef.current = null;
       }
+      abortControllerRef.current?.abort();
     };
   }, [enabled, interval]);
 

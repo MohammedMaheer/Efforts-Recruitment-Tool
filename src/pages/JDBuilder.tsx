@@ -52,8 +52,9 @@ export default function JDBuilder() {
         const err = await res.json().catch(() => ({ detail: 'Generation failed' }))
         toast.error('Generation failed', err.detail || 'Could not generate job description')
       }
-    } catch (error: any) {
-      toast.error('Network error', error.message || 'Please check your connection')
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Please check your connection'
+      toast.error('Network error', message)
     } finally { setGenerating(false) }
   }
 

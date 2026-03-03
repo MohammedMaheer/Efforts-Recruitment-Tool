@@ -70,8 +70,8 @@ export function useLocalStorage<T>(
       if (event.key === key && event.newValue !== null) {
         try {
           setStoredValue(JSON.parse(event.newValue));
-        } catch {
-          // Ignore parse errors
+        } catch (err) {
+          console.warn(`Error parsing storage event for "${key}":`, err);
         }
       }
     };

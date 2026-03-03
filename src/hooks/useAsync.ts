@@ -38,6 +38,10 @@ export function useAsync<T, Args extends unknown[] = []>(
   // Track mounted state to prevent state updates after unmount
   const mountedRef = useRef(true);
   const executingRef = useRef(false);
+  // Stable ref for the async function to prevent infinite loops when
+  // callers pass unstable/inline function references with immediate=true
+  const asyncFunctionRef = useRef(asyncFunction);
+  asyncFunctionRef.current = asyncFunction;
 
   useEffect(() => {
     mountedRef.current = true;
@@ -50,14 +54,14 @@ export function useAsync<T, Args extends unknown[] = []>(
     async (...args: Args): Promise<T | null> => {
       // Prevent concurrent executions
       if (executingRef.current) {
-        return state.data;
+        return null;
       }
 
       executingRef.current = true;
       setState((prev) => ({ ...prev, loading: true, error: null }));
 
       try {
-        const result = await asyncFunction(...args);
+        const result = await asyncFunctionRef.current(...args);
 
         if (mountedRef.current) {
           setState({ data: result, loading: false, error: null });
@@ -76,7 +80,7 @@ export function useAsync<T, Args extends unknown[] = []>(
         return null;
       }
     },
-    [asyncFunction]
+    [] // stable — reads from asyncFunctionRef
   );
 
   const reset = useCallback(() => {
@@ -87,12 +91,14 @@ export function useAsync<T, Args extends unknown[] = []>(
     setState((prev) => ({ ...prev, data }));
   }, []);
 
-  // Execute immediately if requested
+  // Execute immediately on mount if requested (runs only once)
+  const immediateRef = useRef(immediate);
   useEffect(() => {
-    if (immediate) {
+    if (immediateRef.current) {
       execute(...([] as unknown as Args));
     }
-  }, [immediate, execute]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return {
     ...state,

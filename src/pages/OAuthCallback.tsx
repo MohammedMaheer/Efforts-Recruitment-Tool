@@ -1,11 +1,10 @@
 import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useAuthStore } from '@/store/authStore'
+import { authFetch } from '@/lib/authFetch'
 import config from '@/config'
 
 export default function OAuthCallback() {
   const navigate = useNavigate()
-  const token = useAuthStore((s) => s.token)
   const hasProcessed = useRef(false)  // Prevent duplicate requests
 
   useEffect(() => {
@@ -27,42 +26,33 @@ export default function OAuthCallback() {
       }
 
       // Clear the URL to prevent re-use of the code
-      window.history.replaceState({}, document.title, '/oauth/callback')
+      window.history.replaceState({}, document.title, '/auth/callback')
 
       try {
-        // Exchange code for token
-        const response = await fetch(`${config.apiUrl}/api/email/oauth2/callback`, {
+        // Exchange code for token — redirect_uri MUST match the one sent during authorization
+        const response = await authFetch(`${config.apiUrl}/api/email/oauth2/callback`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
-            code: code,
-            redirect_uri: `${window.location.origin}/oauth/callback`
+            code,
+            redirect_uri: `${window.location.origin}/auth/callback`
           })
         })
 
-        const data = await response.json()
-
         if (response.ok) {
-          console.log('OAuth2 authentication successful!', data)
-          
-          // Trigger email sync in background (with auth header)
+          // Trigger email sync in background using authFetch (auto-injects auth header)
           try {
-            await fetch(`${config.apiUrl}/api/email/sync-now`, {
+            await authFetch(`${config.apiUrl}/api/email/sync-now`, {
               method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-                ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
-              },
+              headers: { 'Content-Type': 'application/json' },
             })
-            console.log('Email sync triggered')
           } catch (syncError) {
             console.warn('Email sync trigger failed, will sync on next interval:', syncError)
           }
           
-          console.log(`Successfully connected ${data.email}! Email sync started.`)
           navigate('/candidates')
         } else {
-          console.error('OAuth2 error:', data)
+          console.error('OAuth2 callback failed:', response.status)
           navigate('/settings')
         }
       } catch (error) {

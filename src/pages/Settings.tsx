@@ -13,10 +13,9 @@ import { authFetch } from '@/lib/authFetch'
 
 export default function Settings() {
   const user = useAuthStore((state) => state.user)
-  const token = useAuthStore((state) => state.token)
   const addNotification = useNotificationStore((state) => state.addNotification)
   const [firstName, setFirstName] = useState(user?.name?.split(' ')[0] || '')
-  const [lastName, setLastName] = useState(user?.name?.split(' ')[1] || '')
+  const [lastName, setLastName] = useState(user?.name?.split(' ').slice(1).join(' ') || '')
   const [email, setEmail] = useState(user?.email || '')
   const [company, setCompany] = useState('')
   const [isSaving, setIsSaving] = useState(false)
@@ -56,7 +55,7 @@ export default function Settings() {
     setIsReprocessing(true)
     try {
       const result = await candidateApi.reprocessGarbled()
-      const data = (result as any)?.data || result
+      const data = (result?.data ?? result) as { cleaned?: number; rescored?: number; encoding_fixed?: number }
       addNotification({
         type: 'success',
         title: 'Reprocessing Complete',
@@ -78,7 +77,7 @@ export default function Settings() {
     setIsRescoring(true)
     try {
       const result = await candidateApi.reprocessScores()
-      const data = (result as any)?.data || result
+      const data = (result?.data ?? result) as { processed?: number }
       addNotification({
         type: 'success',
         title: 'Rescoring Complete',
@@ -108,7 +107,7 @@ export default function Settings() {
     setIsCleaningUp(true)
     try {
       const result = await candidateApi.cleanupGibberish()
-      const data = (result as any)?.data || result
+      const data = (result?.data ?? result) as { deleted_count?: number; reprocessed_count?: number; encoding_fixed_count?: number }
       addNotification({
         type: 'success',
         title: 'Cleanup Complete',
@@ -126,7 +125,7 @@ export default function Settings() {
     setIsAuditing(true)
     try {
       const result = await candidateApi.databaseAudit()
-      const data = (result as any)?.data || result
+      const data = (result?.data ?? result) as { total_candidates?: number; active_candidates?: number; issues?: Record<string, number> }
       const issues = data?.issues || {}
       const totalIssues = Object.values(issues).reduce((s: number, v: unknown) => s + (typeof v === 'number' ? v : 0), 0)
       addNotification({
@@ -145,7 +144,7 @@ export default function Settings() {
     setIsFullRepairing(true)
     try {
       const result = await candidateApi.fullDatabaseRepair()
-      const data = (result as any)?.data || result
+      const data = (result?.data ?? result) as { repair?: { summary?: Record<string, number> }; rescore?: { rescored?: number } }
       const repair = data?.repair?.summary || {}
       const rescore = data?.rescore || {}
       addNotification({
@@ -165,7 +164,7 @@ export default function Settings() {
     setIsRelooking(true)
     try {
       const result = await candidateApi.relookupFromEmail()
-      const data = (result as any)?.data || result
+      const data = (result?.data ?? result) as { checked?: number; improved?: number; errors?: number }
       addNotification({
         type: 'success',
         title: 'Email Re-lookup Complete',
@@ -182,11 +181,10 @@ export default function Settings() {
   const handleSaveProfile = async () => {
     setIsSaving(true)
     try {
-      const response = await fetch(`${config.apiUrl}/api/users/profile`, {
+      const response = await authFetch(`${config.apiUrl}/api/users/profile`, {
         method: 'PUT',
         headers: { 
           'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
         body: JSON.stringify({
           firstName,
@@ -201,13 +199,7 @@ export default function Settings() {
       }
       
       await response.json()
-      // Update the auth store so the UI reflects the change immediately
-      useAuthStore.getState().updateProfile?.({
-        name: `${firstName} ${lastName}`.trim(),
-        email,
-        company,
-      }).catch(() => {}) // ignore if updateProfile not available
-      // Also set user directly in store as fallback
+      // Update the auth store so the UI reflects the change immediately (local only, no extra API call)
       const currentUser = useAuthStore.getState().user
       if (currentUser) {
         useAuthStore.setState({ user: { ...currentUser, name: `${firstName} ${lastName}`.trim(), email, company } })
@@ -241,11 +233,10 @@ export default function Settings() {
     }
     
     try {
-      const response = await fetch(`${config.apiUrl}/api/users/password`, {
+      const response = await authFetch(`${config.apiUrl}/api/users/password`, {
         method: 'PUT',
         headers: { 
           'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
         },
         body: JSON.stringify({
           currentPassword,

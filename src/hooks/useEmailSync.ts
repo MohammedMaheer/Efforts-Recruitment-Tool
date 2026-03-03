@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { useAuthStore } from '@/store/authStore'
+import { authFetch } from '@/lib/authFetch'
 import config from '@/config'
 
 interface SyncStatus {
@@ -45,10 +45,8 @@ export function useEmailSync(
 
   const checkSyncStatus = useCallback(async () => {
     try {
-      const token = useAuthStore.getState().token
-      const response = await fetch(`${config.apiUrl}/api/email/sync-status`, {
+      const response = await authFetch(`${config.apiUrl}/api/email/sync-status`, {
         signal: AbortSignal.timeout(8000),
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
       
       if (!response.ok) {
@@ -113,21 +111,32 @@ export function useEmailSync(
     return () => clearTimeout(timerId)
   }, [checkSyncStatus, pollIntervalMs])
 
+  const syncTimersRef = useRef<ReturnType<typeof setTimeout>[]>([])
+
   const triggerSync = useCallback(async () => {
     try {
-      const token = useAuthStore.getState().token
-      await fetch(`${config.apiUrl}/api/email/sync-now`, {
+      await authFetch(`${config.apiUrl}/api/email/sync-now`, {
         method: 'POST',
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
       })
       // Check more frequently right after triggering sync
-      setTimeout(checkSyncStatus, 3000)
-      setTimeout(checkSyncStatus, 8000)
-      setTimeout(checkSyncStatus, 15000)
+      // Clear any previous sync timers first
+      syncTimersRef.current.forEach(t => clearTimeout(t))
+      syncTimersRef.current = [
+        setTimeout(checkSyncStatus, 3000),
+        setTimeout(checkSyncStatus, 8000),
+        setTimeout(checkSyncStatus, 15000),
+      ]
     } catch {
       // Silently ignore
     }
   }, [checkSyncStatus])
+
+  // Clean up sync timers on unmount
+  useEffect(() => {
+    return () => {
+      syncTimersRef.current.forEach(t => clearTimeout(t))
+    }
+  }, [])
 
   return { syncStatus, triggerSync, checkSyncStatus }
 }

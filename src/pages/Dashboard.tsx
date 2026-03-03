@@ -48,6 +48,20 @@ export default function Dashboard() {
   const storagePercent = Math.min(Math.round((totalCandidates / 10000) * 100), 100)
   const searchQueryCount = searches.length
 
+  // CVs added today / this week
+  const now = new Date()
+  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  const weekStart = new Date(todayStart)
+  weekStart.setDate(weekStart.getDate() - 7)
+  const cvsToday = candidates.filter(c => {
+    const d = new Date(c.appliedDate)
+    return d >= todayStart
+  }).length
+  const cvsThisWeek = candidates.filter(c => {
+    const d = new Date(c.appliedDate)
+    return d >= weekStart
+  }).length
+
   useEffect(() => {
     const fetchData = async () => {
       try {
@@ -79,8 +93,8 @@ export default function Dashboard() {
       } else {
         setUploadResults([{ status: 'error', message: (await response.json()).detail || 'Upload failed' }])
       }
-    } catch (error: any) {
-      setUploadResults([{ status: 'error', message: error.message || 'Network error' }])
+    } catch (error: unknown) {
+      setUploadResults([{ status: 'error', message: error instanceof Error ? error.message : 'Network error' }])
     } finally { setIsUploading(false) }
   }, [refetch])
 
@@ -96,8 +110,8 @@ export default function Dashboard() {
   const fmtDate = (iso: string) => {
     try {
       const d = new Date(iso)
-      return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric' }) +
-        ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true })
+      return d.toLocaleDateString('en-US', { month: 'numeric', day: 'numeric', year: 'numeric', timeZone: 'Asia/Dubai' }) +
+        ' ' + d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true, timeZone: 'Asia/Dubai' })
     } catch { return iso }
   }
 
@@ -165,14 +179,16 @@ export default function Dashboard() {
           <span className="text-xs text-gray-400">{new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}</span>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
           {[
             { icon: CheckCircle2, label: 'Selected', sublabel: 'Ready to hire', count: pipeline.selected, color: 'text-green-500', bg: 'bg-green-50', status: 'Offered' },
             { icon: XCircle, label: 'Rejected', sublabel: 'This month', count: pipeline.rejected, color: 'text-red-500', bg: 'bg-red-50', status: 'Rejected' },
             { icon: Star, label: 'Shortlisted', sublabel: 'Awaiting review', count: pipeline.shortlisted, color: 'text-amber-500', bg: 'bg-amber-50', status: 'Shortlisted' },
             { icon: Video, label: 'Interviewed', sublabel: 'Completed interviews', count: pipeline.interviewed, color: 'text-blue-500', bg: 'bg-blue-50', status: 'Interviewing' },
+            { icon: Upload, label: 'CVs Today', sublabel: 'Added today', count: cvsToday, color: 'text-teal-500', bg: 'bg-teal-50', status: '' },
+            { icon: FileText, label: 'CVs This Week', sublabel: 'Last 7 days', count: cvsThisWeek, color: 'text-purple-500', bg: 'bg-purple-50', status: '' },
           ].map((item) => (
-            <Card key={item.label} className="border border-gray-100 hover:shadow-md transition-shadow rounded-xl cursor-pointer" onClick={() => navigate(`/candidates?status=${item.status}`)}>
+            <Card key={item.label} className="border border-gray-100 hover:shadow-md transition-shadow rounded-xl cursor-pointer" onClick={() => item.status ? navigate(`/candidates?status=${item.status}`) : navigate('/candidates')}>
               <CardContent className="p-5 text-center">
                 <div className={`w-10 h-10 ${item.bg} rounded-full flex items-center justify-center mx-auto mb-3`}>
                   <item.icon className={`w-5 h-5 ${item.color}`} />
@@ -233,7 +249,7 @@ export default function Dashboard() {
                         </td>
                         <td className="px-3 py-3 text-xs text-gray-500">{fmtDate(s.searched_at)}</td>
                         <td className="px-3 py-3 text-center">
-                          <button onClick={() => navigate('/ai-assistant')} className="text-xs text-sky-600 hover:text-sky-700 font-medium">View Results</button>
+                          <button onClick={() => navigate('/ai-assistant', { state: { prefillQuery: s.query } })} className="text-xs text-sky-600 hover:text-sky-700 font-medium">View Results</button>
                         </td>
                       </tr>
                     ))}
@@ -250,7 +266,7 @@ export default function Dashboard() {
               <Calendar className="w-4 h-4 text-sky-500" />
               <h3 className="font-semibold text-gray-900">Schedule</h3>
             </div>
-            <button onClick={() => navigate('/ai-assistant')} title="Schedule via AI Assistant" className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors">
+            <button onClick={() => navigate('/ai-assistant')} title="Schedule via AI Search" className="w-7 h-7 rounded-lg bg-gray-100 flex items-center justify-center hover:bg-gray-200 transition-colors">
               <Plus className="w-4 h-4 text-gray-500" />
             </button>
           </div>
@@ -260,7 +276,7 @@ export default function Dashboard() {
               <div className="text-center py-6">
                 <Calendar className="w-8 h-8 text-gray-300 mx-auto mb-2" />
                 <p className="text-sm text-gray-400">No upcoming events</p>
-                <p className="text-xs text-gray-400 mt-1">Schedule interviews from AI Assistant</p>
+                <p className="text-xs text-gray-400 mt-1">Schedule interviews from AI Search</p>
               </div>
             ) : (
               <div className="space-y-3">
@@ -321,7 +337,7 @@ export default function Dashboard() {
                 >
                   <div className="w-16 h-16 bg-sky-100 rounded-full flex items-center justify-center mx-auto mb-4"><Upload className="w-8 h-8 text-sky-600" /></div>
                   <p className="text-lg font-medium text-gray-900 mb-2">{dragActive ? 'Drop files here' : 'Drop files here or click to browse'}</p>
-                  <p className="text-sm text-gray-500">Support for PDF, DOC, DOCX files (max 100MB per file)</p>
+                  <p className="text-sm text-gray-500">Support for PDF, DOC, DOCX files (max 10MB per file)</p>
                 </div>
               )}
             </div>

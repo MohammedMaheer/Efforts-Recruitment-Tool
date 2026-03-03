@@ -59,7 +59,7 @@ class EmailParser:
             'skills': [],
             'experience': 0,
             'education': '',
-            'summary': clean_body[:500] if clean_body else '',
+            'summary': '',  # Will be set properly after extraction or by AI later
             'work_history': [],
             'location': ''
         }
@@ -133,6 +133,11 @@ class EmailParser:
             if loc in body_lower:
                 result['location'] = loc.title()
                 break
+        
+        # Generate structured summary from extracted fields (NOT from raw email body)
+        # AI will replace this later if available; this is just a clean fallback
+        from services.email_scraper import generate_structured_summary
+        result['summary'] = generate_structured_summary(result)
         
         return result
     

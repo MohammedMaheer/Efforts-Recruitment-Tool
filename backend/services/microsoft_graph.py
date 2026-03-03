@@ -441,6 +441,7 @@ class MicrosoftGraphService:
         Send an email via Microsoft Graph API.
         Works with both delegated and application permissions.
         Requires Mail.Send permission.
+        Falls back between /me/sendMail and /users/{email}/sendMail if one fails.
         """
         if not self._is_token_valid():
             return {'status': 'error', 'message': 'Token expired or invalid'}
@@ -469,19 +470,36 @@ class MicrosoftGraphService:
         }
 
         try:
-            # Route based on auth type
+            # Build ordered URL list based on auth type
+            urls = []
             if self.auth_type == 'application' and self.user_email:
-                url = f"{self.graph_url}/users/{self.user_email}/sendMail"
+                urls.append(f"{self.graph_url}/users/{self.user_email}/sendMail")
             else:
-                url = f"{self.graph_url}/me/sendMail"
+                urls.append(f"{self.graph_url}/me/sendMail")
+                if self.user_email:
+                    urls.append(f"{self.graph_url}/users/{self.user_email}/sendMail")
 
-            response = await asyncio.to_thread(lambda: requests.post(url, headers=headers, json=email_payload, timeout=30))
-            response.raise_for_status()
+            last_error = None
+            for url in urls:
+                try:
+                    response = await asyncio.to_thread(lambda u=url: requests.post(u, headers=headers, json=email_payload, timeout=30))
+                    if response.status_code in (200, 201, 202):
+                        logger.info(f"✅ Email sent to {to_email}: {subject} (via {url.split('/v1.0/')[-1]})")
+                        return {
+                            'status': 'success',
+                            'message': f'Email sent to {to_email}'
+                        }
+                    else:
+                        last_error = f"HTTP {response.status_code}: {response.text[:200]}"
+                        logger.warning(f"⚠️ sendMail attempt failed ({url.split('/v1.0/')[-1]}): {last_error}")
+                except Exception as req_err:
+                    last_error = str(req_err)
+                    logger.warning(f"⚠️ sendMail request error ({url.split('/v1.0/')[-1]}): {last_error}")
 
-            logger.warning(f"✅ Email sent to {to_email}: {subject}")
+            logger.error(f"❌ All sendMail attempts failed for {to_email}: {last_error}")
             return {
-                'status': 'success',
-                'message': f'Email sent to {to_email}'
+                'status': 'error',
+                'message': last_error or 'All send attempts failed'
             }
 
         except Exception as e:

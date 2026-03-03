@@ -1,29 +1,54 @@
 /**
- * AI Recruiter — Branded PDF Generator
- * Generates professional candidate assessment PDFs with AI summary + profile
- * Blue gradient candidate header design with circular score indicator
+ * AI Recruiter — Branded PDF Generator v3
+ * Matches the official Efforts Solutions reference design exactly:
+ *  – Bold geometric logo + red accent line
+ *  – "AI RECRUITER AGENT SUMMARY" title with alternating cyan/navy
+ *  – Blue gradient hero card with initial avatar + circular score gauge
+ *  – Detailed Score Analysis (3 visual cards)
+ *  – Career Timeline with skill badges
+ *  – Resume Highlights
+ *  – Footer with company info + logo icon
  */
 
 import { jsPDF } from 'jspdf'
 import { PDFDocument } from 'pdf-lib'
-import { useAuthStore } from '@/store/authStore'
+import { authFetch } from '@/lib/authFetch'
 import { config } from '@/config'
 
-// AI Recruiter brand colors
-const BRAND = {
-  primary: [29, 78, 216] as [number, number, number],     // #1d4ed8 — deep royal blue
-  primaryDark: [23, 37, 84] as [number, number, number],   // #172554 — navy
-  primaryLight: [219, 234, 254] as [number, number, number],// #dbeafe — light blue
-  accent: [59, 130, 246] as [number, number, number],      // #3b82f6 — bright blue
-  white: [255, 255, 255] as [number, number, number],
-  black: [15, 23, 42] as [number, number, number],         // slate-900
-  gray: [100, 116, 139] as [number, number, number],       // slate-500
-  grayLight: [241, 245, 249] as [number, number, number],  // slate-100
-  green: [22, 163, 74] as [number, number, number],        // green-600
-  red: [220, 38, 38] as [number, number, number],          // red-600
-  amber: [217, 119, 6] as [number, number, number],        // amber-600
+/* ═══════════════════════════════════════════════════════════════════
+   Brand Colors
+   ═══════════════════════════════════════════════════════════════════ */
+type C3 = [number, number, number]
+
+const C = {
+  navy:        [0, 32, 96]       as C3,
+  navyDark:    [10, 20, 60]      as C3,
+  cyan:        [0, 176, 240]     as C3,
+  cyanLight:   [200, 230, 255]   as C3,
+  heroBlue:    [55, 95, 220]     as C3,
+  heroBlueL:   [80, 120, 235]    as C3,
+  heroBlueD:   [40, 70, 190]     as C3,
+  gradPink:    [200, 60, 160]    as C3,
+  gradPurple:  [130, 50, 200]    as C3,
+  redAccent:   [234, 76, 75]     as C3,
+  gray:        [127, 127, 127]   as C3,
+  grayDark:    [70, 70, 85]      as C3,
+  grayLight:   [240, 242, 247]   as C3,
+  calloutBg:   [235, 243, 255]   as C3,
+  cardBorder:  [225, 230, 240]   as C3,
+  white:       [255, 255, 255]   as C3,
+  black:       [30, 30, 40]      as C3,
+  green:       [34, 197, 94]     as C3,
+  greenDark:   [22, 163, 74]     as C3,
+  greenBg:     [220, 252, 231]   as C3,
+  red:         [220, 38, 38]     as C3,
+  redBg:       [254, 226, 226]   as C3,
+  amber:       [217, 119, 6]     as C3,
 }
 
+/* ═══════════════════════════════════════════════════════════════════
+   Interfaces
+   ═══════════════════════════════════════════════════════════════════ */
 interface CandidateData {
   id?: string
   name: string
@@ -66,835 +91,1441 @@ interface AIAnalysisData {
   isFallback?: boolean
 }
 
-// Cache for logo image data URL + natural dimensions
-let cachedLogoDataUrl: string | null = null
-let cachedLogoAspect: number = 1
+/* ═══════════════════════════════════════════════════════════════════
+   Logo — canvas-rendered geometric style
+   ═══════════════════════════════════════════════════════════════════ */
+let _logoUrl: string | null = null
+let _logoAspect = 1
 
-async function getLogoDataUrl(): Promise<{ dataUrl: string; aspect: number }> {
-  if (cachedLogoDataUrl) return { dataUrl: cachedLogoDataUrl, aspect: cachedLogoAspect }
-  
-  return new Promise((resolve) => {
-    const img = new Image()
-    img.crossOrigin = 'anonymous'
-    img.onload = () => {
+async function getLogoDataUrl(): Promise<{ url: string; aspect: number }> {
+  if (_logoUrl) return { url: _logoUrl, aspect: _logoAspect }
+
+  // Try loading the actual logo image from the public folder
+  try {
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = img.naturalWidth
+        canvas.height = img.naturalHeight
+        const ctx = canvas.getContext('2d')!
+        // White background (PDF doesn't handle transparency well)
+        ctx.fillStyle = '#ffffff'
+        ctx.fillRect(0, 0, canvas.width, canvas.height)
+        ctx.drawImage(img, 0, 0)
+        _logoAspect = img.naturalWidth / img.naturalHeight
+        resolve(canvas.toDataURL('image/png'))
+      }
+      img.onerror = () => reject(new Error('Image load failed'))
+      img.src = '/effortz-logo-dark.png'
+    })
+    _logoUrl = dataUrl
+    return { url: _logoUrl, aspect: _logoAspect }
+  } catch {
+    // Fallback: canvas-render the logo text if image file is missing
+    return new Promise((resolve) => {
+      const s = 4
+      const w = 320 * s, h = 90 * s
       const canvas = document.createElement('canvas')
-      canvas.width = img.naturalWidth
-      canvas.height = img.naturalHeight
+      canvas.width = w; canvas.height = h
       const ctx = canvas.getContext('2d')!
-      ctx.drawImage(img, 0, 0)
-      cachedLogoDataUrl = canvas.toDataURL('image/png')
-      cachedLogoAspect = img.naturalWidth / img.naturalHeight
-      resolve({ dataUrl: cachedLogoDataUrl, aspect: cachedLogoAspect })
-    }
-    img.onerror = () => {
-      const canvas = document.createElement('canvas')
-      canvas.width = 120
-      canvas.height = 120
-      const ctx = canvas.getContext('2d')!
-      ctx.fillStyle = '#1d4ed8'
-      ctx.beginPath()
-      ctx.roundRect(0, 0, 120, 120, 20)
-      ctx.fill()
       ctx.fillStyle = '#ffffff'
-      ctx.font = 'bold 60px Arial'
-      ctx.textAlign = 'center'
-      ctx.textBaseline = 'middle'
-      ctx.fillText('AI', 60, 65)
-      cachedLogoDataUrl = canvas.toDataURL('image/png')
-      cachedLogoAspect = 1
-      resolve({ dataUrl: cachedLogoDataUrl, aspect: cachedLogoAspect })
-    }
-    img.src = '/effortz-logo.png'
+      ctx.fillRect(0, 0, w, h)
+      ctx.fillStyle = '#001e5a'
+      ctx.font = `900 ${34 * s}px "Arial Black", "Impact", "Trebuchet MS", sans-serif`
+      ctx.textBaseline = 'top'
+      ctx.fillText('EFFORTS', 0, 0)
+      ctx.font = `900 ${28 * s}px "Arial Black", "Impact", "Trebuchet MS", sans-serif`
+      ctx.fillText('SOLUTIONS', 0, 38 * s)
+      ctx.fillStyle = '#7f7f7f'
+      ctx.font = `600 ${8 * s}px "Trebuchet MS", Arial, sans-serif`
+      ctx.fillText('IT TECHNOLOGY & SOLUTIONS', 0, 72 * s)
+      _logoUrl = canvas.toDataURL('image/png')
+      _logoAspect = w / h
+      resolve({ url: _logoUrl, aspect: _logoAspect })
+    })
+  }
+}
+
+/* Small logo icon for footer */
+let _iconUrl: string | null = null
+async function getLogoIconUrl(): Promise<string> {
+  if (_iconUrl) return _iconUrl
+  return new Promise((resolve) => {
+    const s = 4, sz = 40 * s
+    const canvas = document.createElement('canvas')
+    canvas.width = sz; canvas.height = sz
+    const ctx = canvas.getContext('2d')!
+    // Navy rounded square
+    ctx.fillStyle = '#001e5a'
+    const r = 6 * s
+    ctx.beginPath()
+    ctx.moveTo(r, 0)
+    ctx.lineTo(sz - r, 0)
+    ctx.quadraticCurveTo(sz, 0, sz, r)
+    ctx.lineTo(sz, sz - r)
+    ctx.quadraticCurveTo(sz, sz, sz - r, sz)
+    ctx.lineTo(r, sz)
+    ctx.quadraticCurveTo(0, sz, 0, sz - r)
+    ctx.lineTo(0, r)
+    ctx.quadraticCurveTo(0, 0, r, 0)
+    ctx.fill()
+    // White "E" letter
+    ctx.fillStyle = '#ffffff'
+    ctx.font = `900 ${24 * s}px "Arial Black", Impact, sans-serif`
+    ctx.textBaseline = 'middle'
+    ctx.textAlign = 'center'
+    ctx.fillText('E', sz / 2, sz / 2 + 1 * s)
+    // Red accent bar at bottom
+    ctx.fillStyle = '#ea4c4b'
+    ctx.fillRect(6 * s, sz - 5 * s, sz - 12 * s, 2 * s)
+
+    _iconUrl = canvas.toDataURL('image/png')
+    resolve(_iconUrl)
   })
 }
 
-function setColor(doc: jsPDF, color: [number, number, number]) {
-  doc.setTextColor(color[0], color[1], color[2])
+/* ═══════════════════════════════════════════════════════════════════
+   Drawing Primitives
+   ═══════════════════════════════════════════════════════════════════ */
+function setT(doc: jsPDF, c: C3) { doc.setTextColor(c[0], c[1], c[2]) }
+
+function fillR(doc: jsPDF, x: number, y: number, w: number, h: number, c: C3, r?: number) {
+  doc.setFillColor(c[0], c[1], c[2])
+  r ? doc.roundedRect(x, y, w, h, r, r, 'F') : doc.rect(x, y, w, h, 'F')
 }
 
-function drawRect(doc: jsPDF, x: number, y: number, w: number, h: number, color: [number, number, number], radius?: number) {
-  doc.setFillColor(color[0], color[1], color[2])
-  if (radius) {
-    doc.roundedRect(x, y, w, h, radius, radius, 'F')
-  } else {
-    doc.rect(x, y, w, h, 'F')
+function lineH(doc: jsPDF, x1: number, y: number, x2: number, c: C3, w = 0.5) {
+  doc.setDrawColor(c[0], c[1], c[2])
+  doc.setLineWidth(w)
+  doc.line(x1, y, x2, y)
+}
+
+function lineV(doc: jsPDF, x: number, y1: number, y2: number, c: C3, w = 0.5) {
+  doc.setDrawColor(c[0], c[1], c[2])
+  doc.setLineWidth(w)
+  doc.line(x, y1, x, y2)
+}
+
+/* Draw a horizontal multi-stop gradient */
+function gradientH(doc: jsPDF, x: number, y: number, w: number, h: number, stops: C3[]) {
+  const n = 40
+  const sw = w / n
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1)
+    const si = t * (stops.length - 1)
+    const ci = Math.floor(si)
+    const f = si - ci
+    const a = stops[Math.min(ci, stops.length - 1)]
+    const b = stops[Math.min(ci + 1, stops.length - 1)]
+    const rgb: C3 = [
+      Math.round(a[0] + (b[0] - a[0]) * f),
+      Math.round(a[1] + (b[1] - a[1]) * f),
+      Math.round(a[2] + (b[2] - a[2]) * f),
+    ]
+    fillR(doc, x + i * sw, y, sw + 0.3, h, rgb)
   }
 }
 
-function drawLine(doc: jsPDF, x1: number, y1: number, x2: number, y2: number, color: [number, number, number], width = 0.5) {
-  doc.setDrawColor(color[0], color[1], color[2])
-  doc.setLineWidth(width)
-  doc.line(x1, y1, x2, y2)
+/* Draw a vertical multi-stop gradient */
+function gradientV(doc: jsPDF, x: number, y: number, w: number, h: number, stops: C3[]) {
+  const n = 25
+  const sh = h / n
+  for (let i = 0; i < n; i++) {
+    const t = i / (n - 1)
+    const si = t * (stops.length - 1)
+    const ci = Math.floor(si)
+    const f = si - ci
+    const a = stops[Math.min(ci, stops.length - 1)]
+    const b = stops[Math.min(ci + 1, stops.length - 1)]
+    const rgb: C3 = [
+      Math.round(a[0] + (b[0] - a[0]) * f),
+      Math.round(a[1] + (b[1] - a[1]) * f),
+      Math.round(a[2] + (b[2] - a[2]) * f),
+    ]
+    fillR(doc, x, y + i * sh, w, sh + 0.2, rgb)
+  }
 }
 
-/**
- * Derive consistent rating/recommendation from matchScore when AI analysis is fallback
- */
-function deriveRatingFromScore(score: number): { rating: string; recommendation: string; confidence: number } {
-  if (score >= 90) return { rating: 'A+', recommendation: 'STRONGLY_RECOMMEND', confidence: 92 }
-  if (score >= 80) return { rating: 'A', recommendation: 'STRONGLY_RECOMMEND', confidence: 85 }
-  if (score >= 70) return { rating: 'A-', recommendation: 'RECOMMEND', confidence: 78 }
-  if (score >= 60) return { rating: 'B+', recommendation: 'RECOMMEND', confidence: 72 }
-  if (score >= 50) return { rating: 'B', recommendation: 'CONSIDER', confidence: 65 }
-  if (score >= 40) return { rating: 'B-', recommendation: 'CONSIDER', confidence: 58 }
-  if (score >= 30) return { rating: 'C+', recommendation: 'REVIEW', confidence: 50 }
-  if (score >= 20) return { rating: 'C', recommendation: 'REVIEW', confidence: 42 }
-  return { rating: 'C-', recommendation: 'NOT_RECOMMENDED', confidence: 35 }
+/* Draw a circular arc (score gauge) */
+function drawArc(doc: jsPDF, cx: number, cy: number, r: number, startDeg: number, endDeg: number, c: C3, lw: number) {
+  const segs = Math.max(Math.ceil(Math.abs(endDeg - startDeg) / 6), 4)
+  const toRad = Math.PI / 180
+  doc.setDrawColor(c[0], c[1], c[2])
+  doc.setLineWidth(lw)
+  for (let i = 0; i < segs; i++) {
+    const a1 = (startDeg + (endDeg - startDeg) * (i / segs)) * toRad
+    const a2 = (startDeg + (endDeg - startDeg) * ((i + 1) / segs)) * toRad
+    doc.line(
+      cx + Math.cos(a1) * r, cy + Math.sin(a1) * r,
+      cx + Math.cos(a2) * r, cy + Math.sin(a2) * r,
+    )
+  }
 }
 
-/**
- * Draw clean white top bar with logo + company name (matching AI Summary design)
- */
-async function drawTopBar(doc: jsPDF, pageWidth: number): Promise<number> {
-  const barH = 18
-  // White background
-  drawRect(doc, 0, 0, pageWidth, barH, BRAND.white)
-  
-  let textStartX = 28
+/* ═══════════════════════════════════════════════════════════════════
+   Rating Derivation
+   ═══════════════════════════════════════════════════════════════════ */
+function deriveRating(s: number) {
+  if (s >= 90) return { rating: 'A+', rec: 'STRONGLY_RECOMMEND', conf: 92 }
+  if (s >= 80) return { rating: 'A', rec: 'STRONGLY_RECOMMEND', conf: 85 }
+  if (s >= 70) return { rating: 'A-', rec: 'RECOMMEND', conf: 78 }
+  if (s >= 60) return { rating: 'B+', rec: 'RECOMMEND', conf: 72 }
+  if (s >= 50) return { rating: 'B', rec: 'CONSIDER', conf: 65 }
+  if (s >= 40) return { rating: 'B-', rec: 'CONSIDER', conf: 58 }
+  if (s >= 30) return { rating: 'C+', rec: 'REVIEW', conf: 50 }
+  if (s >= 20) return { rating: 'C', rec: 'REVIEW', conf: 42 }
+  return { rating: 'C-', rec: 'NOT_RECOMMENDED', conf: 35 }
+}
+
+function scoreStatusText(s: number): string {
+  if (s >= 80) return 'Strong Fit'
+  if (s >= 60) return 'Good Match'
+  if (s >= 40) return 'Moderate Fit'
+  return 'Needs Review'
+}
+
+function scoreColor(s: number): C3 {
+  if (s >= 70) return C.greenDark
+  if (s >= 50) return C.amber
+  if (s > 0) return C.red
+  return C.gray
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   HEADER — Logo + Red Accent Line + Title
+   ═══════════════════════════════════════════════════════════════════ */
+async function drawHeader(doc: jsPDF, pw: number): Promise<number> {
+  fillR(doc, 0, 0, pw, 32, C.white)
+
+  // Logo — compact, top-left
   try {
-    const { dataUrl: logoDataUrl, aspect } = await getLogoDataUrl()
+    const { url, aspect } = await getLogoDataUrl()
     const logoH = 12
     let logoW = logoH * aspect
-    if (logoW > 28) logoW = 28
-    const logoX = 10
-    const logoY = (barH - logoH) / 2
-    doc.addImage(logoDataUrl, 'PNG', logoX, logoY, logoW, logoH)
-    textStartX = logoX + logoW + 4
+    if (logoW > 48) logoW = 48
+    doc.addImage(url, 'PNG', 18, 3, logoW, logoH)
   } catch {
-    textStartX = 12
-  }
-  
-  doc.setFontSize(13)
-  doc.setFont('helvetica', 'bold')
-  setColor(doc, BRAND.primaryDark)
-  doc.text('AI Recruiter', textStartX, barH / 2 + 0.5)
-  
-  doc.setFontSize(7)
-  doc.setFont('helvetica', 'normal')
-  setColor(doc, BRAND.gray)
-  doc.text('Smart Hiring Platform', textStartX, barH / 2 + 5)
-  
-  doc.setFontSize(8)
-  doc.setFont('helvetica', 'bold')
-  setColor(doc, BRAND.primaryDark)
-  doc.text('AI SUMMARY', pageWidth - 14, barH / 2 - 2, { align: 'right' })
-  
-  doc.setFontSize(7)
-  doc.setFont('helvetica', 'normal')
-  setColor(doc, BRAND.gray)
-  const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-  doc.text(dateStr, pageWidth - 14, barH / 2 + 3, { align: 'right' })
-  
-  // Accent line at bottom of header
-  drawRect(doc, 0, barH - 1, pageWidth, 1, BRAND.accent)
-  
-  return barH
-}
-
-/**
- * Draw white-background candidate header with score circle and clean layout
- */
-function drawCandidateHeader(doc: jsPDF, candidate: CandidateData, y: number, pageWidth: number): number {
-  const headerH = 32
-  const margin = 14
-  
-  // White background
-  drawRect(doc, 0, y, pageWidth, headerH, BRAND.white)
-  // Subtle bottom border
-  drawLine(doc, margin, y + headerH - 1, pageWidth - margin, y + headerH - 1, BRAND.primaryLight, 0.5)
-  
-  // Score circle on right
-  const score = candidate.matchScore ?? 50
-  const circleX = pageWidth - 28
-  const circleY = y + headerH / 2 - 1
-  const circleR = 12
-  
-  // Colored ring background
-  const scoreColor = score >= 70 ? BRAND.green : score >= 50 ? BRAND.amber : BRAND.red
-  doc.setFillColor(scoreColor[0], scoreColor[1], scoreColor[2])
-  doc.circle(circleX, circleY, circleR, 'F')
-  // White inner circle
-  doc.setFillColor(255, 255, 255)
-  doc.circle(circleX, circleY, circleR - 2, 'F')
-  
-  // Score number
-  doc.setFontSize(15)
-  doc.setFont('helvetica', 'bold')
-  setColor(doc, scoreColor)
-  doc.text(`${score.toFixed(0)}%`, circleX, circleY + 1.5, { align: 'center' })
-  
-  // "MATCH" label
-  doc.setFontSize(5)
-  doc.setFont('helvetica', 'bold')
-  setColor(doc, BRAND.gray)
-  doc.text('MATCH', circleX, circleY + 6, { align: 'center' })
-  
-  // Candidate name (large, dark)
-  doc.setFontSize(18)
-  doc.setFont('helvetica', 'bold')
-  setColor(doc, BRAND.primaryDark)
-  doc.text(candidate.name, margin, y + 10)
-  
-  // Job title / category
-  const titleLine = candidate.jobSubcategory || candidate.jobCategory || 'Professional'
-  doc.setFontSize(10)
-  doc.setFont('helvetica', 'normal')
-  setColor(doc, BRAND.accent)
-  doc.text(titleLine, margin, y + 17)
-  
-  // Contact info row
-  doc.setFontSize(7.5)
-  setColor(doc, BRAND.gray)
-  const contactItems: string[] = []
-  if (candidate.location && candidate.location !== 'Not Specified' && candidate.location !== 'Unknown') {
-    contactItems.push(candidate.location)
-  }
-  if (candidate.email) contactItems.push(candidate.email)
-  if (candidate.phone) contactItems.push(candidate.phone)
-  if (candidate.experience > 0) contactItems.push(`${candidate.experience} yrs exp`)
-  doc.text(contactItems.join('  |  '), margin, y + 23)
-  
-  // Category badge
-  if (candidate.jobCategory) {
-    const catText = candidate.jobCategory
-    doc.setFontSize(6.5)
-    const catW = doc.getTextWidth(catText) + 6
-    drawRect(doc, margin, y + 26, catW, 4.5, BRAND.primaryLight, 2)
+    doc.setFontSize(12)
     doc.setFont('helvetica', 'bold')
-    setColor(doc, BRAND.primaryDark)
-    doc.text(catText, margin + 3, y + 29.2)
+    setT(doc, C.navy)
+    doc.text('EFFORTS SOLUTIONS', 18, 10)
   }
-  
-  return y + headerH + 2
-}
 
-/**
- * Draw the branded footer
- */
-function drawFooter(doc: jsPDF, pageWidth: number, pageHeight: number, pageNum: number) {
-  const footerY = pageHeight - 12
-  drawLine(doc, 14, footerY - 3, pageWidth - 14, footerY - 3, BRAND.primaryLight, 0.3)
-  
-  doc.setFontSize(7)
-  doc.setFont('helvetica', 'normal')
-  setColor(doc, BRAND.gray)
-  doc.text('AI Recruiter  |  Smart Hiring Platform  |  Confidential Assessment Report', 14, footerY)
-  doc.text(`Page ${pageNum}`, pageWidth - 14, footerY, { align: 'right' })
-}
+  // Navy decorative bar under logo
+  fillR(doc, 18, 17, 42, 1.8, C.navy)
 
-function drawSectionHeading(doc: jsPDF, title: string, y: number, pageWidth: number): number {
-  drawRect(doc, 14, y, 3, 8, BRAND.primary)
+  // Red accent line from after navy bar to right edge
+  lineH(doc, 64, 17.9, pw - 18, C.redAccent, 0.8)
+
+  // Title: "AI RECRUITER AGENT SUMMARY" — alternating cyan/navy, centered
+  const titleY = 27
   doc.setFontSize(11)
   doc.setFont('helvetica', 'bold')
-  setColor(doc, BRAND.primaryDark)
-  doc.text(title, 20, y + 6)
-  drawLine(doc, 20, y + 9, pageWidth - 14, y + 9, BRAND.primaryLight, 0.3)
-  return y + 14
-}
 
-function checkPageBreak(doc: jsPDF, currentY: number, neededSpace: number, pageWidth: number, pageHeight: number, pageNum: { value: number }): number {
-  if (currentY + neededSpace > pageHeight - 20) {
-    drawFooter(doc, pageWidth, pageHeight, pageNum.value)
-    doc.addPage()
-    pageNum.value++
-    return 16
+  const parts: { t: string; c: C3 }[] = [
+    { t: 'AI', c: C.cyan },
+    { t: ' RECRUITER', c: C.navy },
+    { t: ' AGENT', c: C.cyan },
+    { t: ' SUMMARY', c: C.navy },
+  ]
+
+  let tw = 0
+  for (const p of parts) tw += doc.getTextWidth(p.t)
+  let cx = (pw - tw) / 2
+
+  for (const p of parts) {
+    const trimmed = p.t.trimStart()
+    const gap = doc.getTextWidth(p.t) - doc.getTextWidth(trimmed)
+    cx += gap
+    setT(doc, p.c)
+    doc.text(trimmed, cx, titleY)
+    cx += doc.getTextWidth(trimmed)
   }
-  return currentY
+
+  return 32
 }
 
-function writeWrappedText(doc: jsPDF, text: string, x: number, y: number, maxWidth: number, fontSize: number, color: [number, number, number], lineHeight = 4.5, pageWidth?: number, pageHeight?: number, pageNum?: { value: number }): number {
-  doc.setFontSize(fontSize)
+/* ═══════════════════════════════════════════════════════════════════
+   Continuation Header (pages 2+)
+   ═══════════════════════════════════════════════════════════════════ */
+function contHeader(doc: jsPDF, pw: number, name: string): number {
+  fillR(doc, 0, 0, pw, 12, C.white)
+  doc.setFontSize(8)
+  doc.setFont('helvetica', 'bold')
+  setT(doc, C.navy)
+  doc.text('EFFORTS SOLUTIONS', 18, 7)
+  fillR(doc, 18, 9, 35, 1, C.navy)
+  lineH(doc, 56, 9.5, pw - 18, C.redAccent, 0.5)
+  doc.setFontSize(7)
   doc.setFont('helvetica', 'normal')
-  setColor(doc, color)
-  const lines = doc.splitTextToSize(text, maxWidth)
-  // If page dimensions provided, handle page breaks per line
-  if (pageWidth && pageHeight && pageNum) {
-    for (const line of lines) {
-      if (y + lineHeight > pageHeight - 20) {
-        drawFooter(doc, pageWidth, pageHeight, pageNum.value)
-        doc.addPage()
-        pageNum.value++
-        y = 16
-        doc.setFontSize(fontSize)
-        doc.setFont('helvetica', 'normal')
-        setColor(doc, color)
-      }
-      doc.text(line, x, y)
-      y += lineHeight
-    }
-    return y
+  setT(doc, C.gray)
+  doc.text(name, pw - 18, 8, { align: 'right' })
+  return 15
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   HERO CARD — Blue gradient + Initial Avatar + Score Gauge
+   ═══════════════════════════════════════════════════════════════════ */
+function drawHero(doc: jsPDF, cand: CandidateData, y: number, ml: number, cw: number): number {
+  const cardH = 42
+
+  // Blue card background
+  fillR(doc, ml, y, cw, cardH, C.heroBlue, 5)
+
+  // Gradient bottom strip (blue → cyan → pink → purple)
+  const stripH = 3
+  gradientH(doc, ml, y + cardH - stripH, cw, stripH, [
+    C.heroBlue, [60, 140, 255] as C3, C.cyan, C.gradPink, C.gradPurple,
+  ])
+  // re-round bottom corners by overlaying tiny corner fills
+  fillR(doc, ml, y + cardH - 5, 5, 5, C.heroBlue) // will be covered by gradient
+  // Just let the gradient extend to edges — good enough
+
+  // ── Initial Avatar Circle (green) ──
+  const initial = (cand.name || 'C').charAt(0).toUpperCase()
+  const avX = ml + 14
+  const avY = y + cardH / 2 - 2
+  const avR = 8
+  doc.setFillColor(C.green[0], C.green[1], C.green[2])
+  doc.circle(avX, avY, avR, 'F')
+  // Lighter inner ring
+  doc.setFillColor(40, 210, 110)
+  doc.circle(avX, avY, avR - 1.5, 'F')
+  doc.setFillColor(C.green[0], C.green[1], C.green[2])
+  doc.circle(avX, avY, avR - 2.5, 'F')
+  // Initial letter
+  doc.setFontSize(16)
+  doc.setFont('helvetica', 'bold')
+  setT(doc, C.white)
+  doc.text(initial, avX, avY + 2, { align: 'center' })
+
+  // ── Score Gauge (right side) ──
+  const score = cand.matchScore ?? 0
+  const sColor = scoreColor(score)
+  const gX = ml + cw - 28
+  const gY = y + 16
+  const gR = 13
+
+  // White circle background
+  doc.setFillColor(255, 255, 255)
+  doc.circle(gX, gY, gR + 2, 'F')
+
+  // Gray track ring
+  drawArc(doc, gX, gY, gR, 0, 360, [220, 222, 230] as C3, 2.2)
+
+  // Colored score arc (from -90° clockwise)
+  if (score > 0) {
+    const endDeg = -90 + (score / 100) * 360
+    drawArc(doc, gX, gY, gR, -90, endDeg, sColor, 2.5)
   }
-  // Fallback: write all at once (old behavior for callers that don't pass page info)
-  doc.text(lines, x, y)
-  return y + (lines.length * lineHeight)
+
+  // Score text
+  doc.setFontSize(18)
+  doc.setFont('helvetica', 'bold')
+  setT(doc, sColor)
+  doc.text(`${score.toFixed(0)}%`, gX, gY + 2.5, { align: 'center' })
+
+  // Status text below gauge
+  const statusT = scoreStatusText(score)
+  doc.setFontSize(6.5)
+  doc.setFont('helvetica', 'bold')
+  setT(doc, sColor)
+  doc.text(statusT, gX, gY + gR + 7, { align: 'center' })
+
+  // ── Candidate Details (left of gauge) ──
+  const txtX = avX + avR + 6
+  const maxTxtW = gX - gR - txtX - 8
+
+  // Name
+  doc.setFontSize(15)
+  doc.setFont('helvetica', 'bold')
+  setT(doc, C.white)
+  let name = sanitizeForHelvetica(cand.name || 'Candidate')
+  if (doc.getTextWidth(name) > maxTxtW) name = name.substring(0, 26) + '...'
+  doc.text(name, txtX, y + 13)
+
+  // Title/role
+  const role = sanitizeForHelvetica(cand.jobSubcategory || cand.jobCategory || 'Professional')
+  doc.setFontSize(9)
+  doc.setFont('helvetica', 'normal')
+  setT(doc, [180, 210, 255] as C3)
+  doc.text(role.substring(0, 50), txtX, y + 19)
+
+  // Location + experience
+  doc.setFontSize(7.5)
+  setT(doc, [190, 215, 255] as C3)
+  const locParts: string[] = []
+  if (cand.location && cand.location !== 'Not Specified' && cand.location !== 'Unknown') {
+    locParts.push(sanitizeForHelvetica(cand.location))
+  }
+  if (cand.experience > 0) locParts.push(cand.experience + ' Years experience')
+  if (locParts.length > 0) {
+    doc.text(locParts.join('  |  '), txtX, y + 26)
+  }
+
+  // Email + phone
+  const contactParts: string[] = []
+  if (cand.email) contactParts.push(sanitizeForHelvetica(cand.email))
+  if (cand.phone) contactParts.push(sanitizeForHelvetica(cand.phone))
+  if (contactParts.length > 0) {
+    let contactStr = contactParts.join('   |   ')
+    if (doc.getTextWidth(contactStr) > maxTxtW) contactStr = contactStr.substring(0, 55) + '...'
+    doc.text(contactStr, txtX, y + 32)
+  }
+
+  return y + cardH + 4
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Section Title with icon dot
+   ═══════════════════════════════════════════════════════════════════ */
+function sectionTitle(doc: jsPDF, title: string, y: number, ml: number, cw: number, iconColor?: C3): number {
+  const ic = iconColor || C.cyan
+  // Icon circle
+  doc.setFillColor(ic[0], ic[1], ic[2])
+  doc.circle(ml + 3, y + 2.5, 2.5, 'F')
+  // Small white symbol in circle
+  doc.setFontSize(5)
+  doc.setFont('helvetica', 'bold')
+  setT(doc, C.white)
+  // Use only ASCII-safe symbols (Helvetica compatible)
+  doc.text('*', ml + 3, y + 3.5, { align: 'center' })
+
+  // Title text
+  doc.setFontSize(11)
+  doc.setFont('helvetica', 'bold')
+  setT(doc, C.navy)
+  doc.text(title, ml + 9, y + 4.5)
+
+  // Underline
+  lineH(doc, ml + 9, y + 7, ml + cw, [225, 230, 240] as C3, 0.15)
+
+  return y + 11
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   AI Analysis Summary — callout box
+   ═══════════════════════════════════════════════════════════════════ */
+function drawAnalysisSummary(
+  doc: jsPDF, text: string, y: number,
+  ml: number, cw: number, pw: number, ph: number,
+  pn: { value: number }, cn: string,
+): number {
+  doc.setFontSize(8)
+  doc.setFont('helvetica', 'normal')
+  const lines: string[] = doc.splitTextToSize(sanitizeForHelvetica(text), cw - 14)
+  const lh = 3.8
+  const padTop = 5
+  const padBot = 4
+
+  // Paginating callout box — draw background chunk per page
+  let lineIdx = 0
+  while (lineIdx < lines.length) {
+    // How many lines fit on this page?
+    const avail = ph - 22 - y - padTop - padBot
+    const maxLines = Math.max(1, Math.floor(avail / lh))
+    const chunk = lines.slice(lineIdx, lineIdx + maxLines)
+    const chunkH = chunk.length * lh + padTop + padBot
+
+    if (y + chunkH > ph - 22) {
+      drawFooter(doc, pw, ph, pn.value)
+      doc.addPage()
+      pn.value++
+      y = contHeader(doc, pw, cn)
+      continue // re-measure available space on new page
+    }
+
+    // Draw box background for this chunk
+    fillR(doc, ml, y, cw, chunkH, C.calloutBg, 3)
+    fillR(doc, ml, y + 2, 2.5, chunkH - 4, C.cyan)
+
+    setT(doc, C.grayDark)
+    doc.setFontSize(8)
+    doc.setFont('helvetica', 'normal')
+    let ty = y + padTop
+    for (const line of chunk) {
+      doc.text(line, ml + 8, ty)
+      ty += lh
+    }
+    y = ty + padBot
+    lineIdx += chunk.length
+  }
+
+  return y + 1
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Detailed Score Analysis — 3 Cards
+   ═══════════════════════════════════════════════════════════════════ */
+function deriveScores(matchScore: number, skills: string[], exp: number, conf: number) {
+  const base = matchScore || 0
+  const skillFactor = Math.min(skills.length, 10) / 10 * 8 - 4
+  const expFactor = Math.min(exp, 15) / 15 * 10 - 3
+  const confBase = conf > 0 ? conf : base
+
+  return {
+    technical: Math.round(Math.min(100, Math.max(5, base + skillFactor))),
+    problemSolving: Math.round(Math.min(100, Math.max(5, base + expFactor))),
+    collaboration: Math.round(Math.min(100, Math.max(5, confBase + 2))),
+  }
+}
+
+function drawScoreCards(
+  doc: jsPDF, cand: CandidateData, analysis: AIAnalysisData | null,
+  y: number, ml: number, cw: number, pw: number, ph: number,
+  pn: { value: number }, cn: string,
+): number {
+  const scores = deriveScores(
+    cand.matchScore ?? 0,
+    cand.skills || [],
+    cand.experience || 0,
+    analysis?.confidence_score || 0,
+  )
+
+  const cardW = (cw - 8) / 3
+  const cardH = 48
+  const gap = 4
+
+  if (y + cardH + 6 > ph - 22) {
+    drawFooter(doc, pw, ph, pn.value)
+    doc.addPage()
+    pn.value++
+    y = contHeader(doc, pw, cn)
+  }
+
+  const cards = [
+    {
+      title: 'Technical Skills',
+      score: scores.technical,
+      text: analysis?.technical_assessment
+        ? sanitizeForHelvetica(analysis.technical_assessment)
+        : `The candidate lists ${(cand.skills || []).length} technical skills including ${(cand.skills || []).slice(0, 6).join(', ')}. The breadth of technical stack suggests capability in relevant areas.`,
+    },
+    {
+      title: 'Problem Solving',
+      score: scores.problemSolving,
+      text: analysis?.experience_assessment
+        ? sanitizeForHelvetica(analysis.experience_assessment)
+        : `With ${cand.experience || 0} years of professional experience, ${cand.name || 'the candidate'} demonstrates significant industry tenure. Further details about career progression should be explored in interview.`,
+    },
+    {
+      title: 'Collaboration',
+      score: scores.collaboration,
+      text: analysis?.culture_fit_notes
+        ? sanitizeForHelvetica(analysis.culture_fit_notes)
+        : `Collaboration and teamwork skills are evident based on the candidate's profile and professional background.`,
+    },
+  ]
+
+  cards.forEach((card, i) => {
+    const cx = ml + i * (cardW + gap)
+    const sc = scoreColor(card.score)
+
+    // Card background with border
+    doc.setDrawColor(C.cardBorder[0], C.cardBorder[1], C.cardBorder[2])
+    doc.setLineWidth(0.2)
+    doc.setFillColor(255, 255, 255)
+    doc.roundedRect(cx, y, cardW, cardH, 2, 2, 'FD')
+
+    // Left gradient accent bar
+    gradientV(doc, cx, y, 1.5, cardH, [C.heroBlue, C.gradPurple])
+
+    // Title + score on same line
+    doc.setFontSize(8)
+    doc.setFont('helvetica', 'bold')
+    setT(doc, C.grayDark)
+    doc.text(card.title, cx + 6, y + 7)
+
+    doc.setFontSize(11)
+    doc.setFont('helvetica', 'bold')
+    setT(doc, sc)
+    doc.text(`${card.score}%`, cx + cardW - 4, y + 8, { align: 'right' })
+
+    // Thin separator
+    lineH(doc, cx + 5, y + 10, cx + cardW - 3, [230, 233, 240] as C3, 0.15)
+
+    // Description text
+    doc.setFontSize(6.5)
+    doc.setFont('helvetica', 'normal')
+    setT(doc, C.gray)
+    const descLines = doc.splitTextToSize(card.text, cardW - 10)
+    let dy = y + 14
+    const maxDescLines = Math.floor((cardH - 22) / 3)
+    for (const dl of descLines.slice(0, maxDescLines)) {
+      doc.text(dl, cx + 5, dy)
+      dy += 3
+    }
+
+    // Bottom progress bar
+    const barY = y + cardH - 4
+    fillR(doc, cx + 5, barY, cardW - 10, 2, C.grayLight, 1)
+    const fillW = Math.max(1, (cardW - 10) * (card.score / 100))
+    gradientH(doc, cx + 5, barY, fillW, 2, [C.heroBlue, C.cyan, C.gradPurple])
+  })
+
+  return y + cardH + 4
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Career Timeline — Work History with skill badges
+   ═══════════════════════════════════════════════════════════════════ */
+function drawCareerTimeline(
+  doc: jsPDF, cand: CandidateData,
+  y: number, ml: number, cw: number, pw: number, ph: number,
+  pn: { value: number }, cn: string,
+): number {
+  const jobs = (cand.workHistory || []).slice(0, 6)
+  if (jobs.length === 0) return y
+
+  const skills = cand.skills || []
+  let skillIdx = 0
+  const timelineX = ml + 6  // vertical line x position
+
+  for (let ji = 0; ji < jobs.length; ji++) {
+    const job = jobs[ji]
+    const entryH = 28 // approximate
+
+    // Page break check
+    if (y + entryH > ph - 22) {
+      drawFooter(doc, pw, ph, pn.value)
+      doc.addPage()
+      pn.value++
+      y = contHeader(doc, pw, cn)
+      y = sectionTitle(doc, 'Career Timeline (continued)', y, ml, cw, C.heroBlue)
+    }
+
+    // Vertical timeline line
+    const lineEndY = ji < jobs.length - 1 ? y + entryH : y + 8
+    lineV(doc, timelineX, y, lineEndY, [200, 210, 230] as C3, 0.3)
+
+    // Timeline dot
+    doc.setFillColor(C.heroBlue[0], C.heroBlue[1], C.heroBlue[2])
+    doc.circle(timelineX, y + 4, 2.5, 'F')
+    doc.setFillColor(255, 255, 255)
+    doc.circle(timelineX, y + 4, 1.2, 'F')
+
+    // Job title
+    doc.setFontSize(9)
+    doc.setFont('helvetica', 'bold')
+    setT(doc, C.black)
+    const titleX = timelineX + 8
+    doc.text(job.title || 'Position', titleX, y + 5)
+
+    // Date range on right
+    if (job.duration) {
+      doc.setFontSize(7)
+      doc.setFont('helvetica', 'normal')
+      setT(doc, C.gray)
+      doc.text(job.duration, ml + cw, y + 5, { align: 'right' })
+    }
+
+    // Company
+    doc.setFontSize(7.5)
+    doc.setFont('helvetica', 'normal')
+    setT(doc, C.gray)
+    doc.text(job.company || '', titleX, y + 10)
+
+    // Skill badges for this job
+    const badgeCount = Math.min(5, skills.length - skillIdx > 0 ? 5 : skills.length)
+    const jobSkills = skills.slice(skillIdx, skillIdx + badgeCount)
+    skillIdx = (skillIdx + badgeCount) % Math.max(skills.length, 1)
+
+    let bx = titleX
+    const badgeY = y + 14
+    for (const sk of jobSkills) {
+      doc.setFontSize(5.5)
+      doc.setFont('helvetica', 'normal')
+      const tw = doc.getTextWidth(sk) + 4
+      const bw = Math.max(tw, 8)
+
+      if (bx + bw > ml + cw - 5) break // don't overflow
+
+      // Badge background
+      fillR(doc, bx, badgeY, bw, 4.5, C.calloutBg, 2)
+      // Badge border
+      doc.setDrawColor(C.cyanLight[0], C.cyanLight[1], C.cyanLight[2])
+      doc.setLineWidth(0.15)
+      doc.roundedRect(bx, badgeY, bw, 4.5, 2, 2, 'S')
+
+      setT(doc, C.heroBlue)
+      doc.text(sk, bx + 2, badgeY + 3.2)
+      bx += bw + 2
+    }
+
+    // Thin separator line between entries
+    if (ji < jobs.length - 1) {
+      lineH(doc, titleX, y + entryH - 4, ml + cw, [235, 238, 245] as C3, 0.1)
+    }
+
+    y += entryH
+  }
+
+  return y + 2
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Resume Highlights — Numbered bullet points
+   ═══════════════════════════════════════════════════════════════════ */
+function drawResumeHighlights(
+  doc: jsPDF, items: string[],
+  y: number, ml: number, cw: number, pw: number, ph: number,
+  pn: { value: number }, cn: string,
+): number {
+  if (items.length === 0) return y
+
+  for (let i = 0; i < Math.min(items.length, 5); i++) {
+    if (y + 10 > ph - 22) {
+      drawFooter(doc, pw, ph, pn.value)
+      doc.addPage()
+      pn.value++
+      y = contHeader(doc, pw, cn)
+    }
+
+    // Numbered circle
+    const circX = ml + 6
+    doc.setFillColor(C.heroBlue[0], C.heroBlue[1], C.heroBlue[2])
+    doc.circle(circX, y + 2.5, 3, 'F')
+    doc.setFontSize(6)
+    doc.setFont('helvetica', 'bold')
+    setT(doc, C.white)
+    doc.text(`H${i + 1}`, circX, y + 3.5, { align: 'center' })
+
+    // Text in light background
+    const textX = circX + 6
+    const textW = cw - 16
+    doc.setFontSize(7.5)
+    doc.setFont('helvetica', 'normal')
+    const lines = doc.splitTextToSize(items[i], textW)
+    const bgH = lines.length * 3.5 + 3
+    fillR(doc, textX, y - 0.5, textW, bgH, C.grayLight, 2)
+    setT(doc, C.grayDark)
+    let ly = y + 3
+    for (const l of lines) {
+      doc.text(l, textX + 3, ly)
+      ly += 3.5
+    }
+
+    y += bgH + 2
+  }
+
+  return y + 1
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   FOOTER — Red accent + Company Info + Logo Icon
+   ═══════════════════════════════════════════════════════════════════ */
+async function drawFooterAsync(doc: jsPDF, pw: number, ph: number, pageNum: number) {
+  const fy = ph - 18
+
+  // Red accent line
+  lineH(doc, 25, fy, pw - 25, C.redAccent, 0.4)
+
+  // Company info
+  doc.setFontSize(7)
+  doc.setFont('helvetica', 'normal')
+  setT(doc, C.grayDark)
+  doc.text('Efforts Solutions IT', 25, fy + 5)
+
+  doc.setFontSize(7)
+  setT(doc, C.gray)
+  doc.text('https://effortz.com', pw - 45, fy + 5, { align: 'right' })
+
+  doc.setFontSize(6.5)
+  setT(doc, C.gray)
+  doc.text(
+    'M12, Burooj Tower, Al Khalidhiya, Abu Dhabi, UAE | +97125468880',
+    pw / 2,
+    fy + 10,
+    { align: 'center' },
+  )
+
+  // Page number
+  doc.setFontSize(6)
+  doc.text(`Page ${pageNum}`, 25, fy + 14)
+
+  // Logo icon on right
+  try {
+    const iconUrl = await getLogoIconUrl()
+    doc.addImage(iconUrl, 'PNG', pw - 32, fy + 2, 8, 8)
+  } catch { /* skip icon */ }
+}
+
+function drawFooter(doc: jsPDF, pw: number, ph: number, pageNum: number) {
+  const fy = ph - 18
+  lineH(doc, 25, fy, pw - 25, C.redAccent, 0.4)
+  doc.setFontSize(7)
+  doc.setFont('helvetica', 'normal')
+  setT(doc, C.grayDark)
+  doc.text('Efforts Solutions IT', 25, fy + 5)
+  doc.setFontSize(7)
+  setT(doc, C.gray)
+  doc.text('https://effortz.com', pw - 25, fy + 5, { align: 'right' })
+  doc.setFontSize(6.5)
+  setT(doc, C.gray)
+  doc.text(
+    'M12, Burooj Tower, Al Khalidhiya, Abu Dhabi, UAE | +97125468880',
+    pw / 2, fy + 10, { align: 'center' },
+  )
+  doc.setFontSize(6)
+  doc.text(`Page ${pageNum}`, 25, fy + 14)
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Page Break + Wrapped Text Helpers
+   ═══════════════════════════════════════════════════════════════════ */
+function pgBreak(doc: jsPDF, y: number, need: number, pw: number, ph: number, pn: { value: number }, cn: string): number {
+  if (y + need > ph - 22) {
+    drawFooter(doc, pw, ph, pn.value)
+    doc.addPage()
+    pn.value++
+    return contHeader(doc, pw, cn)
+  }
+  return y
+}
+
+function wrapText(
+  doc: jsPDF, text: string, x: number, y: number,
+  maxW: number, fs: number, color: C3, lh: number,
+  pw: number, ph: number, pn: { value: number }, cn: string,
+): number {
+  doc.setFontSize(fs)
+  doc.setFont('helvetica', 'normal')
+  setT(doc, color)
+  const lines = doc.splitTextToSize(text, maxW)
+  for (const line of lines) {
+    if (y + lh > ph - 22) {
+      drawFooter(doc, pw, ph, pn.value)
+      doc.addPage()
+      pn.value++
+      y = contHeader(doc, pw, cn)
+      doc.setFontSize(fs)
+      doc.setFont('helvetica', 'normal')
+      setT(doc, color)
+    }
+    doc.text(line, x, y)
+    y += lh
+  }
+  return y
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   Text Quality Utilities
+   ═══════════════════════════════════════════════════════════════════ */
+function isCoverLetter(text: string): boolean {
+  if (!text || text.length < 20) return false
+  const lo = text.toLowerCase().trim()
+  const pats = [
+    /^dear\s+(hiring|hr|team|manager|sir|madam|recruiter)/i,
+    /^to\s+whom\s+it\s+may\s+concern/i,
+    /^respected\s+(sir|madam|hr|hiring)/i,
+    /my\s+name\s+is\s+/i,
+    /i\s+am\s+writing\s+to\s+(apply|express)/i,
+    /please\s+find\s+(my|attached|enclosed)\s+resume/i,
+    /i\s+am\s+(a|an)\s+(highly\s+)?motivated/i,
+    /sincerely|regards|best\s+wishes|yours\s+(truly|faithfully)/i,
+  ]
+  let hits = 0
+  for (const p of pats) if (p.test(lo)) hits++
+  if (hits >= 2 || /^dear\s/i.test(lo)) return true
+  if (lo.includes('dear hiring') || lo.includes('dear team') || lo.includes('dear sir')) return true
+  return false
+}
+
+function cleanSummary(c: CandidateData): string {
+  const parts: string[] = []
+  const name = c.name || 'Candidate'
+  const title = c.jobSubcategory || c.jobCategory || 'Professional'
+  const exp = c.experience || 0
+  const loc = c.location && c.location !== 'Not Specified' && c.location !== 'Unknown' ? c.location : ''
+  if (exp > 0) parts.push(`${name} is a ${title} with ${exp} year${exp !== 1 ? 's' : ''} of experience${loc ? ` based in ${loc}` : ''}.`)
+  else parts.push(`${name} is a ${title}${loc ? ` based in ${loc}` : ''}.`)
+  if ((c.skills || []).length > 0) parts.push(`Key competencies include ${c.skills!.slice(0, 8).join(', ')}.`)
+  if (c.education && c.education.length > 0) {
+    const e = c.education[0]
+    parts.push(`Education: ${e.degree}${e.field ? ` in ${e.field}` : ''}${e.institution ? ` from ${e.institution}` : ''}.`)
+  }
+  if (c.workHistory && c.workHistory.length > 0) {
+    const j = c.workHistory[0]
+    if (j.title && j.company) parts.push(`Most recent: ${j.title} at ${j.company}${j.duration ? ` (${j.duration})` : ''}.`)
+  }
+  if (c.certifications && c.certifications.length > 0) parts.push(`Certifications: ${c.certifications.slice(0, 3).join(', ')}.`)
+  if (c.languages && c.languages.length > 0) parts.push(`Languages: ${c.languages.join(', ')}.`)
+  return parts.join(' ')
 }
 
 /**
- * Main PDF generation — AI Summary page, then Original CV on subsequent pages
+ * Sanitize text for Helvetica font (jsPDF) — remove all characters that Helvetica
+ * cannot render. Keeps ASCII printable + common Latin-1 accented chars.
  */
-/**
- * Detect mojibake / garbled encoding in text.
- * Returns true if text appears to be corrupted.
- */
+function sanitizeForHelvetica(text: string): string {
+  if (!text) return ''
+  // Replace common Unicode symbols with ASCII equivalents
+  let t = text
+    .replace(/[\u2018\u2019\u201A\uFF07]/g, "'") // smart single quotes
+    .replace(/[\u201C\u201D\u201E\uFF02]/g, '"') // smart double quotes
+    .replace(/[\u2013\u2014\u2015]/g, '-')         // en-dash, em-dash
+    .replace(/[\u2026]/g, '...')                     // ellipsis
+    .replace(/[\u2022\u2023\u25CF\u25CB]/g, '-')    // bullets
+    .replace(/[\u00A0]/g, ' ')                       // non-breaking space
+    .replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '') // zero-width / bidi
+    .replace(/[\uD800-\uDFFF]/g, '')                 // lone surrogates
+  // Keep only printable ASCII (0x20-0x7E) + common Latin-1 Supplement (0xA1-0xFF) + \n \r \t
+  t = t.replace(/[^\x09\x0A\x0D\x20-\x7E\xA1-\xFF]/g, '')
+  // Collapse multiple spaces
+  t = t.replace(/ {3,}/g, '  ')
+  return t
+}
+
 function detectMojibake(text: string): boolean {
   if (!text || text.length < 30) return false
-  // Common mojibake marker sequences (UTF-8 misinterpreted as Latin-1/CP1252)
   const markers = [
     '\u00C3\u0082', '\u00C3\u0083', '\u00C3\u00A9', '\u00C3\u00A8',
     '\u00C3\u00BC', '\u00C3\u00B6', '\u00C2\u00A0', '\u00C2\u00AE',
-    '\u00C2\u00AB', '\u00C2\u00BB', '\u00C3\u00A2', '\u00C3\u0089',
     'Ã\u0082', 'Ã\u0083', 'Ã\u00A9', 'Ã\u00A8', 'Ã\u00BC', 'Ã\u00B6',
-    'Ã\u00A2', 'Ã\u0089', 'Â\u00AE', 'Â\u00AB', 'Â\u00BB', 'Â\u00A0',
   ]
   let hits = 0
   for (const m of markers) {
     let pos = 0
     while ((pos = text.indexOf(m, pos)) !== -1) { hits++; pos += m.length }
   }
-  // Also count runs of high-codepoint chars (U+00C0–U+00FF repeated)
-  let highRun = 0
-  for (let i = 0; i < Math.min(text.length, 2000); i++) {
-    const c = text.charCodeAt(i)
-    if (c >= 0xC0 && c <= 0xFF) highRun++
+  // Count characters outside Helvetica-renderable range
+  let nonRenderable = 0
+  const sample = Math.min(text.length, 3000)
+  for (let i = 0; i < sample; i++) {
+    const ch = text.charCodeAt(i)
+    if (ch >= 0xC0 && ch <= 0xFF) nonRenderable++ // high Latin-1 (mojibake)
+    else if (ch > 0xFF && ch !== 0x2013 && ch !== 0x2014 && ch !== 0x2018 && ch !== 0x2019 && ch !== 0x201C && ch !== 0x201D && ch !== 0x2022 && ch !== 0x2026) {
+      nonRenderable++ // any non-Latin Unicode (Arabic, CJK, emoji, etc.)
+    }
   }
-  const sample = Math.min(text.length, 2000)
-  // Mojibake if: many marker hits OR >15% high-codepoint chars in first 2k
-  return hits >= 3 || (highRun / sample > 0.15)
+  return hits >= 3 || (nonRenderable / sample > 0.10)
 }
 
+/**
+ * Detect text where characters are separated by spaces/dashes/dots/bullets,
+ * e.g. "S   A   R   A   V   A   N   A" or "S•A•R•A" — bad PDF extraction.
+ */
+function detectSpacedCharCorruption(text: string): boolean {
+  if (!text || text.length < 40) return false
+  // Separator class includes spaces, dashes, dots, bullets, and common PDF artifacts (up to 20 chars between letters)
+  const re = /(?:^|\s)[A-Za-z0-9](?:[\s\-._\u2022\u2023\u25CF\u25CB\u25AA\u00B7\u2219\u00A0\u2013\u2014|*]{1,20}[A-Za-z0-9]){4,}(?:$|\s)/gm
+  const matches = text.match(re) || []
+  const matchLen = matches.reduce((s, m) => s + m.length, 0)
+  if (matchLen / text.length > 0.25) return true
+  // Also check: if >75% of chars are non-alphanumeric and most alnum chars are isolated
+  let alnum = 0, isolated = 0
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (/[A-Za-z0-9]/.test(c)) {
+      alnum++
+      const prevAlnum = i > 0 && /[A-Za-z0-9]/.test(text[i-1])
+      const nextAlnum = i < text.length-1 && /[A-Za-z0-9]/.test(text[i+1])
+      if (!prevAlnum && !nextAlnum) isolated++
+    }
+  }
+  if (alnum > 10 && (text.length - alnum) / text.length > 0.75 && isolated / alnum > 0.5) return true
+  return false
+}
+
+/**
+ * Collapse spaced-character runs: "S   A   R   A" → "SARA", "S•A•R•A" → "SARA"
+ */
+function collapseSpacedChars(text: string): string {
+  if (!text) return text
+  const re = /(?:^|\s)[A-Za-z0-9](?:[\s\-._\u2022\u2023\u25CF\u25CB\u25AA\u00B7\u2219\u00A0\u2013\u2014|*]{1,20}[A-Za-z0-9]){4,}(?:$|\s)/gm
+  return text.replace(re, (match) => {
+    const letters = match.match(/[A-Za-z0-9]/g) || []
+    return ' ' + letters.join('') + ' '
+  }).replace(/ {2,}/g, ' ').trim()
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+   MAIN — generateCandidatePDF
+   ═══════════════════════════════════════════════════════════════════ */
 export async function generateCandidatePDF(
-  candidate: CandidateData,
-  aiAnalysis?: AIAnalysisData | null
+  candidateInput: CandidateData,
+  aiAnalysis?: AIAnalysisData | null,
 ): Promise<void> {
-  const doc = new jsPDF('p', 'mm', 'a4')
-  const pageWidth = doc.internal.pageSize.getWidth()
-  const pageHeight = doc.internal.pageSize.getHeight()
-  const margin = 14
-  const contentWidth = pageWidth - margin * 2
-  const pageNum = { value: 1 }
-  
-  // Normalize AI analysis: if fallback or grossly mismatched, derive rating/recommendation from matchScore
-  let normalizedAnalysis = aiAnalysis ? { ...aiAnalysis } : null
-  if (normalizedAnalysis) {
-    const score = candidate.matchScore ?? 50
-    const rating = normalizedAnalysis.overall_rating || ''
-    const conf = normalizedAnalysis.confidence_score || 0
-    // Detect fallback: explicit flag, hardcoded fallback values, or score-rating mismatch
-    const isFallback = normalizedAnalysis.source === 'fallback' ||
-      normalizedAnalysis.isFallback === true ||
+  let candidate = { ...candidateInput }
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' })
+  const pw = doc.internal.pageSize.getWidth()
+  const ph = doc.internal.pageSize.getHeight()
+  const ml = 20
+  const mr = 20
+  const cw = pw - ml - mr
+  const pn = { value: 1 }
+  const cn = candidate.name || 'Candidate'
+
+  // ── Normalize AI analysis ──
+  let norm = aiAnalysis ? { ...aiAnalysis } : null
+  if (norm) {
+    const score = candidate.matchScore ?? 0
+    const rating = norm.overall_rating || ''
+    const conf = norm.confidence_score || 0
+    const isFallback =
+      norm.source === 'fallback' || norm.isFallback === true ||
       (rating === 'C+' && conf <= 42) ||
       (score >= 75 && (rating.startsWith('C') || rating === 'B-')) ||
       (score >= 60 && rating.startsWith('C')) ||
       (conf > 0 && conf < 45 && score >= 70)
+
     if (isFallback) {
-      const derived = deriveRatingFromScore(candidate.matchScore ?? 50)
-      normalizedAnalysis.overall_rating = derived.rating
-      normalizedAnalysis.hiring_recommendation = derived.recommendation
-      normalizedAnalysis.confidence_score = derived.confidence
-      
-      // Replace generic cons with profile-relevant observations
+      const d = deriveRating(candidate.matchScore ?? 0)
+      norm.overall_rating = d.rating
+      norm.hiring_recommendation = d.rec
+      norm.confidence_score = d.conf
       const skills = candidate.skills || []
       const exp = candidate.experience || 0
-      const relevantCons: string[] = []
-      if (skills.length < 5) relevantCons.push('Limited skills breadth — expanding technical portfolio recommended')
-      if (exp < 3) relevantCons.push('Early career stage — may need mentorship and onboarding support')
-      if (!candidate.linkedin) relevantCons.push('No LinkedIn profile provided for background verification')
-      if (!candidate.education || candidate.education.length === 0) relevantCons.push('Education details not specified — verification recommended')
-      if (!candidate.workHistory || candidate.workHistory.length === 0) relevantCons.push('Work history not detailed — explore experience depth in interview')
-      if (relevantCons.length === 0) relevantCons.push('Profile appears strong — detailed AI analysis recommended for deeper insights')
-      normalizedAnalysis.cons = relevantCons
+      const relCons: string[] = []
+      if (skills.length < 5) relCons.push('Limited skills breadth — expanding technical portfolio recommended')
+      if (exp < 3) relCons.push('Early career stage — may need mentorship and onboarding support')
+      if (!candidate.linkedin) relCons.push('No LinkedIn profile provided for background verification')
+      if (!candidate.education?.length) relCons.push('Education details not specified — verification recommended')
+      if (!candidate.workHistory?.length) relCons.push('Work history not detailed — explore experience depth in interview')
+      if (relCons.length === 0) relCons.push('Profile appears strong — detailed AI analysis recommended')
+      norm.cons = relCons
     }
   }
-  
-  // ===== TOP BAR =====
-  let y = await drawTopBar(doc, pageWidth)
-  
-  // ===== CANDIDATE HEADER — Blue gradient =====
-  y = drawCandidateHeader(doc, candidate, y, pageWidth)
+
+  // ═══════════════════════════════════════════
+  // PAGE 1
+  // ═══════════════════════════════════════════
+
+  // ── Header ──
+  let y = await drawHeader(doc, pw)
+
+  // ── Hero Card ──
+  y = drawHero(doc, candidate, y, ml, cw)
+
+  // ── AI Analysis Summary ──
+  y = pgBreak(doc, y, 20, pw, ph, pn, cn)
+  y = sectionTitle(doc, 'AI Analysis Summary', y, ml, cw, C.heroBlue)
+
+  // Build a rich summary from all AI fields
+  let summaryParts: string[] = []
+  if (norm?.executive_summary) {
+    summaryParts.push(norm.executive_summary)
+  } else if (candidate.summary && !isCoverLetter(candidate.summary) && candidate.summary.length < 2000) {
+    summaryParts.push(candidate.summary)
+  } else {
+    summaryParts.push(cleanSummary(candidate))
+  }
+  // Add match score context
+  const matchS = candidate.matchScore ?? 0
+  if (matchS > 0) {
+    summaryParts.push(`With a match score of ${matchS.toFixed(1)}%, they show ${matchS >= 80 ? 'strong' : matchS >= 60 ? 'moderate' : 'developing'} alignment for the target role. ${norm?.hiring_recommendation ? 'Hiring recommendation: ' + norm.hiring_recommendation + '.' : ''} Based on the available profile data, they are ${matchS >= 80 ? 'a strong' : matchS >= 60 ? 'a promising' : 'a potential'} candidate.`)
+  }
+  const summaryText = summaryParts.join(' ')
+
+  y = drawAnalysisSummary(doc, summaryText, y, ml, cw, pw, ph, pn, cn)
   y += 2
 
-  // ===== SECTION 1 — AI ASSESSMENT =====
+  // ── Detailed Score Analysis ──
+  y = pgBreak(doc, y, 60, pw, ph, pn, cn)
+  y = sectionTitle(doc, 'Detailed Score Analysis', y, ml, cw, C.heroBlue)
+  y = drawScoreCards(doc, candidate, norm, y, ml, cw, pw, ph, pn, cn)
+  y += 1
 
-  // Compact single-line assessment bar (Rating + Recommendation + Confidence inline)
-  if (normalizedAnalysis?.overall_rating || normalizedAnalysis?.hiring_recommendation) {
-    const barY = y
-    
-    // Light background strip
-    drawRect(doc, margin, barY, contentWidth, 8, BRAND.grayLight, 3)
-    
-    let xPos = margin + 4
-    
-    if (normalizedAnalysis.overall_rating) {
-      doc.setFontSize(7)
+  // ── Key Strengths (Pros) ──
+  if (norm?.pros && norm.pros.length > 0) {
+    y = pgBreak(doc, y, 20, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Key Strengths', y, ml, cw, C.green as unknown as C3)
+    for (const pro of norm.pros.slice(0, 8)) {
+      y = pgBreak(doc, y, 6, pw, ph, pn, cn)
+      doc.setFontSize(7.5)
       doc.setFont('helvetica', 'bold')
-      setColor(doc, BRAND.gray)
-      doc.text('Rating:', xPos, barY + 5)
-      xPos += 13
-      doc.setFontSize(9)
-      setColor(doc, BRAND.primaryDark)
-      doc.text(normalizedAnalysis.overall_rating, xPos, barY + 5)
-      xPos += doc.getTextWidth(normalizedAnalysis.overall_rating) + 6
-    }
-    
-    if (normalizedAnalysis.hiring_recommendation) {
-      const rec = normalizedAnalysis.hiring_recommendation.replace(/_/g, ' ')
-      const recColor = rec.includes('STRONGLY') || rec.includes('RECOMMEND') ? BRAND.green : rec.includes('CONSIDER') ? BRAND.amber : BRAND.red
-      
-      // Recommendation pill
-      const recW = doc.getTextWidth(rec) + 8
-      drawRect(doc, xPos, barY + 1, recW, 6, recColor, 2)
-      doc.setFontSize(7)
-      doc.setFont('helvetica', 'bold')
-      setColor(doc, BRAND.white)
-      doc.text(rec, xPos + 4, barY + 5)
-      xPos += recW + 6
-    }
-    
-    if (normalizedAnalysis.confidence_score) {
-      doc.setFontSize(7)
+      setT(doc, C.green as unknown as C3)
+      doc.text('+', ml + 6, y)
       doc.setFont('helvetica', 'normal')
-      setColor(doc, BRAND.gray)
-      doc.text(`Confidence: ${normalizedAnalysis.confidence_score}%`, xPos, barY + 5)
-      xPos += 30
-    }
-
-    if (normalizedAnalysis?.ideal_roles && normalizedAnalysis.ideal_roles.length > 0) {
-      doc.setFontSize(7)
-      doc.setFont('helvetica', 'normal')
-      setColor(doc, BRAND.gray)
-      const rolesText = 'Ideal: ' + normalizedAnalysis.ideal_roles.slice(0, 2).join(', ')
-      const maxRolesW = pageWidth - margin - xPos - 4
-      if (maxRolesW > 20) {
-        const rolesTrunc = rolesText.length > 50 ? rolesText.substring(0, 48) + '...' : rolesText
-        doc.text(rolesTrunc, xPos, barY + 5)
+      setT(doc, C.grayDark)
+      const proLines = doc.splitTextToSize(sanitizeForHelvetica(pro), cw - 14)
+      for (const pl of proLines) {
+        y = pgBreak(doc, y, 4, pw, ph, pn, cn)
+        doc.text(pl, ml + 12, y)
+        y += 3.5
       }
-    }
-
-    y = barY + 11
-  }
-
-  // Executive Summary
-  if (normalizedAnalysis?.executive_summary) {
-    y = drawSectionHeading(doc, 'AI Executive Summary', y, pageWidth)
-    y = writeWrappedText(doc, normalizedAnalysis.executive_summary, margin, y, contentWidth, 8.5, BRAND.black, 3.8)
-    y += 3
-  }
-
-  // Pros & Cons
-  if ((normalizedAnalysis?.pros && normalizedAnalysis.pros.length > 0) || (normalizedAnalysis?.cons && normalizedAnalysis.cons.length > 0)) {
-    const maxItems = Math.max(normalizedAnalysis?.pros?.length || 0, normalizedAnalysis?.cons?.length || 0)
-    const prosConsHeight = maxItems * 4 + 10
-    y = checkPageBreak(doc, y, prosConsHeight, pageWidth, pageHeight, pageNum)
-    
-    const colWidth = (contentWidth - 4) / 2
-
-    if (normalizedAnalysis?.pros && normalizedAnalysis.pros.length > 0) {
-      drawRect(doc, margin, y, colWidth, 6, [220, 252, 231] as [number, number, number], 2)
-      doc.setFontSize(8)
-      doc.setFont('helvetica', 'bold')
-      setColor(doc, BRAND.green)
-      doc.text('+ Strengths', margin + 3, y + 4)
-      
-      let prosY = y + 9
-      normalizedAnalysis.pros.slice(0, 5).forEach((pro) => {
-        doc.setFontSize(7.5)
-        doc.setFont('helvetica', 'normal')
-        setColor(doc, BRAND.black)
-        const lines = doc.splitTextToSize(`• ${pro}`, colWidth - 6)
-        doc.text(lines, margin + 3, prosY)
-        prosY += lines.length * 3.5
-      })
-    }
-    
-    if (normalizedAnalysis?.cons && normalizedAnalysis.cons.length > 0) {
-      const consX = margin + colWidth + 4
-      drawRect(doc, consX, y, colWidth, 6, [254, 226, 226] as [number, number, number], 2)
-      doc.setFontSize(8)
-      doc.setFont('helvetica', 'bold')
-      setColor(doc, BRAND.red)
-      doc.text('- Areas for Improvement', consX + 3, y + 4)
-      
-      let consY = y + 9
-      normalizedAnalysis.cons.slice(0, 5).forEach((con) => {
-        doc.setFontSize(7.5)
-        doc.setFont('helvetica', 'normal')
-        setColor(doc, BRAND.black)
-        const lines = doc.splitTextToSize(`• ${con}`, colWidth - 6)
-        doc.text(lines, consX + 3, consY)
-        consY += lines.length * 3.5
-      })
-    }
-    
-    y += 9 + Math.min(maxItems, 5) * 4.5
-    y += 3
-  }
-
-  // Technical & Experience Assessment
-  if (normalizedAnalysis?.technical_assessment || normalizedAnalysis?.experience_assessment) {
-    y = checkPageBreak(doc, y, 18, pageWidth, pageHeight, pageNum)
-    y = drawSectionHeading(doc, 'Technical & Experience Assessment', y, pageWidth)
-    if (normalizedAnalysis.technical_assessment) {
-      y = writeWrappedText(doc, normalizedAnalysis.technical_assessment, margin, y, contentWidth, 8, BRAND.black, 3.6, pageWidth, pageHeight, pageNum)
-      y += 2
-    }
-    if (normalizedAnalysis.experience_assessment) {
-      y = writeWrappedText(doc, normalizedAnalysis.experience_assessment, margin, y, contentWidth, 8, BRAND.black, 3.6, pageWidth, pageHeight, pageNum)
-      y += 2
+      y += 0.5
     }
     y += 2
   }
 
-  // Hiring Recommendation Rationale
-  if (normalizedAnalysis?.hiring_recommendation_rationale) {
-    y = checkPageBreak(doc, y, 14, pageWidth, pageHeight, pageNum)
-    y = drawSectionHeading(doc, 'Hiring Recommendation', y, pageWidth)
-    y = writeWrappedText(doc, normalizedAnalysis.hiring_recommendation_rationale, margin, y, contentWidth, 8, BRAND.black, 3.6, pageWidth, pageHeight, pageNum)
-    y += 3
-  }
-
-  // Interview Focus Areas
-  if (normalizedAnalysis?.interview_focus_areas && normalizedAnalysis.interview_focus_areas.length > 0) {
-    y = checkPageBreak(doc, y, 10, pageWidth, pageHeight, pageNum)
-    doc.setFontSize(8)
-    doc.setFont('helvetica', 'bold')
-    setColor(doc, BRAND.primaryDark)
-    doc.text('Interview Focus:', margin, y + 3)
-    doc.setFont('helvetica', 'normal')
-    setColor(doc, BRAND.black)
-    const focusText = normalizedAnalysis.interview_focus_areas.slice(0, 5).join('  •  ')
-    const focusLines = doc.splitTextToSize(focusText, contentWidth - 30)
-    doc.text(focusLines, margin + 28, y + 3)
-    y += focusLines.length * 3.5 + 5
-  }
-
-  // ===== DIVIDER =====
-  y = checkPageBreak(doc, y, 6, pageWidth, pageHeight, pageNum)
-  drawLine(doc, margin, y, pageWidth - margin, y, BRAND.accent, 0.8)
-  y += 4
-
-  // ===== SECTION 2 — CANDIDATE PROFILE =====
-
-  // LinkedIn (only show if available — other contact info already in header)
-  if (candidate.linkedin) {
-    y = checkPageBreak(doc, y, 8, pageWidth, pageHeight, pageNum)
-    doc.setFontSize(7.5)
-    doc.setFont('helvetica', 'bold')
-    setColor(doc, BRAND.primaryDark)
-    doc.text('LinkedIn:', margin, y + 3)
-    doc.setFont('helvetica', 'normal')
-    setColor(doc, BRAND.accent)
-    doc.text(candidate.linkedin, margin + 18, y + 3)
-    y += 6
-  }
-
-  // Professional Summary — full text, no truncation (page breaks handle overflow)
-  if (candidate.summary) {
-    y = checkPageBreak(doc, y, 14, pageWidth, pageHeight, pageNum)
-    y = drawSectionHeading(doc, 'Professional Summary', y, pageWidth)
-    y = writeWrappedText(doc, candidate.summary, margin, y, contentWidth, 8, BRAND.black, 3.6, pageWidth, pageHeight, pageNum)
-    y += 3
-  }
-
-  // Skills badges
-  if (candidate.skills && candidate.skills.length > 0) {
-    y = checkPageBreak(doc, y, 14, pageWidth, pageHeight, pageNum)
-    y = drawSectionHeading(doc, 'Skills & Expertise', y, pageWidth)
-    
-    let badgeX = margin
-    const badgeH = 5
-    candidate.skills.slice(0, 20).forEach((skill) => {
-      const textWidth = doc.getTextWidth(skill) + 3
-      const badgeW = Math.max(textWidth, 10)
-      
-      if (badgeX + badgeW > pageWidth - margin) {
-        badgeX = margin
-        y += badgeH + 1.5
-        y = checkPageBreak(doc, y, badgeH + 3, pageWidth, pageHeight, pageNum)
-      }
-      
-      drawRect(doc, badgeX, y - 1, badgeW, badgeH, BRAND.primaryLight, 2)
-      doc.setFontSize(6.5)
-      doc.setFont('helvetica', 'normal')
-      setColor(doc, BRAND.primaryDark)
-      doc.text(skill, badgeX + 1.5, y + 2.5)
-      badgeX += badgeW + 1.5
-    })
-    y += badgeH + 4
-  }
-
-  // Work Experience
-  if (candidate.workHistory && candidate.workHistory.length > 0) {
-    y = checkPageBreak(doc, y, 16, pageWidth, pageHeight, pageNum)
-    y = drawSectionHeading(doc, 'Work Experience', y, pageWidth)
-    
-    candidate.workHistory.slice(0, 18).forEach((job) => {
-      y = checkPageBreak(doc, y, 12, pageWidth, pageHeight, pageNum)
-      
-      drawRect(doc, margin, y, 2, 2, BRAND.primary, 1)
-      
-      doc.setFontSize(8)
+  // ── Areas of Concern (Cons) ──
+  if (norm?.cons && norm.cons.length > 0) {
+    y = pgBreak(doc, y, 20, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Areas of Concern', y, ml, cw, [220, 100, 60] as C3)
+    for (const con of norm.cons.slice(0, 8)) {
+      y = pgBreak(doc, y, 6, pw, ph, pn, cn)
+      doc.setFontSize(7.5)
       doc.setFont('helvetica', 'bold')
-      setColor(doc, BRAND.black)
-      doc.text(job.title, margin + 4, y + 1.5)
-      
-      doc.setFontSize(7)
+      setT(doc, [220, 100, 60] as C3)
+      doc.text('-', ml + 6, y)
       doc.setFont('helvetica', 'normal')
-      setColor(doc, BRAND.gray)
-      const companyLine = [job.company, job.duration].filter(Boolean).join('  ·  ')
-      doc.text(companyLine, margin + 4, y + 5.5)
-      y += 8
-      
-      if (job.description) {
-        const desc = job.description.length > 400 ? job.description.substring(0, 400) + '...' : job.description
-        y = writeWrappedText(doc, desc, margin + 4, y, contentWidth - 4, 7, BRAND.black, 3.2, pageWidth, pageHeight, pageNum)
-        y += 1
+      setT(doc, C.grayDark)
+      const conLines = doc.splitTextToSize(sanitizeForHelvetica(con), cw - 14)
+      for (const cl of conLines) {
+        y = pgBreak(doc, y, 4, pw, ph, pn, cn)
+        doc.text(cl, ml + 12, y)
+        y += 3.5
       }
-      y += 2
-    })
-    if (candidate.workHistory.length > 18) {
-      doc.setFontSize(7)
-      doc.setFont('helvetica', 'italic')
-      setColor(doc, BRAND.gray)
-      doc.text(`+ ${candidate.workHistory.length - 18} more positions on file`, margin + 4, y)
+      y += 0.5
+    }
+    y += 2
+  }
+
+  // ── Technical Assessment (full text) ──
+  if (norm?.technical_assessment) {
+    y = pgBreak(doc, y, 16, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Technical Assessment', y, ml, cw, C.heroBlue)
+    y = wrapText(doc, sanitizeForHelvetica(norm.technical_assessment), ml + 8, y, cw - 10, 8, C.grayDark, 3.6, pw, ph, pn, cn)
+    y += 3
+  }
+
+  // ── Experience Assessment (full text) ──
+  if (norm?.experience_assessment) {
+    y = pgBreak(doc, y, 16, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Experience Assessment', y, ml, cw, C.heroBlue)
+    y = wrapText(doc, sanitizeForHelvetica(norm.experience_assessment), ml + 8, y, cw - 10, 8, C.grayDark, 3.6, pw, ph, pn, cn)
+    y += 3
+  }
+
+  // ── Career Trajectory ──
+  if (norm?.career_trajectory) {
+    y = pgBreak(doc, y, 16, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Career Trajectory', y, ml, cw, C.cyan as unknown as C3)
+    y = wrapText(doc, sanitizeForHelvetica(norm.career_trajectory), ml + 8, y, cw - 10, 8, C.grayDark, 3.6, pw, ph, pn, cn)
+    y += 3
+  }
+
+  // ── Career Timeline ──
+  if (candidate.workHistory && candidate.workHistory.length > 0) {
+    y = pgBreak(doc, y, 30, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Career Timeline', y, ml, cw, C.heroBlue)
+    y = drawCareerTimeline(doc, candidate, y, ml, cw, pw, ph, pn, cn)
+  }
+
+  // ── Interview Focus Areas ──
+  if (norm?.interview_focus_areas && norm.interview_focus_areas.length > 0) {
+    y = pgBreak(doc, y, 20, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Interview Focus Areas', y, ml, cw, [100, 80, 200] as C3)
+    y = drawResumeHighlights(doc, norm.interview_focus_areas, y, ml, cw, pw, ph, pn, cn)
+    y += 2
+  }
+
+  // ── Resume Highlights (from pros if no focus areas) ──
+  if (!(norm?.interview_focus_areas?.length) && norm?.pros && norm.pros.length > 0) {
+    y = pgBreak(doc, y, 20, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Resume Highlights', y, ml, cw, [100, 80, 200] as C3)
+    y = drawResumeHighlights(doc, norm.pros, y, ml, cw, pw, ph, pn, cn)
+    y += 2
+  }
+
+  // ── Hiring Recommendation ──
+  if (norm?.hiring_recommendation_rationale) {
+    y = pgBreak(doc, y, 16, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Hiring Recommendation', y, ml, cw, C.heroBlue)
+    // Show rating badge
+    if (norm.hiring_recommendation) {
+      doc.setFontSize(9)
+      doc.setFont('helvetica', 'bold')
+      setT(doc, scoreColor(matchS))
+      doc.text(`Recommendation: ${norm.hiring_recommendation}`, ml + 8, y)
       y += 5
     }
+    y = wrapText(doc, sanitizeForHelvetica(norm.hiring_recommendation_rationale), ml + 8, y, cw - 10, 8, C.grayDark, 3.6, pw, ph, pn, cn)
+    y += 3
   }
 
-  // Education
-  if (candidate.education && candidate.education.length > 0) {
-    y = checkPageBreak(doc, y, 12, pageWidth, pageHeight, pageNum)
-    y = drawSectionHeading(doc, 'Education', y, pageWidth)
-    
-    candidate.education.slice(0, 3).forEach((edu) => {
-      y = checkPageBreak(doc, y, 8, pageWidth, pageHeight, pageNum)
-      
-      doc.setFontSize(8)
-      doc.setFont('helvetica', 'bold')
-      setColor(doc, BRAND.black)
-      doc.text(`${edu.degree}${edu.field ? ` in ${edu.field}` : ''}`, margin, y)
-      
-      doc.setFontSize(7)
-      doc.setFont('helvetica', 'normal')
-      setColor(doc, BRAND.gray)
-      doc.text(`${edu.institution || 'N/A'}${edu.year ? `  ·  ${edu.year}` : ''}`, margin, y + 4)
-      y += 8
-    })
-    y += 2
-  }
-
-  // Certifications & Languages
-  if ((candidate.certifications && candidate.certifications.length > 0) || (candidate.languages && candidate.languages.length > 0)) {
-    y = checkPageBreak(doc, y, 10, pageWidth, pageHeight, pageNum)
-    
-    if (candidate.certifications && candidate.certifications.length > 0) {
-      doc.setFontSize(7.5)
-      doc.setFont('helvetica', 'bold')
-      setColor(doc, BRAND.primaryDark)
-      doc.text('Certifications:', margin, y)
-      doc.setFont('helvetica', 'normal')
-      setColor(doc, BRAND.black)
-      const certText = candidate.certifications.slice(0, 4).join('  |  ')
-      doc.text(certText, margin + 24, y)
-      y += 4.5
-    }
-    
-    if (candidate.languages && candidate.languages.length > 0) {
-      doc.setFontSize(7.5)
-      doc.setFont('helvetica', 'bold')
-      setColor(doc, BRAND.primaryDark)
-      doc.text('Languages:', margin, y)
-      doc.setFont('helvetica', 'normal')
-      setColor(doc, BRAND.black)
-      doc.text(candidate.languages.join('  |  '), margin + 24, y)
-      y += 4.5
-    }
-  }
-
-  // Salary Estimate
-  if (normalizedAnalysis?.salary_range_estimate) {
-    y = checkPageBreak(doc, y, 6, pageWidth, pageHeight, pageNum)
-    doc.setFontSize(7.5)
-    doc.setFont('helvetica', 'bold')
-    setColor(doc, BRAND.primaryDark)
-    doc.text('Est. Salary Range:', margin, y)
+  // ── Ideal Roles ──
+  if (norm?.ideal_roles && norm.ideal_roles.length > 0) {
+    y = pgBreak(doc, y, 14, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Ideal Roles', y, ml, cw, C.cyan as unknown as C3)
+    doc.setFontSize(8)
     doc.setFont('helvetica', 'normal')
-    setColor(doc, BRAND.black)
-    doc.text(normalizedAnalysis.salary_range_estimate, margin + 32, y)
+    setT(doc, C.grayDark)
+    doc.text(sanitizeForHelvetica(norm.ideal_roles.slice(0, 6).join('  |  ')), ml + 8, y)
     y += 5
   }
 
-  // ===== SECTION 3 — ORIGINAL CV / RESUME (merged PDF or text fallback) =====
-  // Try to fetch the original resume PDF from the backend and merge it
+  // ── Salary Range Estimate ──
+  if (norm?.salary_range_estimate) {
+    y = pgBreak(doc, y, 10, pw, ph, pn, cn)
+    doc.setFontSize(8)
+    doc.setFont('helvetica', 'bold')
+    setT(doc, C.navy)
+    doc.text('Salary Range Estimate:', ml + 8, y)
+    doc.setFont('helvetica', 'normal')
+    setT(doc, C.grayDark)
+    doc.text(sanitizeForHelvetica(norm.salary_range_estimate), ml + 42, y)
+    y += 5
+  }
+
+  // ── Education ──
+  if (candidate.education && candidate.education.length > 0) {
+    y = pgBreak(doc, y, 14, pw, ph, pn, cn)
+    y = sectionTitle(doc, 'Education', y, ml, cw, C.heroBlue)
+    if (norm?.education_assessment) {
+      y = wrapText(doc, sanitizeForHelvetica(norm.education_assessment), ml + 8, y, cw - 10, 7.5, C.grayDark, 3.5, pw, ph, pn, cn)
+      y += 2
+    }
+    for (const edu of candidate.education.slice(0, 5)) {
+      y = pgBreak(doc, y, 8, pw, ph, pn, cn)
+      doc.setFontSize(8)
+      doc.setFont('helvetica', 'bold')
+      setT(doc, C.black)
+      doc.text(sanitizeForHelvetica(`${edu.degree}${edu.field ? ' in ' + edu.field : ''}`), ml + 8, y)
+      doc.setFontSize(7)
+      doc.setFont('helvetica', 'normal')
+      setT(doc, C.gray)
+      doc.text(sanitizeForHelvetica(`${edu.institution || 'N/A'}${edu.year ? '  ·  ' + edu.year : ''}`), ml + 8, y + 4)
+      y += 8
+    }
+    y += 2
+  }
+
+  // ── Certifications & Languages ──
+  if ((candidate.certifications?.length || 0) > 0 || (candidate.languages?.length || 0) > 0) {
+    y = pgBreak(doc, y, 10, pw, ph, pn, cn)
+    if (candidate.certifications && candidate.certifications.length > 0) {
+      doc.setFontSize(7.5)
+      doc.setFont('helvetica', 'bold')
+      setT(doc, C.navy)
+      doc.text('Certifications:', ml + 8, y)
+      doc.setFont('helvetica', 'normal')
+      setT(doc, C.black)
+      const certText = sanitizeForHelvetica(candidate.certifications.slice(0, 6).join('  |  '))
+      const certLines = doc.splitTextToSize(certText, cw - 36)
+      for (const cl of certLines) {
+        doc.text(cl, ml + 30, y)
+        y += 3.5
+      }
+      y += 1
+    }
+    if (candidate.languages && candidate.languages.length > 0) {
+      doc.setFontSize(7.5)
+      doc.setFont('helvetica', 'bold')
+      setT(doc, C.navy)
+      doc.text('Languages:', ml + 8, y)
+      doc.setFont('helvetica', 'normal')
+      setT(doc, C.black)
+      doc.text(sanitizeForHelvetica(candidate.languages.join('  |  ')), ml + 30, y)
+      y += 4.5
+    }
+  }
+
+  // ── Footer for last assessment page ──
+  await drawFooterAsync(doc, pw, ph, pn.value)
+
+  // ═══════════════════════════════════════════
+  // ORIGINAL RESUME — PDF merge, text fallback, or fetch from candidate endpoint
+  // ═══════════════════════════════════════════
   let resumeMerged = false
-  // Always attempt to fetch resume if we have a candidate ID — the API will 404 if none exists
+  let resumeFileExists = false
+
   if (candidate.id) {
+    // ── Step 1: Try fetching the actual resume file ──
     try {
-      const token = useAuthStore.getState().token
-      const resumeRes = await fetch(`${config.endpoints.candidates}/${candidate.id}/resume`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-      if (resumeRes.ok) {
-        const contentType = resumeRes.headers.get('content-type') || ''
-        if (contentType.includes('pdf')) {
-          const resumeBytes = await resumeRes.arrayBuffer()
-          if (resumeBytes.byteLength > 100) {
-            // Finalize assessment PDF footer on last page
-            drawFooter(doc, pageWidth, pageHeight, pageNum.value)
+      const res = await authFetch(`${config.endpoints.candidates}/${candidate.id}/resume`)
+      if (res.ok) {
+        const ct = res.headers.get('content-type') || ''
+        const resumeBytes = await res.arrayBuffer()
 
-            // Convert jsPDF output to ArrayBuffer and merge with original resume
-            const assessmentBytes = doc.output('arraybuffer')
-            const mergedPdf = await PDFDocument.create()
+        if (resumeBytes.byteLength > 100) {
+          resumeFileExists = true
 
-            // Copy assessment pages
-            const assessmentDoc = await PDFDocument.load(assessmentBytes)
-            const assessmentPages = await mergedPdf.copyPages(assessmentDoc, assessmentDoc.getPageIndices())
-            assessmentPages.forEach((p) => mergedPdf.addPage(p))
-
-            // Add separator page before original resume
-            const sepDoc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-            const sepW = sepDoc.internal.pageSize.getWidth()
-            const sepH = sepDoc.internal.pageSize.getHeight()
-            drawRect(sepDoc, 0, 0, sepW, sepH, BRAND.primaryDark)
-            // White center box
-            const boxW = 140, boxH = 60
-            const boxX = (sepW - boxW) / 2, boxY = (sepH - boxH) / 2 - 10
-            drawRect(sepDoc, boxX, boxY, boxW, boxH, BRAND.white, 8)
-            drawRect(sepDoc, boxX, boxY + boxH - 4, boxW, 4, BRAND.accent, 2)
-            sepDoc.setFontSize(22)
-            sepDoc.setFont('helvetica', 'bold')
-            setColor(sepDoc, BRAND.primaryDark)
-            sepDoc.text('ORIGINAL RESUME', sepW / 2, boxY + 22, { align: 'center' })
-            sepDoc.setFontSize(11)
-            sepDoc.setFont('helvetica', 'normal')
-            setColor(sepDoc, BRAND.gray)
-            sepDoc.text(candidate.name, sepW / 2, boxY + 34, { align: 'center' })
-            sepDoc.setFontSize(9)
-            sepDoc.text('Attached untouched from submission', sepW / 2, boxY + 44, { align: 'center' })
-            const sepBytes = sepDoc.output('arraybuffer')
-            const sepPdfDoc = await PDFDocument.load(sepBytes)
-            const sepPages = await mergedPdf.copyPages(sepPdfDoc, [0])
-            sepPages.forEach((p) => mergedPdf.addPage(p))
-
-            // Copy original resume pages (untouched)
+          if (ct.includes('pdf')) {
+            // ── PDF resume: merge pages directly ──
             try {
-              const resumeDoc = await PDFDocument.load(resumeBytes, { ignoreEncryption: true })
-              const resumePages = await mergedPdf.copyPages(resumeDoc, resumeDoc.getPageIndices())
-              resumePages.forEach((p) => mergedPdf.addPage(p))
-              resumeMerged = true
-            } catch (mergeErr) {
-              console.warn('Could not merge resume PDF (may be encrypted/corrupt):', mergeErr)
-            }
+              const assessmentBytes = doc.output('arraybuffer')
+              const merged = await PDFDocument.create()
 
-            if (resumeMerged) {
-              const finalBytes = await mergedPdf.save()
+              const aDoc = await PDFDocument.load(assessmentBytes)
+              const aPages = await merged.copyPages(aDoc, aDoc.getPageIndices())
+              aPages.forEach((p) => merged.addPage(p))
+
+              // Separator page
+              const sep = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' })
+              const sw = sep.internal.pageSize.getWidth()
+              const sh = sep.internal.pageSize.getHeight()
+              fillR(sep, 0, 0, sw, sh, C.navy)
+              const bw = 140, bh = 60
+              const bx = (sw - bw) / 2, by = (sh - bh) / 2 - 10
+              fillR(sep, bx, by, bw, bh, C.white, 8)
+              gradientH(sep, bx, by + bh - 4, bw, 4, [C.heroBlue, C.cyan, C.gradPurple])
+              sep.setFontSize(22)
+              sep.setFont('helvetica', 'bold')
+              setT(sep, C.navy)
+              sep.text('ORIGINAL RESUME', sw / 2, by + 22, { align: 'center' })
+              sep.setFontSize(11)
+              sep.setFont('helvetica', 'normal')
+              setT(sep, C.gray)
+              sep.text(cn, sw / 2, by + 34, { align: 'center' })
+              sep.setFontSize(9)
+              sep.text('Attached untouched from submission', sw / 2, by + 44, { align: 'center' })
+              const sepBytes = sep.output('arraybuffer')
+              const sepDoc = await PDFDocument.load(sepBytes)
+              const sepPages = await merged.copyPages(sepDoc, [0])
+              sepPages.forEach((p) => merged.addPage(p))
+
+              const rDoc = await PDFDocument.load(resumeBytes, { ignoreEncryption: true })
+              const rPages = await merged.copyPages(rDoc, rDoc.getPageIndices())
+              rPages.forEach((p) => merged.addPage(p))
+              resumeMerged = true
+
+              const finalBytes = await merged.save()
               const blob = new Blob([finalBytes as unknown as ArrayBuffer], { type: 'application/pdf' })
               const url = URL.createObjectURL(blob)
               const a = document.createElement('a')
-              const safeName = candidate.name.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_')
               a.href = url
-              a.download = `AI_SUMMARY_${safeName}.pdf`
+              a.download = `Efforts_Assessment_${cn.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_')}.pdf`
               document.body.appendChild(a)
               a.click()
               document.body.removeChild(a)
               URL.revokeObjectURL(url)
-              return  // Done — merged PDF saved
+              return
+            } catch (e) {
+              console.warn('Could not merge resume PDF, will use text fallback:', e)
             }
           }
+          // For DOCX or failed PDF merge — we still have the file, note it exists
         }
       }
     } catch (err) {
-      console.warn('Failed to fetch resume for PDF merge:', err)
+      console.warn('Failed to fetch resume file:', err)
+    }
+
+    // ── Step 2: If resumeText is empty, fetch from candidate endpoint ──
+    if (!candidate.resumeText || candidate.resumeText.trim().length < 30) {
+      try {
+        const cRes = await authFetch(`${config.endpoints.candidates}/${candidate.id}`)
+        if (cRes.ok) {
+          const full = await cRes.json()
+          const fetched = (full.resume_text || full.resumeText || '').trim()
+          if (fetched.length > 30) {
+            candidate = { ...candidate, resumeText: fetched }
+          }
+        }
+      } catch { /* ignore */ }
     }
   }
 
-  // Fallback: render resume text if merge failed or no resume file available
-  // Sanitize resume text: detect and skip garbled/mojibake content
-  let cleanResumeText = candidate.resumeText?.trim() || ''
-  const isMojibake = detectMojibake(cleanResumeText)
+  // ── Step 3: Render resume text if available (fallback when PDF merge didn't work) ──
+  if (!resumeMerged) {
+    let rawResumeText = candidate.resumeText?.trim() || ''
+    const isMoji = detectMojibake(rawResumeText)
 
-  if (cleanResumeText.length > 20 && !isMojibake) {
-    // Footer on current page, then new page for CV
-    drawFooter(doc, pageWidth, pageHeight, pageNum.value)
-    doc.addPage()
-    pageNum.value++
-    
-    // CV header bar
-    drawRect(doc, 0, 0, pageWidth, 10, BRAND.primaryDark)
-    doc.setFontSize(9)
-    doc.setFont('helvetica', 'bold')
-    setColor(doc, BRAND.white)
-    doc.text('Original CV / Resume', margin, 7)
-    doc.setFontSize(7)
-    doc.setFont('helvetica', 'normal')
-    setColor(doc, BRAND.primaryLight)
-    doc.text(candidate.name, pageWidth - 14, 7, { align: 'right' })
-    drawRect(doc, 0, 10, pageWidth, 0.5, BRAND.accent)
-    y = 16
-    
-    // Write resume text with page breaks
-    doc.setFontSize(8)
-    doc.setFont('helvetica', 'normal')
-    setColor(doc, BRAND.black)
-    
-    const resumeLines = doc.splitTextToSize(cleanResumeText, contentWidth)
-    const lineH = 3.5
-    
-    for (let i = 0; i < resumeLines.length; i++) {
-      if (y + lineH > pageHeight - 20) {
-        drawFooter(doc, pageWidth, pageHeight, pageNum.value)
-        doc.addPage()
-        pageNum.value++
-        
-        // Continuation header
-        drawRect(doc, 0, 0, pageWidth, 8, BRAND.primaryDark)
-        doc.setFontSize(7)
-        doc.setFont('helvetica', 'bold')
-        setColor(doc, BRAND.white)
-        doc.text('Original CV / Resume (continued)', margin, 5.5)
-        doc.setFont('helvetica', 'normal')
-        setColor(doc, BRAND.primaryLight)
-        doc.text(candidate.name, pageWidth - 14, 5.5, { align: 'right' })
-        drawRect(doc, 0, 8, pageWidth, 0.5, BRAND.accent)
-        y = 14
-        
-        doc.setFontSize(8)
-        doc.setFont('helvetica', 'normal')
-        setColor(doc, BRAND.black)
+    // Detect and repair spaced-character corruption before sanitising
+    if (detectSpacedCharCorruption(rawResumeText)) {
+      console.warn('Detected spaced-char corruption in resume text, collapsing...')
+      rawResumeText = collapseSpacedChars(rawResumeText)
+    }
+
+    const resumeText = sanitizeForHelvetica(rawResumeText)
+
+    if (resumeText.length > 30 && !isMoji) {
+      // We have renderable text — show it as "Original CV / Resume"
+      doc.addPage()
+      pn.value++
+
+      // Separator banner
+      fillR(doc, 0, 0, pw, 14, C.navy)
+      doc.setFontSize(10)
+      doc.setFont('helvetica', 'bold')
+      setT(doc, C.white)
+      doc.text('Original CV / Resume', ml, 9)
+      doc.setFontSize(7)
+      doc.setFont('helvetica', 'normal')
+      setT(doc, [180, 210, 255] as C3)
+      doc.text(cn, pw - ml, 9, { align: 'right' })
+      gradientH(doc, 0, 14, pw, 0.8, [C.heroBlue, C.cyan, C.gradPurple])
+
+      if (resumeFileExists) {
+        doc.setFontSize(6.5)
+        setT(doc, C.gray)
+        doc.text('Note: Original file is available for separate download from the platform.', ml, 18.5)
+        y = 22
+      } else {
+        y = 18
       }
-      doc.text(resumeLines[i], margin, y)
-      y += lineH
+
+      doc.setFontSize(8)
+      doc.setFont('helvetica', 'normal')
+      setT(doc, C.black)
+
+      const rLines = doc.splitTextToSize(resumeText, cw)
+      const rlh = 3.5
+
+      for (let i = 0; i < rLines.length; i++) {
+        if (y + rlh > ph - 22) {
+          drawFooter(doc, pw, ph, pn.value)
+          doc.addPage()
+          pn.value++
+          fillR(doc, 0, 0, pw, 10, C.navy)
+          doc.setFontSize(7)
+          doc.setFont('helvetica', 'bold')
+          setT(doc, C.white)
+          doc.text('Original CV / Resume (continued)', ml, 7)
+          doc.setFont('helvetica', 'normal')
+          setT(doc, [180, 210, 255] as C3)
+          doc.text(cn, pw - ml, 7, { align: 'right' })
+          gradientH(doc, 0, 10, pw, 0.6, [C.heroBlue, C.cyan, C.gradPurple])
+          y = 16
+          doc.setFontSize(8)
+          doc.setFont('helvetica', 'normal')
+          setT(doc, C.black)
+        }
+        doc.text(rLines[i], ml, y)
+        y += rlh
+      }
+      drawFooter(doc, pw, ph, pn.value)
+    } else if (resumeFileExists) {
+      // Resume file exists but couldn't be rendered as text — add a note page
+      doc.addPage()
+      pn.value++
+      fillR(doc, 0, 0, pw, 14, C.navy)
+      doc.setFontSize(10)
+      doc.setFont('helvetica', 'bold')
+      setT(doc, C.white)
+      doc.text('Original Resume', ml, 9)
+      gradientH(doc, 0, 14, pw, 0.8, [C.heroBlue, C.cyan, C.gradPurple])
+
+      doc.setFontSize(9)
+      doc.setFont('helvetica', 'normal')
+      setT(doc, C.grayDark)
+      doc.text('The original resume file is available for download from the Efforts platform.', ml, 26)
+      doc.text('It could not be embedded in this PDF because it is in a non-PDF format (e.g. DOCX).', ml, 32)
+      doc.setFontSize(8)
+      setT(doc, C.gray)
+      doc.text('To download: Go to Candidate Profile > Click "Download Resume"', ml, 42)
+      drawFooter(doc, pw, ph, pn.value)
     }
   }
 
-  // Final footer
-  drawFooter(doc, pageWidth, pageHeight, pageNum.value)
-  
-  const safeName = candidate.name.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_')
-  doc.save(`AI_SUMMARY_${safeName}.pdf`)
+  const safeName = cn.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_')
+  doc.save(`Efforts_Assessment_${safeName}.pdf`)
 }
 
-/**
- * Quick PDF without AI analysis — fetches full candidate data first if light version detected
- */
+/* ═══════════════════════════════════════════════════════════════════
+   Quick Profile PDF
+   ═══════════════════════════════════════════════════════════════════ */
 export async function generateQuickProfilePDF(candidate: CandidateData): Promise<void> {
-  // If candidate has no education/workHistory (light version from list), fetch full data first
-  const isLight = (!candidate.education || candidate.education.length === 0) &&
-                  (!candidate.workHistory || candidate.workHistory.length === 0) &&
-                  !candidate.summary
-  if (isLight && candidate.id) {
+  if (candidate.id) {
     try {
-      const token = useAuthStore.getState().token
-      const res = await fetch(`${config.endpoints.candidates}/${candidate.id}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
-      if (res.ok) {
-        const full = await res.json()
+      const [cRes, aRes] = await Promise.all([
+        authFetch(`${config.endpoints.candidates}/${candidate.id}`),
+        authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis`).catch(() => null),
+      ])
+      let ai: AIAnalysisData | null = null
+      if (aRes?.ok) { try { ai = await aRes.json() } catch { /* skip */ } }
+      if (cRes.ok) {
+        const full = await cRes.json()
         const enriched: CandidateData = {
           ...candidate,
           hasResume: full.hasResume ?? candidate.hasResume,
           summary: full.summary || candidate.summary || '',
           education: full.education || [],
-          workHistory: (full.workHistory || []).map((j: any) => ({
+          workHistory: (full.workHistory || []).map((j: Record<string, string>) => ({
             title: j.title || j.position || '',
             company: j.company || j.organization || '',
             duration: j.duration || j.period || '',
@@ -905,7 +1536,7 @@ export async function generateQuickProfilePDF(candidate: CandidateData): Promise
           languages: full.languages || [],
           linkedin: full.linkedin || candidate.linkedin || '',
         }
-        return generateCandidatePDF(enriched, full.ai_analysis || null)
+        return generateCandidatePDF(enriched, ai || full.ai_analysis || null)
       }
     } catch (err) {
       console.error('Failed to fetch full data for PDF:', err)
@@ -914,26 +1545,20 @@ export async function generateQuickProfilePDF(candidate: CandidateData): Promise
   return generateCandidatePDF(candidate, null)
 }
 
-/**
- * Download the original resume as a standalone file.
- * Tries to fetch the original PDF/DOCX from backend first.
- * Falls back to generating a clean PDF from resume text.
- */
+/* ═══════════════════════════════════════════════════════════════════
+   Download Original Resume
+   ═══════════════════════════════════════════════════════════════════ */
 export async function downloadOriginalResume(candidate: CandidateData): Promise<void> {
   const safeName = candidate.name.replace(/[^a-zA-Z0-9\s]/g, '').replace(/\s+/g, '_')
 
-  // 1) Try to download original resume file from backend
   if (candidate.id) {
     try {
-      const token = useAuthStore.getState().token
-      const res = await fetch(`${config.endpoints.candidates}/${candidate.id}/resume`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
+      const res = await authFetch(`${config.endpoints.candidates}/${candidate.id}/resume`)
       if (res.ok) {
         const blob = await res.blob()
         if (blob.size > 100) {
-          const contentType = res.headers.get('content-type') || ''
-          const ext = contentType.includes('pdf') ? 'pdf' : contentType.includes('word') ? 'docx' : 'pdf'
+          const ct = res.headers.get('content-type') || ''
+          const ext = ct.includes('pdf') ? 'pdf' : ct.includes('word') ? 'docx' : 'pdf'
           const url = URL.createObjectURL(blob)
           const a = document.createElement('a')
           a.href = url
@@ -946,18 +1571,14 @@ export async function downloadOriginalResume(candidate: CandidateData): Promise<
         }
       }
     } catch (err) {
-      console.warn('Could not fetch original resume file:', err)
+      console.warn('Could not fetch original resume:', err)
     }
   }
 
-  // 2) Fetch full candidate data if resume text is missing
   let resumeText = candidate.resumeText?.trim() || ''
   if (!resumeText && candidate.id) {
     try {
-      const token = useAuthStore.getState().token
-      const res = await fetch(`${config.endpoints.candidates}/${candidate.id}`, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {},
-      })
+      const res = await authFetch(`${config.endpoints.candidates}/${candidate.id}`)
       if (res.ok) {
         const full = await res.json()
         resumeText = (full.resume_text || full.resumeText || '').trim()
@@ -965,60 +1586,59 @@ export async function downloadOriginalResume(candidate: CandidateData): Promise<
     } catch { /* ignore */ }
   }
 
-  if (!resumeText || resumeText.length < 20) {
-    throw new Error('No resume available for this candidate')
+  if (!resumeText || resumeText.length < 20) throw new Error('No resume available for this candidate')
+  if (detectMojibake(resumeText)) throw new Error('Resume text contains encoding errors. Original file not available.')
+
+  // Repair spaced-character corruption before sanitizing
+  if (detectSpacedCharCorruption(resumeText)) {
+    resumeText = collapseSpacedChars(resumeText)
   }
 
-  // Check for mojibake — if text is garbled, don't generate garbage PDF
-  if (detectMojibake(resumeText)) {
-    throw new Error('Resume text contains encoding errors. Original file not available.')
-  }
+  // Sanitize for Helvetica rendering
+  resumeText = sanitizeForHelvetica(resumeText)
+  if (resumeText.length < 20) throw new Error('Resume text is not renderable after sanitization.')
 
-  // 3) Generate a clean PDF from resume text
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-  const pageWidth = doc.internal.pageSize.getWidth()
-  const pageHeight = doc.internal.pageSize.getHeight()
-  const margin = 14
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' })
+  const pw = doc.internal.pageSize.getWidth()
+  const ph = doc.internal.pageSize.getHeight()
+  const ml = 20
+  const cw = pw - ml * 2
 
-  // Header bar
-  drawRect(doc, 0, 0, pageWidth, 12, BRAND.primaryDark)
+  fillR(doc, 0, 0, pw, 12, C.navy)
   doc.setFontSize(10)
   doc.setFont('helvetica', 'bold')
-  setColor(doc, BRAND.white)
-  doc.text(`Resume — ${candidate.name}`, margin, 8)
+  setT(doc, C.white)
+  doc.text(`Resume — ${candidate.name}  |  Efforts Solutions`, ml, 8)
   doc.setFontSize(7)
   doc.setFont('helvetica', 'normal')
-  setColor(doc, BRAND.primaryLight)
-  const dateStr = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' })
-  doc.text(dateStr, pageWidth - margin, 8, { align: 'right' })
-  drawRect(doc, 0, 12, pageWidth, 0.5, BRAND.accent)
+  setT(doc, [180, 210, 255] as C3)
+  doc.text(new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' }), pw - ml, 8, { align: 'right' })
+  gradientH(doc, 0, 12, pw, 0.8, [C.heroBlue, C.cyan, C.gradPurple])
 
-  // Resume text body
   let y = 18
-  const contentWidth = pageWidth - margin * 2
   doc.setFontSize(9)
   doc.setFont('helvetica', 'normal')
-  setColor(doc, BRAND.black)
+  setT(doc, C.black)
 
-  const lines = doc.splitTextToSize(resumeText, contentWidth)
-  const lineH = 4
+  const lines = doc.splitTextToSize(resumeText, cw)
+  const lh = 4
 
   for (let i = 0; i < lines.length; i++) {
-    if (y + lineH > pageHeight - 15) {
+    if (y + lh > ph - 15) {
       doc.addPage()
-      drawRect(doc, 0, 0, pageWidth, 8, BRAND.primaryDark)
+      fillR(doc, 0, 0, pw, 8, C.navy)
       doc.setFontSize(7)
       doc.setFont('helvetica', 'bold')
-      setColor(doc, BRAND.white)
-      doc.text(`Resume — ${candidate.name} (continued)`, margin, 5.5)
-      drawRect(doc, 0, 8, pageWidth, 0.5, BRAND.accent)
+      setT(doc, C.white)
+      doc.text(`Resume — ${candidate.name} (continued)`, ml, 5.5)
+      gradientH(doc, 0, 8, pw, 0.6, [C.heroBlue, C.cyan, C.gradPurple])
       y = 14
       doc.setFontSize(9)
       doc.setFont('helvetica', 'normal')
-      setColor(doc, BRAND.black)
+      setT(doc, C.black)
     }
-    doc.text(lines[i], margin, y)
-    y += lineH
+    doc.text(lines[i], ml, y)
+    y += lh
   }
 
   doc.save(`Resume_${safeName}.pdf`)

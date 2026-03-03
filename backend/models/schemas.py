@@ -200,7 +200,7 @@ class CandidateResponse(BaseModel):
     work_history: List[WorkExperience] = Field(default_factory=list)
     linkedin: Optional[str] = None
     status: str = "New"
-    match_score: float = Field(default=50.0, alias="matchScore")
+    match_score: float = Field(default=0.0, alias="matchScore")
     job_category: str = "General"
     applied_date: Optional[str] = Field(default=None, alias="appliedDate")
     last_updated: Optional[str] = None

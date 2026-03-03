@@ -4,7 +4,7 @@ import { useNavigate } from 'react-router-dom'
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
 import { Input } from '@/components/ui/Input'
 import { useAuthStore } from '@/store/authStore'
-import { useNotificationStore } from '@/store/notificationStore'
+import { useNotificationStore, type Notification } from '@/store/notificationStore'
 
 export default function TopBar() {
   const { user, logout } = useAuthStore()
@@ -30,7 +30,7 @@ export default function TopBar() {
     }
   }, [showNotifications])
 
-  const handleNotificationClick = (notification: any) => {
+  const handleNotificationClick = (notification: Notification) => {
     markAsRead(notification.id)
     if (notification.actionUrl) {
       navigate(notification.actionUrl)
@@ -87,6 +87,7 @@ export default function TopBar() {
         <div className="relative" ref={notificationRef}>
           <button 
             onClick={() => setShowNotifications(!showNotifications)}
+            aria-label={`Notifications${unreadCount > 0 ? ` (${unreadCount} unread)` : ''}`}
             className="relative p-2.5 text-gray-500 hover:text-gray-900 hover:bg-gray-100 rounded-xl transition-all"
           >
             <Bell className="w-5 h-5" />
@@ -146,6 +147,7 @@ export default function TopBar() {
                                 e.stopPropagation()
                                 deleteNotification(notification.id)
                               }}
+                              aria-label={`Delete notification: ${notification.title}`}
                               className="text-gray-400 hover:text-gray-600 p-1"
                             >
                               <X className="w-3 h-3" />
@@ -172,7 +174,13 @@ export default function TopBar() {
   )
 }
 
-function UserMenu({ user, logout, navigate }: { user: any; logout: () => void; navigate: (path: string) => void }) {
+interface UserMenuProps {
+  user: { name?: string; email?: string; role?: string } | null
+  logout: () => void
+  navigate: (path: string) => void
+}
+
+function UserMenu({ user, logout, navigate }: UserMenuProps) {
   const [open, setOpen] = useState(false)
   const menuRef = useRef<HTMLDivElement>(null)
 
@@ -203,7 +211,7 @@ function UserMenu({ user, logout, navigate }: { user: any; logout: () => void; n
             <Settings className="w-4 h-4 text-gray-400" /> Settings
           </button>
           <div className="border-t border-gray-100 my-1.5 mx-3" />
-          <button onClick={() => { if (window.confirm('Are you sure you want to log out?')) logout() }} className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 rounded-lg mx-0 transition-colors">
+          <button onClick={() => logout()} className="flex items-center gap-2.5 w-full px-4 py-2.5 text-sm text-red-600 hover:bg-red-50 rounded-lg mx-0 transition-colors">
             <LogOut className="w-4 h-4" /> Log Out
           </button>
         </div>
