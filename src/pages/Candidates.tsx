@@ -1,5 +1,5 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from 'react'
-import { Search, SlidersHorizontal, RefreshCw, Loader2, Users, Briefcase, ChevronDown, ChevronRight, Calendar, ArrowUpDown, Mail, MessageCircle, Linkedin, Phone, Download, Star, CheckCircle, XCircle, FileText } from 'lucide-react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
+import { Search, SlidersHorizontal, RefreshCw, Loader2, Users, Briefcase, ChevronDown, ChevronRight, Calendar, ArrowUpDown, Mail, MessageCircle, Linkedin, Phone, Download, Star, FileText } from 'lucide-react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { useCandidates } from '@/hooks/useCandidates'
 import { useEmailSync } from '@/hooks/useEmailSync'
@@ -21,6 +21,7 @@ import { getMatchScoreColor, getStatusBadgeColor, getCategoryColor } from '@/lib
 import { generateQuickProfilePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
 import { candidateApi } from '@/services/api'
 import { normalizeCategory } from '@/lib/categoryUtils'
+import { toast } from '@/components/ui/Toast'
 import type { Candidate } from '@/types'
 
 // Quick contact helper - opens contact without navigating away
@@ -28,22 +29,26 @@ const openContact = (e: React.MouseEvent, type: 'email' | 'whatsapp' | 'linkedin
   e.stopPropagation() // Prevent row click
   
   switch (type) {
-    case 'email':
-      window.location.href = `mailto:${candidate.email}?subject=Regarding Your Application&body=Hi ${candidate.name},%0A%0A`
+    case 'email': {
+      const safeEmail = encodeURIComponent(candidate.email || '')
+      const safeName = encodeURIComponent(candidate.name || '')
+      window.location.href = `mailto:${safeEmail}?subject=Regarding%20Your%20Application&body=Hi%20${safeName}%2C%0A%0A`
       break
-    case 'whatsapp':
+    }
+    case 'whatsapp': {
       const cleanPhone = candidate.phone?.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '') || ''
       if (cleanPhone) {
-        window.open(`https://wa.me/${cleanPhone}?text=Hi ${encodeURIComponent(candidate.name)}, I'm reaching out regarding your job application.`, '_blank')
+        window.open(`https://wa.me/${cleanPhone}?text=Hi ${encodeURIComponent(candidate.name || '')}, I'm reaching out regarding your job application.`, '_blank')
       }
       break
+    }
     case 'linkedin':
       if (candidate.linkedin) {
         window.open(candidate.linkedin, '_blank')
       }
       break
     case 'phone':
-      window.location.href = `tel:${candidate.phone}`
+      window.location.href = `tel:${encodeURIComponent(candidate.phone || '')}`
       break
   }
 }
@@ -81,8 +86,8 @@ const MAIN_CATEGORY_MAP: Record<string, string> = {
   'Healthcare': 'Specialist Services',
   'Legal': 'Specialist Services',
   'Insurance & Safety': 'Specialist Services',
+  'Retail & Hospitality': 'Specialist Services',
   'Design & Creative': 'Creative & Media',
-  'Retail & Hospitality': 'Other',
   'General': 'Other',
 }
 
@@ -105,19 +110,10 @@ export default function Candidates() {
   const [shortlistingIds, setShortlistingIds] = useState<Set<string>>(new Set())
   const [shortlistedIds, setShortlistedIds] = useState<Set<string>>(new Set())
   const [emailSentIds, setEmailSentIds] = useState<Set<string>>(new Set())
-  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'info'; visible: boolean }>({ message: '', type: 'success', visible: false })
-  const toastTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const [isReprocessing, setIsReprocessing] = useState(false)
 
   const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' = 'success') => {
-    if (toastTimer.current) clearTimeout(toastTimer.current)
-    setToast({ message, type, visible: true })
-    toastTimer.current = setTimeout(() => setToast(prev => ({ ...prev, visible: false })), 4000)
-  }, [])
-
-  // Cleanup toast timer on unmount
-  useEffect(() => {
-    return () => { if (toastTimer.current) clearTimeout(toastTimer.current) }
+    toast[type](message)
   }, [])
 
   const handleReprocessWithGemini = useCallback(async () => {
@@ -1114,20 +1110,6 @@ export default function Candidates() {
         </div>
       )}
 
-      {/* Toast Notification */}
-      {toast.visible && (
-        <div className={`fixed bottom-6 right-6 z-50 flex items-center gap-2 px-4 py-3 rounded-lg shadow-lg border transition-all duration-300 max-w-md ${
-          toast.type === 'success' ? 'bg-green-50 border-green-200 text-green-800' :
-          toast.type === 'error' ? 'bg-red-50 border-red-200 text-red-800' :
-          'bg-sky-50 border-sky-200 text-sky-800'
-        }`}>
-          {toast.type === 'success' ? <CheckCircle className="w-4 h-4 flex-shrink-0" /> :
-           toast.type === 'error' ? <XCircle className="w-4 h-4 flex-shrink-0" /> :
-           <Mail className="w-4 h-4 flex-shrink-0" />}
-          <span className="text-sm font-medium">{toast.message}</span>
-          <button onClick={() => setToast(prev => ({ ...prev, visible: false }))} className="ml-2 text-current opacity-60 hover:opacity-100">×</button>
-        </div>
-      )}
     </div>
   )
 }

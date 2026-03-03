@@ -2289,6 +2289,19 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                     >
                       <Mail className="w-3.5 h-3.5 mr-1.5" />Email
                     </Button>
+
+                    <div className="w-px h-6 bg-gray-200 mx-1" />
+
+                    <Button size="sm" variant="outline" onClick={async () => {
+                      try { await downloadOriginalResume(resultDetailCandidate!) } catch {
+                        toast.error('No Resume', 'No resume file available for this candidate. Use Export Report for a profile summary.')
+                      }
+                    }}>
+                      <Download className="w-3.5 h-3.5 mr-1.5" />Download Resume
+                    </Button>
+                    <Button size="sm" variant="outline" onClick={() => generateQuickProfilePDF(resultDetailCandidate!)}>
+                      <FileDown className="w-3.5 h-3.5 mr-1.5" />Export Report
+                    </Button>
                   </div>
 
                   {/* AI Analysis */}
@@ -2567,29 +2580,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                     </div>
                   </section>
 
-                  {/* Action Buttons */}
-                  <div className="flex items-center gap-2 pt-2 pb-4 flex-wrap">
-                    <Button
-                      onClick={() => resultDetailCandidate!.email && window.open(`mailto:${resultDetailCandidate!.email}`)}
-                      className="bg-sky-600 hover:bg-sky-700"
-                      size="sm"
-                    >
-                      <Mail className="w-3.5 h-3.5 mr-1.5" />Contact Candidate
-                    </Button>
-                    <Button size="sm" variant="outline" className="border-sky-200 text-sky-700 hover:bg-sky-50" onClick={() => navigate(`/candidates/${resultDetailCandidate!.id}`)}>
-                      <Calendar className="w-3.5 h-3.5 mr-1.5" />Schedule Interview
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={async () => {
-                      try { await downloadOriginalResume(resultDetailCandidate!) } catch {
-                        toast.error('No Resume', 'No resume file available for this candidate. Use Export Report for a profile summary.')
-                      }
-                    }}>
-                      <Download className="w-3.5 h-3.5 mr-1.5" />Download Resume
-                    </Button>
-                    <Button size="sm" variant="outline" onClick={() => generateQuickProfilePDF(resultDetailCandidate!)}>
-                      <FileDown className="w-3.5 h-3.5 mr-1.5" />Export Report
-                    </Button>
-                  </div>
+
                 </div>
               </div>
             ) : (

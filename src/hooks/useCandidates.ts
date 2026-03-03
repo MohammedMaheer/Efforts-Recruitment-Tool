@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState, useRef } from 'react'
+import { useEffect, useCallback, useState, useRef, useMemo } from 'react'
 import { useCandidateStore } from '@/store/candidateStore'
 import type { Candidate } from '@/types'
 import { useAuthStore } from '@/store/authStore'
@@ -208,16 +208,7 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
         { headers, signal: controller.signal, cache: 'no-store' as RequestCache },
       )
       
-      // Handle 401 — auto-logout so user doesn't stay on a broken session
-      if (firstResponse.status === 401) {
-        const authStore = useAuthStore.getState()
-        if (authStore.isAuthenticated) {
-          authStore.logout()
-          window.dispatchEvent(new CustomEvent('auth:session-expired'))
-        }
-        throw new Error('Session expired. Please log in again.')
-      }
-      
+      // 401 is now handled centrally by authFetch — no duplicate handling needed
       if (!firstResponse.ok) {
         throw new Error(`Failed to fetch candidates: ${firstResponse.statusText}`)
       }
@@ -304,12 +295,12 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
     return () => clearInterval(interval)
   }, [refreshInterval, fetchCandidates])
 
-  // Calculate stats
-  const stats = {
+  // Calculate stats (memoized to avoid recomputing on every render)
+  const stats = useMemo(() => ({
     total: candidates.length,
-    totalCandidates: candidates.length,  // Alias for Dashboard compatibility
+    totalCandidates: candidates.length,
     strong: candidates.filter(c => c.status === 'Strong').length,
-    strongMatches: candidates.filter(c => c.status === 'Strong').length,  // Alias
+    strongMatches: candidates.filter(c => c.status === 'Strong').length,
     partial: candidates.filter(c => c.status === 'Partial').length,
     reject: candidates.filter(c => c.status === 'Reject').length,
     avgScore: candidates.length > 0 
@@ -317,7 +308,7 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
       : 0,
     averageScore: candidates.length > 0 
       ? Math.round(candidates.reduce((sum, c) => sum + c.matchScore, 0) / candidates.length)
-      : 0,  // Alias
+      : 0,
     recentCount: candidates.filter(c => {
       const date = new Date(c.appliedDate)
       const oneDayAgo = new Date()
@@ -329,8 +320,8 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
       const oneDayAgo = new Date()
       oneDayAgo.setDate(oneDayAgo.getDate() - 1)
       return date >= oneDayAgo
-    }).length  // Alias
-  }
+    }).length,
+  }), [candidates])
 
   return {
     candidates,

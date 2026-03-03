@@ -157,46 +157,70 @@ export const useAuthStore = create<AuthState>()(
         const { token } = get()
         if (!token) throw new Error('Not authenticated')
         
-        const response = await fetch(`${config.apiUrl}/api/users/profile`, {
-          method: 'PUT',
-          headers: { 
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            firstName: profile.firstName || profile.name?.split(' ')[0] || '',
-            lastName: profile.name?.split(' ').slice(1).join(' ') || '',
-            email: profile.email,
-            company: profile.company,
-            phone: profile.phone
-          }),
-        })
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 30000)
+        try {
+          const response = await fetch(`${config.apiUrl}/api/users/profile`, {
+            method: 'PUT',
+            headers: { 
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              firstName: profile.firstName || profile.name?.split(' ')[0] || '',
+              lastName: profile.name?.split(' ').slice(1).join(' ') || '',
+              email: profile.email,
+              company: profile.company,
+              phone: profile.phone
+            }),
+            signal: controller.signal,
+          })
+          clearTimeout(timeoutId)
         
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({}))
-          throw new Error(error.detail || 'Failed to update profile')
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}))
+            throw new Error(error.detail || 'Failed to update profile')
+          }
+        
+          const data = await response.json()
+          set({ user: data.user })
+        } catch (error) {
+          clearTimeout(timeoutId)
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            throw new Error('Request timed out. Please try again.')
+          }
+          throw error
         }
-        
-        const data = await response.json()
-        set({ user: data.user })
       },
       
       changePassword: async (currentPassword: string, newPassword: string) => {
         const { token } = get()
         if (!token) throw new Error('Not authenticated')
         
-        const response = await fetch(`${config.apiUrl}/api/users/password`, {
-          method: 'PUT',
-          headers: { 
-            'Authorization': `Bearer ${token}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ currentPassword, newPassword }),
-        })
+        const controller = new AbortController()
+        const timeoutId = setTimeout(() => controller.abort(), 30000)
+        try {
+          const response = await fetch(`${config.apiUrl}/api/users/password`, {
+            method: 'PUT',
+            headers: { 
+              'Authorization': `Bearer ${token}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ currentPassword, newPassword }),
+            signal: controller.signal,
+          })
+          clearTimeout(timeoutId)
         
-        if (!response.ok) {
-          const error = await response.json().catch(() => ({}))
-          throw new Error(error.detail || 'Failed to change password')
+          if (!response.ok) {
+            const error = await response.json().catch(() => ({}))
+            throw new Error(error.detail || 'Failed to change password')
+          }
+        } catch (error) {
+          clearTimeout(timeoutId)
+          if (error instanceof DOMException && error.name === 'AbortError') {
+            throw new Error('Request timed out. Please try again.')
+          }
+          throw error
         }
       },
     }),

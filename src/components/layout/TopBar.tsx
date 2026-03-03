@@ -1,7 +1,7 @@
 import { Bell, Search, ChevronDown, X, CheckCheck, LogOut, Settings } from 'lucide-react'
 import { useState, useRef, useEffect } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/Avatar'
+import { Avatar, AvatarFallback } from '@/components/ui/Avatar'
 import { Input } from '@/components/ui/Input'
 import { useAuthStore } from '@/store/authStore'
 import { useNotificationStore, type Notification } from '@/store/notificationStore'
@@ -195,7 +195,6 @@ function UserMenu({ user, logout, navigate }: UserMenuProps) {
   return (
     <div className="relative flex items-center gap-3 pl-3 ml-1 border-l border-gray-200/60" ref={menuRef}>
       <Avatar className="w-9 h-9 ring-2 ring-gray-100">
-        <AvatarImage src={`https://api.dicebear.com/7.x/initials/svg?seed=${user?.name}`} />
         <AvatarFallback className="bg-slate-800 text-white text-sm font-bold">{user?.name?.charAt(0) || 'U'}</AvatarFallback>
       </Avatar>
       <div className="text-sm hidden sm:block">

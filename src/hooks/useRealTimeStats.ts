@@ -113,9 +113,8 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
         clearInterval(pollingRef.current);
         pollingRef.current = null;
       }
-      abortControllerRef.current?.abort();
     };
-  }, [enabled, interval]);
+  }, [enabled, interval, fetchStats]);
 
   // Manual refresh function
   const refresh = useCallback(() => {

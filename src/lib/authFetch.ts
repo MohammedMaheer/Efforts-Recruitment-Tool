@@ -24,7 +24,7 @@ export async function authFetch(
 ): Promise<Response> {
   const authHeaders = getAuthHeaders();
   
-  return fetch(input, {
+  const response = await fetch(input, {
     ...init,
     cache: 'no-store' as RequestCache,
     headers: {
@@ -32,6 +32,17 @@ export async function authFetch(
       ...init?.headers,
     },
   });
+
+  // Auto-logout on 401 (expired/invalid token) — consistent with ApiClient
+  if (response.status === 401) {
+    const authStore = useAuthStore.getState();
+    if (authStore.isAuthenticated) {
+      authStore.logout();
+      window.dispatchEvent(new CustomEvent('auth:session-expired'));
+    }
+  }
+
+  return response;
 }
 
 export default authFetch;

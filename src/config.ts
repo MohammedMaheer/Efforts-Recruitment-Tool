@@ -9,6 +9,11 @@ const API_URL = import.meta.env.VITE_API_URL ||
                   ? 'http://localhost:8000' 
                   : window.location.origin);
 
+// Warn loudly if API URL falls back to frontend origin in production
+if (!import.meta.env.DEV && !import.meta.env.VITE_API_URL) {
+  console.warn('[config] VITE_API_URL is not set — API calls will target the frontend origin. Set VITE_API_URL for production.');
+}
+
 const ENV = import.meta.env.VITE_ENV || 
             (import.meta.env.DEV ? 'development' : 'production');
 

@@ -16,6 +16,7 @@ from dotenv import load_dotenv
 import logging
 from contextlib import asynccontextmanager
 from cachetools import TTLCache
+import threading
 import time
 
 from services.resume_parser import ResumeParser, is_spaced_text, collapse_spaced_chars, text_quality_score
@@ -82,11 +83,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Performance: Response cache (5 minutes TTL)
+# Performance: Response cache (5 minutes TTL) with thread-safe lock
 response_cache = TTLCache(maxsize=1000, ttl=300)
-
-# Semaphore for database access to prevent SQLite lock contention
-db_semaphore = asyncio.Semaphore(10)
+_cache_lock = threading.Lock()
 
 # Background email sync task
 background_sync_task = None
@@ -5018,6 +5017,12 @@ async def ai_chat(
         raise HTTPException(429, "Too many requests. Please wait a moment before sending another message.")
     user_hits.append(now)
     app.state._chat_rate_limits[user_id] = user_hits
+    # Periodic cleanup: remove stale users (every ~100 requests)
+    if len(app.state._chat_rate_limits) > 100:
+        app.state._chat_rate_limits = {
+            uid: hits for uid, hits in app.state._chat_rate_limits.items()
+            if any(now - t < 60 for t in hits)
+        }
 
     try:
         candidates_data = None

@@ -53,7 +53,6 @@ export class ErrorBoundary extends Component<Props, State> {
     return (
       msg.includes('dynamically imported module') ||
       msg.includes('Loading chunk') ||
-      msg.includes('Failed to fetch') ||
       msg.includes('Loading CSS chunk')
     );
   }

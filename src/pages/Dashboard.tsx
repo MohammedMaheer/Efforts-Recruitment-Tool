@@ -1,6 +1,6 @@
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useCandidates } from '@/hooks/useCandidates'
 import { useRealTimeStats } from '@/hooks/useRealTimeStats'
 import config from '@/config'
@@ -48,19 +48,17 @@ export default function Dashboard() {
   const storagePercent = Math.min(Math.round((totalCandidates / 10000) * 100), 100)
   const searchQueryCount = searches.length
 
-  // CVs added today / this week
-  const now = new Date()
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
-  const weekStart = new Date(todayStart)
-  weekStart.setDate(weekStart.getDate() - 7)
-  const cvsToday = candidates.filter(c => {
-    const d = new Date(c.appliedDate)
-    return d >= todayStart
-  }).length
-  const cvsThisWeek = candidates.filter(c => {
-    const d = new Date(c.appliedDate)
-    return d >= weekStart
-  }).length
+  // CVs added today / this week (memoized to avoid recomputing on every render)
+  const { cvsToday, cvsThisWeek } = useMemo(() => {
+    const now = new Date()
+    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+    const weekStart = new Date(todayStart)
+    weekStart.setDate(weekStart.getDate() - 7)
+    return {
+      cvsToday: candidates.filter(c => new Date(c.appliedDate) >= todayStart).length,
+      cvsThisWeek: candidates.filter(c => new Date(c.appliedDate) >= weekStart).length,
+    }
+  }, [candidates])
 
   useEffect(() => {
     const fetchData = async () => {
