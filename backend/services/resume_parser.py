@@ -259,6 +259,16 @@ class ResumeParser:
         # Unicode normalization
         text = unicodedata.normalize('NFC', text)
 
+        # Strip CID font artifacts: (cid:NN) sequences from broken PDF font mappings
+        # These appear when PDFs use CID (Character ID) fonts with custom encodings
+        if '(cid:' in text:
+            cid_count = len(re.findall(r'\(cid:\d+\)', text))
+            if cid_count > 0:
+                logger.warning(f"Stripping {cid_count} CID font artifacts from PDF text")
+                text = re.sub(r'\(cid:\d+\)', '', text)
+                # Also strip orphaned parentheses left from partial CID patterns
+                text = re.sub(r'\(cid:[^)]*\)', '', text)
+
         # Fix common PDF extraction artifacts
         lines = text.split('\n')
         cleaned_lines = []
@@ -635,18 +645,66 @@ class ResumeParser:
         matches = re.findall(email_pattern, text)
         return matches[0] if matches else ""
     
+    @staticmethod
+    def _is_valid_phone(phone: str) -> bool:
+        """Validate a phone string is actually a phone number, not CID/garbage."""
+        if not phone:
+            return False
+        # Reject CID font artifacts
+        if 'cid:' in phone.lower() or '(cid' in phone.lower():
+            return False
+        # Must contain at least 7 digits
+        digits = re.sub(r'\D', '', phone)
+        if len(digits) < 7 or len(digits) > 15:
+            return False
+        # Reject if more than 50% non-digit, non-standard chars
+        allowed = set('0123456789+()-. ')
+        if sum(1 for c in phone if c not in allowed) > len(phone) * 0.3:
+            return False
+        return True
+
     def _extract_phone(self, text: str) -> str:
         """Extract phone number (supports UAE +971 and international formats)"""
+        # Strip CID artifacts before phone extraction
+        clean_text = re.sub(r'\(cid:\d+\)', '', text)
+        
         # UAE format: +971-XX-XXX-XXXX or variations
         uae_pattern = r'\+971[\s.-]?\d{1,2}[\s.-]?\d{3}[\s.-]?\d{4}'
-        uae_matches = re.findall(uae_pattern, text)
-        if uae_matches:
+        uae_matches = re.findall(uae_pattern, clean_text)
+        if uae_matches and self._is_valid_phone(uae_matches[0]):
             return uae_matches[0]
         
-        # General international format
+        # India format: +91-XXXXX-XXXXX
+        india_pattern = r'\+91[\s.-]?\d{5}[\s.-]?\d{5}'
+        india_matches = re.findall(india_pattern, clean_text)
+        if india_matches and self._is_valid_phone(india_matches[0]):
+            return india_matches[0]
+        
+        # General international format: +CC-XXX-XXX-XXXX
+        intl_pattern = r'\+\d{1,3}[\s.-]?\(?\d{2,4}\)?[\s.-]?\d{3,5}[\s.-]?\d{3,5}'
+        intl_matches = re.findall(intl_pattern, clean_text)
+        if intl_matches and self._is_valid_phone(intl_matches[0]):
+            return intl_matches[0]
+        
+        # US format: (XXX) XXX-XXXX
+        us_pattern = r'\(\d{3}\)\s*\d{3}[\s.-]?\d{4}'
+        us_matches = re.findall(us_pattern, clean_text)
+        if us_matches and self._is_valid_phone(us_matches[0]):
+            return us_matches[0]
+        
+        # Plain digit sequences (10-12 digits)
+        plain_pattern = r'\b\d{10,12}\b'
+        plain_matches = re.findall(plain_pattern, clean_text)
+        if plain_matches and self._is_valid_phone(plain_matches[0]):
+            return plain_matches[0]
+        
+        # General fallback — but validate
         phone_pattern = r'[\+\(]?[1-9][0-9 .\-\(\)]{8,}[0-9]'
-        matches = re.findall(phone_pattern, text)
-        return matches[0] if matches else ""
+        matches = re.findall(phone_pattern, clean_text)
+        for m in matches:
+            if self._is_valid_phone(m):
+                return m
+        return ""
     
     def _extract_skills(self, text: str) -> List[str]:
         """Extract technical skills"""

@@ -276,28 +276,40 @@ SKILL_SYNONYMS = {
     'real estate': {'property', 'realty', 'property management', 'leasing'},
 }
 
-# Pre-compiled regex for location detection
+# Pre-compiled regex for location detection — handles diverse prompt styles
 LOCATION_PATTERN = re.compile(
-    r'(?:based\s+in|work\s*(?:ing)?\s*(?:from|in|at)|located?\s+(?:in|at)|'
-    r'(?:prefer(?:red|ably)?|must\s+be)\s+(?:in|from|to\s+work\s+(?:from|in))|'
-    r'office\s+in|(?:from|in|at|near)\s+)'
-    r'\s+([A-Za-z][A-Za-z\s,]{1,40}?)(?:\s*[.\-]|\s+(?:office|with|who|minimum|'
-    r'min|experience|exp|having|and|must|should|can|preferr?|at\s+least|\d)|$)',
+    r'(?:'
+    r'(?:based|located?|residing|living|settled)\s+(?:in|at|near)'
+    r'|work\s*(?:ing)?\s*(?:from|in|at)'
+    r'|(?:prefer(?:red|ably)?|must\s+be|should\s+be|needs?\s+to\s+be)\s+(?:in|from|at|near|to\s+work\s+(?:from|in))'
+    r'|office\s+in'
+    r'|(?:primary|secondary|acceptable)\s*(?:location)?\s*:?\s*'
+    r'|location\s*:?\s*'
+    r'|(?:from|in|at|near|within)\s+'
+    r')'
+    r'\s*([A-Za-z][A-Za-z\s,]{1,50}?)'
+    r'(?:\s*[.\-;]|\s+(?:office|with|who|minimum|min|experience|exp|having|'
+    r'and|must|should|can|preferr?ed?|at\s+least|only|secondary|primary|\d)|$)',
     re.IGNORECASE
 )
 
-# Pre-compiled regex for experience detection
+# Pre-compiled regex for minimum experience detection
 EXPERIENCE_PATTERN = re.compile(
-    r'(?:minimum|min|at\s+least|above)?\s*(\d+)\+?\s*(?:years?|yrs?|y)\s*(?:of\s+)?(?:experience|exp)?',
+    r'(?:minimum|min|at\s+least|above|more\s+than|over)?\s*(\d+)\+?\s*(?:years?|yrs?|y)\s*(?:of\s+)?(?:experience|exp|work)?',
     re.IGNORECASE
 )
 
-# Experience RANGE pattern: "0 to 2 years", "1-3 years", "between 2 and 5 years"
+# Experience RANGE pattern — comprehensive: handles ranges, caps, exclusions, and natural language
 EXPERIENCE_RANGE_PATTERN = re.compile(
-    r'(?:(\d+)\s*(?:to|-|–)\s*(\d+)\s*(?:years?|yrs?|y)'
-    r'|between\s*(\d+)\s*(?:and|&)\s*(\d+)\s*(?:years?|yrs?|y)'
-    r'|(?:no\s+more\s+than|not\s+more\s+than|max(?:imum)?|under|below|less\s+than|at\s+most)\s*(\d+)\s*(?:years?|yrs?|y)'
-    r'|(?:do\s+not|don\'t|doesn\'t|should\s+not)\s+(?:include|have|exceed).*?(?:more\s+than|above|over)\s*(\d+)\s*(?:years?|yrs?|y))',
+    r'(?:'
+    r'(\d+)\s*(?:to|-|–|\-)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|between\s*(\d+)\s*(?:and|&|to)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|(?:no\s+more\s+than|not\s+more\s+than|max(?:imum)?|under|below|less\s+than|at\s+most|upto|up\s+to|within)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|(?:do\s+not|don\'t|doesn\'t|should\s+not|must\s+not|cannot|can\'t)\s+(?:include|have|exceed|be|contain|show).*?(?:more\s+than|above|over|exceed(?:ing)?)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|(?:must\s+not|should\s+not|cannot|can\'t)\s+exceed\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|experience\s*(?:of\s+)?(?:no\s+more\s+than|less\s+than|under|below|max(?:imum)?)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|(?:only|strictly)\s+(\d+)\s*(?:to|-|–)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r')',
     re.IGNORECASE
 )
 
@@ -628,6 +640,22 @@ Only extract explicitly stated data. Never fabricate."""
         result = await self._agenerate_json(prompt, temperature=0.05)
 
         if result:
+            # ── Sanitize fields: strip CID artifacts and garbage from AI output ──
+            _cid_re = re.compile(r'\(cid:\d+\)')
+            for field in ('phone', 'name', 'email', 'location', 'linkedin', 'summary'):
+                val = result.get(field, '')
+                if val and isinstance(val, str) and 'cid:' in val:
+                    cleaned = _cid_re.sub('', val).strip()
+                    result[field] = cleaned
+            
+            # ── Validate phone: must contain real digits, not garbage ──
+            phone = result.get('phone', '')
+            if phone:
+                digits = re.sub(r'\D', '', phone)
+                if len(digits) < 7 or len(digits) > 15 or 'cid' in phone.lower():
+                    logger.warning(f"🚫 Rejected garbage phone: {phone[:50]}")
+                    result['phone'] = ''
+            
             # Validate category
             if not result.get('job_subcategory') or result.get('job_category') == 'General':
                 titles = [w.get('title', '') for w in result.get('work_history', []) if isinstance(w, dict)]
@@ -1193,8 +1221,8 @@ Return JSON:
         """
         msg = message.lower().strip()
 
-        # Greetings / pleasantries
-        if msg in ('hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'thanks', 'thank you', 'ok', 'okay'):
+        # Greetings / pleasantries (exact short messages only)
+        if msg in ('hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'thanks', 'thank you', 'ok', 'okay', 'bye', 'goodbye'):
             return 'greeting'
 
         # Follow-up / conversational (short messages referencing prior context)
@@ -1215,6 +1243,16 @@ Return JSON:
             return 'comparison'
 
         # Recruitment advice / general knowledge
+        # BUT: if the message also contains candidate search signals, prefer 'search'
+        search_overrides = [
+            'find', 'show', 'list', 'get', 'candidates', 'shortlist', 'search',
+            'filter', 'locate', 'identify', 'recruit', 'who', 'look for',
+            'cvs', 'profiles', 'resumes', 'applicants',
+            'experience', 'years', 'location', 'based in', 'skills',
+            'abu dhabi', 'dubai', 'chennai', 'mumbai', 'bangalore', 'riyadh',
+        ]
+        has_search_signal = any(w in msg for w in search_overrides)
+
         advice_signals = [
             'how to', 'how do i', 'how should', 'what is the best way', 'what are the best',
             'tips for', 'advice on', 'best practices', 'strategy for', 'suggest a',
@@ -1227,8 +1265,15 @@ Return JSON:
             'how to assess', 'screening tips', 'evaluation criteria',
             'what to look for', 'hiring tips', 'recruitment tips',
         ]
-        if any(sig in msg for sig in advice_signals) and not any(w in msg for w in ['find', 'show', 'list', 'get', 'candidates']):
+        if any(sig in msg for sig in advice_signals) and not has_search_signal:
             return 'advice'
+
+        # Complex multi-criteria prompts → always 'search' (these are job spec prompts)
+        criteria_signals = ['criteria', 'mandatory', 'exclude', 'include', 'domain',
+                           'industry', 'background', 'do not', 'must have', 'strictly',
+                           'acceptable', 'primary', 'secondary', 'ensure', 'prioritize']
+        if sum(1 for sig in criteria_signals if sig in msg) >= 2:
+            return 'search'
 
         # Default: candidate search
         return 'search'
@@ -1326,10 +1371,17 @@ Return JSON:
                 elif groups[2] and groups[3]:     # "between 2 and 5 years"
                     required_min_experience = int(groups[2])
                     required_max_experience = int(groups[3])
-                elif groups[4]:                   # "max 2 years", "under 3 years"
+                elif groups[4]:                   # "max 2 years", "under 3 years", "up to 5 years"
                     required_max_experience = int(groups[4])
                 elif groups[5]:                   # "do not include more than 2 years"
                     required_max_experience = int(groups[5])
+                elif groups[6]:                   # "must not exceed 3 years"
+                    required_max_experience = int(groups[6])
+                elif groups[7]:                   # "experience of less than 3 years"
+                    required_max_experience = int(groups[7])
+                elif groups[8] and groups[9]:     # "only 0-2 years", "strictly 1-3 years"
+                    required_min_experience = int(groups[8])
+                    required_max_experience = int(groups[9])
                 logger.info(f"Experience range detected: {required_min_experience}-{required_max_experience} years")
             else:
                 _exp_match = EXPERIENCE_PATTERN.search(message)

@@ -33,6 +33,98 @@ def _clean_loc(loc: str) -> str:
     c = ' '.join(words).strip(' ,;-.()')
     return '' if (c.lower() in _NOISE_LOCATIONS or len(c) <= 1) else c
 
+# ─── CID artifact pattern (PDF font garbage) ─────────────────────────────────
+_CID_PATTERN = re.compile(r'\(cid:\d+\)')
+_CID_PARTIAL_PATTERN = re.compile(r'\(cid:[^)]*\)')
+
+def _sanitize_phone(phone: str) -> str:
+    """Validate and clean phone number. Returns empty string for garbage."""
+    if not phone:
+        return ''
+    phone = phone.strip()
+    # Reject CID artifacts
+    if 'cid:' in phone.lower():
+        return ''
+    # Strip CID patterns that may be mixed in
+    phone = _CID_PATTERN.sub('', phone).strip()
+    phone = _CID_PARTIAL_PATTERN.sub('', phone).strip()
+    # Must have 7-15 digits
+    digits = re.sub(r'\D', '', phone)
+    if len(digits) < 7 or len(digits) > 15:
+        return ''
+    # Reject if it's a year (4 digits 19xx/20xx)
+    if re.match(r'^(19|20)\d{2}$', phone.strip()):
+        return ''
+    # Reject if mostly non-phone chars
+    allowed = set('0123456789+()-. ')
+    if sum(1 for c in phone if c not in allowed) > len(phone) * 0.3:
+        return ''
+    return phone
+
+def _sanitize_text_field(val: str) -> str:
+    """Strip CID artifacts, control chars, and other garbage from text fields."""
+    if not val:
+        return val
+    # Strip CID font artifacts
+    if 'cid:' in val:
+        val = _CID_PATTERN.sub('', val)
+        val = _CID_PARTIAL_PATTERN.sub('', val)
+    # Strip control characters (except newline/tab)
+    val = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', val)
+    return val.strip()
+
+def sanitize_candidate_data(candidate: Dict) -> Dict:
+    """Sanitize all candidate fields before database write.
+    Strips CID artifacts, validates phone, cleans location, etc.
+    This is the single gateway that prevents garbage from entering the DB."""
+    c = dict(candidate)  # Don't mutate the original
+    
+    # Clean text fields
+    for field in ('name', 'summary', 'resume_text', 'raw_email_subject', 'linkedin'):
+        val = c.get(field, '')
+        if val and isinstance(val, str):
+            c[field] = _sanitize_text_field(val)
+    
+    # Clean phone
+    c['phone'] = _sanitize_phone(c.get('phone', ''))
+    
+    # Clean email
+    email = c.get('email', '')
+    if email and isinstance(email, str) and 'cid:' in email:
+        email = _CID_PATTERN.sub('', email).strip()
+        c['email'] = email
+    
+    # Clean location
+    loc = c.get('location', '')
+    if loc and isinstance(loc, str):
+        loc = _sanitize_text_field(loc)
+        loc = _clean_loc(loc)
+        c['location'] = loc
+    
+    # Clean skills list
+    skills = c.get('skills', [])
+    if isinstance(skills, list):
+        clean_skills = []
+        for sk in skills:
+            sk_str = str(sk).strip()
+            if 'cid:' in sk_str:
+                sk_str = _CID_PATTERN.sub('', sk_str).strip()
+            if sk_str and sk_str not in ('N/A', 'None', '-', ''):
+                clean_skills.append(sk_str)
+        c['skills'] = clean_skills
+    
+    # Validate experience is a reasonable number
+    exp = c.get('experience', 0)
+    try:
+        exp = int(float(exp or 0))
+        if exp < 0: exp = 0
+        if exp > 60: exp = 0  # Likely garbage
+        c['experience'] = exp
+    except (ValueError, TypeError):
+        c['experience'] = 0
+    
+    return c
+
 class DatabaseService:
     def __init__(self, db_path: str = "./recruitment.db"):
         self.db_path = db_path
@@ -569,6 +661,9 @@ class DatabaseService:
     
     def update_candidate(self, candidate: Dict):
         """Update existing candidate (merge new data)"""
+        # Sanitize all fields before writing
+        candidate = sanitize_candidate_data(candidate)
+        
         conn = self.get_connection_raw()
         try:
             cursor = conn.cursor()
@@ -1182,6 +1277,8 @@ class DatabaseService:
                 batch = candidates[i:i + batch_size]
                 
                 for candidate in batch:
+                    # Sanitize before write
+                    candidate = sanitize_candidate_data(candidate)
                     email_hash = self.email_to_hash(candidate['email'])
                     
                     # Check if exists

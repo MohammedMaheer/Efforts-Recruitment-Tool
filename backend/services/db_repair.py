@@ -693,9 +693,19 @@ def audit_database(conn) -> Dict[str, Any]:
                 issues['garbled_skills'].append({'id': cid, 'name': name[:40], 'skill': str(sk)[:30]})
                 break
         
-        # Phone issues (looks like a year)
-        if phone and re.match(r'^(19|20)\d{2}$', phone.strip()):
-            issues['phone_issues'].append({'id': cid, 'name': name[:40], 'phone': phone})
+        # Phone issues: CID artifacts, years, too short
+        if phone:
+            if 'cid:' in phone.lower() or re.search(r'\(cid:\d+\)', phone):
+                issues['phone_issues'].append({'id': cid, 'name': name[:40], 'phone': phone[:60], 'type': 'cid_artifact'})
+            elif re.match(r'^(19|20)\d{2}$', phone.strip()):
+                issues['phone_issues'].append({'id': cid, 'name': name[:40], 'phone': phone, 'type': 'year'})
+            elif len(re.sub(r'\D', '', phone)) < 7 and len(re.sub(r'\D', '', phone)) > 0:
+                issues['phone_issues'].append({'id': cid, 'name': name[:40], 'phone': phone, 'type': 'too_short'})
+        
+        # CID artifacts in any text field
+        for field_name, field_val in [('name', name), ('summary', summary[:200]), ('phone', phone)]:
+            if field_val and 'cid:' in field_val.lower():
+                issues.setdefault('cid_artifacts', []).append({'id': cid, 'name': name[:40], 'field': field_name, 'sample': field_val[:60]})
     
     # Duplicate emails
     cursor.execute("""
@@ -941,11 +951,32 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
             updates['skills'] = json.dumps(clean_skills)
             results['skills_fixed'].append({'id': cid, 'name': name[:40]})
         
-        # ─── PHASE 6: Fix phone issues ──────────────────────────────────
+        # ─── PHASE 6: Fix phone issues + CID artifacts in ALL fields ──────
+        _cid_re = re.compile(r'\(cid:\d+\)')
+        _cid_partial_re = re.compile(r'\(cid:[^)]*\)')
+        
+        # Clean CID artifacts from ALL text fields
+        for field in ('name', 'summary', 'resume_text', 'phone', 'location', 'raw_email_subject'):
+            val = c.get(field) or ''
+            if val and 'cid:' in val.lower():
+                cleaned = _cid_re.sub('', val)
+                cleaned = _cid_partial_re.sub('', cleaned).strip()
+                if cleaned != val:
+                    updates[field] = cleaned
+                    results.setdefault('cid_cleaned', []).append({
+                        'id': cid, 'field': field, 'old': val[:50], 'new': cleaned[:50]
+                    })
+        
         if phone:
-            clean_phone = phone.strip()
+            clean_phone = (updates.get('phone') or phone).strip()
+            # CID artifact in phone
+            if 'cid:' in clean_phone.lower():
+                updates['phone'] = ''
+                results['phones_fixed'].append({
+                    'id': cid, 'old': phone[:50], 'reason': 'cid_artifact'
+                })
             # Year masquerading as phone
-            if re.match(r'^(19|20)\d{2}$', clean_phone):
+            elif re.match(r'^(19|20)\d{2}$', clean_phone):
                 updates['phone'] = ''
                 results['phones_fixed'].append({
                     'id': cid, 'old': clean_phone, 'reason': 'was_a_year'
@@ -956,6 +987,15 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
                 results['phones_fixed'].append({
                     'id': cid, 'old': clean_phone, 'reason': 'too_short'
                 })
+            # Too many non-phone chars (garbage)
+            else:
+                allowed = set('0123456789+()-. ')
+                bad_ratio = sum(1 for ch in clean_phone if ch not in allowed) / max(len(clean_phone), 1)
+                if bad_ratio > 0.3:
+                    updates['phone'] = ''
+                    results['phones_fixed'].append({
+                        'id': cid, 'old': clean_phone[:50], 'reason': 'garbage_chars'
+                    })
         
         # ─── PHASE 7: Re-score candidates with default 50 or 0 ─────────
         if score == 50 or score == 0 or score is None:
@@ -1055,6 +1095,7 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
         'skills_fixed': len(results['skills_fixed']),
         'skills_extracted': len(results['skills_extracted']),
         'phones_fixed': len(results['phones_fixed']),
+        'cid_cleaned': len(results.get('cid_cleaned', [])),
         'locations_fixed': len(results.get('locations_fixed', [])),
         'duplicates_merged': len(results['duplicates_merged']),
         'rescored': len(results['rescored']),
