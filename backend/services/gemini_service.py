@@ -1393,6 +1393,14 @@ Return JSON:
                 certs = c.get('certifications', [])
                 certs_text = ' '.join([str(x).lower() for x in certs[:10]]) if isinstance(certs, list) else ''
                 
+                # ── HARD FILTER: Experience cap ──
+                # When user specifies an explicit max (e.g. "0-2 years"), completely
+                # exclude candidates that exceed it — this is non-negotiable.
+                if required_max_experience < 999 and experience > required_max_experience:
+                    continue  # Skip this candidate entirely
+                if required_max_experience < 999 and required_min_experience > 0 and experience < required_min_experience:
+                    continue  # Below minimum in a range query — skip
+                
                 # ── Location-aware scoring ──
                 location_matched = False
                 if has_location_requirement:
@@ -1500,15 +1508,12 @@ Return JSON:
                 # Boost by match score
                 relevance += score * 0.15
                 
-                # ── Experience requirement check — meaningful weight ──
+                # ── Experience requirement check — bonus for fitting the range ──
+                # (Hard exclusion already happened above via `continue`)
                 if required_max_experience < 999:
-                    # Has an upper cap (e.g. "0-2 years", "max 3 years")
-                    if experience > required_max_experience:
-                        relevance -= 80  # HARD penalty for exceeding max
-                    elif experience >= required_min_experience and experience <= required_max_experience:
+                    # Candidate is within range (hard filter already excluded outliers)
+                    if experience >= required_min_experience and experience <= required_max_experience:
                         relevance += 30  # Perfect fit within range
-                    elif experience < required_min_experience:
-                        relevance -= 20  # Below minimum
                 elif required_min_experience > 0:
                     if experience >= required_min_experience:
                         relevance += 20  # Meets minimum experience
@@ -1559,6 +1564,11 @@ Return JSON:
                         relevance -= 10  # Penalty for seniors on junior queries
                 
                 scored_candidates.append((relevance, idx, c))
+            
+            # Log hard-filter exclusion stats
+            hard_filtered_out = total_scanned - len(scored_candidates)
+            if hard_filtered_out > 0:
+                logger.info(f"🚫 Hard filter excluded {hard_filtered_out}/{total_scanned} candidates (exp={required_min_experience}-{required_max_experience}y)")
             
             # Sort by relevance and take top candidates (idx as tiebreaker to avoid dict comparison)
             scored_candidates.sort(key=lambda x: x[0], reverse=True)
