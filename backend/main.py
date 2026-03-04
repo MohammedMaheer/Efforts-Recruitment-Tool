@@ -1135,12 +1135,12 @@ async def _background_seed_from_json():
         traceback.print_exc()
 
 
-async def _background_process_candidates(interval_minutes: int = 30):
+async def _background_process_candidates(interval_minutes: int = 240):
     """
     Background task that periodically processes unprocessed candidates.
     - Checks for candidates with missing ai_analysis or low match_score
-    - Processes them in batches using Gemini (cost-effective)
-    - Runs every 30 minutes to catch new email imports
+    - Processes them in small batches using Gemini (thinking disabled for cost savings)
+    - Runs every 4 hours to catch stragglers from email sync
     """
     await asyncio.sleep(180)  # Wait 3 min for startup + model loading to complete
     
@@ -1165,7 +1165,7 @@ async def _background_process_candidates(interval_minutes: int = 30):
                             OR (match_score = 35 AND (skills IS NULL OR skills = '' OR skills = '[]' OR skills = '["R"]'))
                         )
                         ORDER BY created_at DESC
-                        LIMIT 15
+                        LIMIT 5
                     """)
                     rows = [dict(r) for r in cursor.fetchall()]
                     return rows
@@ -1483,11 +1483,11 @@ async def lifespan(app: FastAPI):
         print("💾 Launching background JSON seed task...", flush=True)
         _seed_task = asyncio.create_task(_background_seed_from_json())
     
-    # Launch background candidate processing (every 30 min for faster catch-up)
-    _process_task = asyncio.create_task(_background_process_candidates(interval_minutes=60))
+    # Launch background candidate processing (every 4 hours — email sync handles most new candidates)
+    _process_task = asyncio.create_task(_background_process_candidates(interval_minutes=240))
     _persistent_tasks.add(_process_task)
     _process_task.add_done_callback(_persistent_tasks.discard)
-    logger.info("🧠 Background candidate processing: Enabled (every 30 minutes)")
+    logger.info("🧠 Background candidate processing: Enabled (every 240 minutes, 5 per batch)")
     
     # Auto-repair: Quick health check and repair if issues found
     async def _auto_repair_on_startup():

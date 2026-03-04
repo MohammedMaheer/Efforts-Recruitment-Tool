@@ -509,8 +509,14 @@ class GeminiService:
                 del self._cache[k]
         self._cache[key] = {'data': data, 'time': time.time()}
 
-    def _generate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> str:
-        """Synchronous text generation via Gemini."""
+    def _generate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024, thinking_budget: int = 0) -> str:
+        """Synchronous text generation via Gemini.
+        
+        thinking_budget: Controls Gemini 2.5 Flash's internal reasoning tokens.
+          0 = disabled (cheap — use for JSON extraction / structured tasks)
+          >0 = enabled with token cap (use for open-ended chat / analysis)
+        Thinking tokens cost $3.50/1M vs $0.60/1M for output — disable when not needed.
+        """
         if not self.available or not self._client:
             return ""
         # ── Daily budget check ──
@@ -525,40 +531,56 @@ class GeminiService:
         self._daily_call_count += 1
         start = time.time()
         try:
+            # Build config — disable thinking for extraction tasks to save ~70% cost
+            gen_config = genai_types.GenerateContentConfig(
+                temperature=temperature,
+                max_output_tokens=max_tokens,
+                thinking_config=genai_types.ThinkingConfig(
+                    thinking_budget=thinking_budget,
+                ),
+            )
             response = self._client.models.generate_content(
                 model=self.model_name,
                 contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    temperature=temperature,
-                    max_output_tokens=max_tokens,
-                ),
+                config=gen_config,
             )
             result = response.text.strip()
             elapsed = time.time() - start
             self._request_count += 1
             self._total_time += elapsed
-            logger.debug(f"🌟 Gemini [{self.model_name}]: {len(result)} chars in {elapsed:.1f}s")
+            # Log token usage and estimated cost for monitoring
+            usage = getattr(response, 'usage_metadata', None)
+            input_tokens = getattr(usage, 'prompt_token_count', 0) or 0
+            output_tokens = getattr(usage, 'candidates_token_count', 0) or 0
+            thinking_used = getattr(usage, 'thoughts_token_count', 0) or 0
+            # Cost estimate: Gemini 2.5 Flash — $0.15/1M input, $0.60/1M output, $3.50/1M thinking
+            est_cost = (input_tokens * 0.15 + output_tokens * 0.60 + thinking_used * 3.50) / 1_000_000
+            logger.info(
+                f"💰 Gemini [{self.model_name}]: {len(result)} chars in {elapsed:.1f}s | "
+                f"in={input_tokens} out={output_tokens} think={thinking_used} | "
+                f"~${est_cost:.4f}"
+            )
             return result
         except Exception as e:
             self._error_count += 1
             logger.error(f"Gemini generation error: {e}")
             return ""
 
-    async def _agenerate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024) -> str:
+    async def _agenerate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024, thinking_budget: int = 0) -> str:
         """Async wrapper — Gemini SDK is sync, so we run in executor."""
         loop = asyncio.get_running_loop()
-        return await loop.run_in_executor(None, self._generate, prompt, temperature, max_tokens)
+        return await loop.run_in_executor(None, self._generate, prompt, temperature, max_tokens, thinking_budget)
 
     def _generate_json(self, prompt: str, temperature: float = 0.05, max_tokens: int = 1024) -> Optional[Dict]:
-        """Generate structured JSON from Gemini."""
-        result = self._generate(prompt, temperature=temperature, max_tokens=max_tokens)
+        """Generate structured JSON from Gemini (thinking disabled for cost savings)."""
+        result = self._generate(prompt, temperature=temperature, max_tokens=max_tokens, thinking_budget=0)
         if not result:
             return None
         return _repair_json(result)
 
     async def _agenerate_json(self, prompt: str, temperature: float = 0.05, max_tokens: int = 1024) -> Optional[Dict]:
-        """Async JSON generation."""
-        result = await self._agenerate(prompt, temperature=temperature, max_tokens=max_tokens)
+        """Async JSON generation (thinking disabled for cost savings)."""
+        result = await self._agenerate(prompt, temperature=temperature, max_tokens=max_tokens, thinking_budget=0)
         if not result:
             return None
         return _repair_json(result)
@@ -1704,7 +1726,7 @@ USER QUESTION:
 
 Write in a professional, confident, and helpful tone. Format with markdown."""
 
-            result = await self._agenerate(prompt, temperature=0.3, max_tokens=4000)
+            result = await self._agenerate(prompt, temperature=0.3, max_tokens=4000, thinking_budget=4096)
             text_response = result or "I'd be happy to help with recruitment advice. Could you provide more details about your question?"
 
         elif query_type == 'analytics':
@@ -1763,7 +1785,7 @@ USER QUESTION:
 9. Format with markdown headers, bold labels, and organized structure
 10. Keep it data-driven and precise — recruiters need facts, not fluff"""
 
-            result = await self._agenerate(prompt, temperature=0.15, max_tokens=4000)
+            result = await self._agenerate(prompt, temperature=0.15, max_tokens=4000, thinking_budget=4096)
             text_response = result or f"We have **{total} candidates** in the database. Could you clarify what analytics you'd like to see?"
 
         elif query_type == 'followup':
@@ -1782,7 +1804,7 @@ USER FOLLOW-UP:
 Respond naturally to the follow-up. If they're asking for more candidates, different criteria, or clarification, provide it. If they're acknowledging or confirming, respond appropriately.
 Keep the same format and quality as the previous response. Use markdown formatting."""
 
-            result = await self._agenerate(prompt, temperature=0.2, max_tokens=8000)
+            result = await self._agenerate(prompt, temperature=0.2, max_tokens=6000, thinking_budget=4096)
             text_response = result or "Could you provide more details about what you'd like me to do next?"
 
         else:
@@ -1790,7 +1812,7 @@ Keep the same format and quality as the previous response. Use markdown formatti
             # CANDIDATE SEARCH — Optimized prompt for speed + quality
             # ══════════════════════════════════════════════════════════
 
-            prompt = f"""You are an expert AI Recruitment Specialist for Efforts Solutions. Analyze the candidate pool and rank the best matches for the user's query.
+            prompt = f"""You are an expert AI Recruitment Specialist for Efforts Solutions with deep knowledge of the global talent market. Analyze the candidate pool thoroughly and rank the best matches.
 
 DATABASE: {total} candidates total | {strong} strong matches (70%+) | Categories: {cat_list}
 
@@ -1802,28 +1824,39 @@ HISTORY:{history_text}
 
 QUERY: {message}
 
-INSTRUCTIONS:
-1. Parse query: extract role, skills, location, experience range, industry, exclusions
-2. Evaluate each candidate on: Skills Match (30%), Experience Fit (25%), Location (20%), Industry/Domain (15%), Education (10%)
-3. Recognize skill synonyms: React=ReactJS, Node=NodeJS, Python≈Django/Flask, C#=.NET, K8s=Kubernetes, ML=Machine Learning, JS=JavaScript, TS=TypeScript, AWS=Amazon Web Services, RPA=UiPath/BluePrism
-4. Hard filters ("ONLY", "must", "exclude") are deal-breakers — auto-disqualify violators
+ANALYSIS FRAMEWORK:
+1. Parse query deeply: extract role, seniority level, must-have skills, nice-to-have skills, location preference, experience range, industry/domain, exclusions, and implicit requirements
+2. Evaluate candidates on a weighted multi-dimensional scoring matrix:
+   - Skills Match (30%): exact matches, close equivalents, transferable skills
+   - Experience Fit (25%): years, seniority level, industry relevance, career trajectory
+   - Location (20%): exact match, same country/region, willingness to relocate (infer from work history)
+   - Industry/Domain Alignment (15%): same sector, adjacent sector, transferable domain knowledge
+   - Education & Certifications (10%): degree relevance, prestigious institutions, professional certifications
+3. Recognize skill synonyms and ecosystems:
+   - Frontend: React=ReactJS, Vue=VueJS, Angular, Next.js≈React+SSR, TypeScript≈JavaScript advanced
+   - Backend: Node=NodeJS, Python≈Django/Flask/FastAPI, Java≈Spring Boot, C#=.NET, Go=Golang
+   - Cloud: AWS=Amazon Web Services, GCP=Google Cloud, Azure=Microsoft Cloud, K8s=Kubernetes
+   - Data: ML=Machine Learning=AI, Data Science≈Analytics, SQL≈PostgreSQL/MySQL/SQLite
+   - Methodologies: Agile=Scrum, CI/CD=DevOps pipelines, TDD=Test-Driven Development
+4. Apply hard filters ("ONLY", "must", "exclude", "no more than") as deal-breakers — auto-disqualify violators
 5. NEVER fabricate candidates. Use ONLY candidates from the pool above.
-6. If few match, say so and suggest broadening criteria.
+6. If few match, say so honestly and suggest specific ways to broaden criteria.
 
 Return exactly {num_candidates} candidates (or fewer if not enough qualify):
 
 **#N. Full Name** | Score: X% | Category | Exp: X yrs | Location
-- **Key Skills:** relevant skills (bold top matches)
-- **Work:** recent roles & companies
-- **Match Analysis:** 2-3 sentences on why they fit, referencing actual skills & work history. Be honest about gaps.
-- **Fit:** ⭐⭐⭐⭐⭐ Excellent / ⭐⭐⭐⭐ Strong / ⭐⭐⭐ Good / ⭐⭐ Partial
+- **Key Skills:** relevant skills (bold top matches, note skill gaps)
+- **Work History:** recent roles, companies, notable achievements or projects
+- **Match Analysis:** 3-4 sentences explaining why they're a strong fit. Reference specific skills from their profile that match the query. Be honest about any gaps or risks. Note transferable experience from adjacent domains.
+- **Hiring Risk Assessment:** Low/Medium/High — briefly explain (e.g., "Low — exact skill match, right seniority, same city" or "Medium — strong skills but may be overqualified at 12 years for a mid-level role")
+- **Fit Rating:** ⭐⭐⭐⭐⭐ Excellent / ⭐⭐⭐⭐ Strong / ⭐⭐⭐ Good / ⭐⭐ Partial
 - **Contact:** email, phone
 
 End with:
-**📊 Summary** — Criteria parsed, candidates evaluated ({relevant_count}), qualified count, pool strength
-**💡 Recommendations** — Next steps, criteria to relax if pool is thin"""
+**📊 Search Intelligence** — How you interpreted the query, what filters were applied, how many candidates were evaluated ({relevant_count} pre-filtered from {total}), how many qualified, and overall pool strength for this role
+**💡 Recruitment Recommendations** — Actionable next steps: interview order priority, additional screening questions to ask top candidates, criteria to relax if pool is thin, alternative job titles to search for"""
 
-            result = await self._agenerate(prompt, temperature=0.15, max_tokens=6000)
+            result = await self._agenerate(prompt, temperature=0.15, max_tokens=6000, thinking_budget=8192)
             text_response = result or f"I'm here to help! We have **{total} candidates** in the database. What would you like to know?"
         
         if return_candidates:
