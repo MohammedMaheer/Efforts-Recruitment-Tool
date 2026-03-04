@@ -1506,7 +1506,8 @@ async def lifespan(app: FastAPI):
                 logger.warning(
                     f"🔧 DB health: {health['issue_count']} issues found "
                     f"(bad names: {health['bad_names']}, zero score: {health['zero_score']}, "
-                    f"mojibake: {health['mojibake_text']}, system emails: {health['system_emails']}). "
+                    f"mojibake: {health['mojibake_text']}, system emails: {health['system_emails']}, "
+                    f"cid artifacts: {health.get('cid_artifacts', 0)}). "
                     f"Running auto-repair..."
                 )
                 _conn2 = _db.get_connection_raw()

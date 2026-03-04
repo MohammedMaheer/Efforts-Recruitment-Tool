@@ -276,6 +276,36 @@ SKILL_SYNONYMS = {
     'real estate': {'property', 'realty', 'property management', 'leasing'},
 }
 
+# All known location names for direct detection (fallback when regex misses)
+KNOWN_LOCATIONS = frozenset({
+    # UAE
+    'dubai', 'abu dhabi', 'sharjah', 'ajman', 'fujairah', 'ras al khaimah', 'uae',
+    # KSA
+    'riyadh', 'jeddah', 'dammam', 'mecca', 'medina', 'ksa', 'saudi arabia',
+    # GCC
+    'bahrain', 'kuwait', 'oman', 'qatar', 'doha', 'muscat', 'manama', 'gcc',
+    # India
+    'mumbai', 'delhi', 'bangalore', 'bengaluru', 'hyderabad', 'chennai', 'pune',
+    'kolkata', 'noida', 'gurgaon', 'gurugram', 'kochi', 'cochin', 'jaipur',
+    'ahmedabad', 'coimbatore', 'lucknow', 'chandigarh', 'indore', 'nagpur',
+    'thiruvananthapuram', 'trivandrum', 'bhopal', 'visakhapatnam', 'kerala',
+    'tamil nadu', 'karnataka', 'maharashtra', 'telangana', 'india',
+    # USA
+    'new york', 'california', 'texas', 'florida', 'chicago', 'los angeles',
+    'san francisco', 'seattle', 'boston', 'austin', 'denver', 'atlanta',
+    'houston', 'dallas', 'philadelphia', 'washington', 'usa', 'united states',
+    # UK / Europe
+    'london', 'manchester', 'birmingham', 'uk', 'united kingdom', 'england',
+    'germany', 'berlin', 'munich', 'france', 'paris', 'netherlands', 'amsterdam',
+    'ireland', 'dublin', 'spain', 'barcelona', 'madrid', 'italy', 'portugal',
+    # Asia-Pacific
+    'singapore', 'malaysia', 'kuala lumpur', 'hong kong', 'japan', 'tokyo',
+    'australia', 'sydney', 'melbourne', 'canada', 'toronto', 'vancouver',
+    # Africa
+    'south africa', 'johannesburg', 'cape town', 'nigeria', 'lagos', 'kenya', 'nairobi',
+    'egypt', 'cairo',
+})
+
 # Pre-compiled regex for location detection — handles diverse prompt styles
 LOCATION_PATTERN = re.compile(
     r'(?:'
@@ -285,6 +315,7 @@ LOCATION_PATTERN = re.compile(
     r'|office\s+in'
     r'|(?:primary|secondary|acceptable)\s*(?:location)?\s*:?\s*'
     r'|location\s*:?\s*'
+    r'|candidates?\s+(?:from|in|at|near)'
     r'|(?:from|in|at|near|within)\s+'
     r')'
     r'\s*([A-Za-z][A-Za-z\s,]{1,50}?)'
@@ -293,9 +324,36 @@ LOCATION_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# Negative/exclusion pattern — detect what to exclude from results
+NEGATIVE_PATTERN = re.compile(
+    r'(?:exclude|not?|without|no|remove|skip|ignore|avoid|except|excluding|other\s+than)'
+    r'\s+(?:candidates?\s+(?:from|in|with|who)\s+)?'
+    r'(.+?)(?:\s*[.;,]|\s+(?:and|but|only|candidates?|from|experience)|$)',
+    re.IGNORECASE
+)
+
+# Seniority level pattern — detect required seniority beyond just experience years
+SENIORITY_PATTERN = re.compile(
+    r'\b(junior|mid[\s-]?level|senior|lead|principal|staff|director|head|vp|c[\s-]?level|chief|manager|executive|intern|trainee|fresher|fresh\s*graduate|entry[\s-]?level)\b',
+    re.IGNORECASE
+)
+
+# Nationality/visa preference detection
+NATIONALITY_PATTERN = re.compile(
+    r'(?:nationality|passport|citizen(?:ship)?|visa|work\s*(?:permit|authorization)|national)'
+    r'\s*:?\s*([A-Za-z\s,]{2,40})',
+    re.IGNORECASE
+)
+
 # Pre-compiled regex for minimum experience detection
 EXPERIENCE_PATTERN = re.compile(
     r'(?:minimum|min|at\s+least|above|more\s+than|over)?\s*(\d+)\+?\s*(?:years?|yrs?|y)\s*(?:of\s+)?(?:experience|exp|work)?',
+    re.IGNORECASE
+)
+
+# Freshers / zero experience pattern
+FRESHER_PATTERN = re.compile(
+    r'\b(?:freshers?|fresh\s*graduates?|fresh\s*grads?|no\s+experience|zero\s+experience|0\s*(?:years?|yrs?)\s*(?:experience|exp)?|entry[\s-]?level|interns?(?:ship)?|trainees?|beginners?|new\s+graduates?|recent\s+graduates?)s?\b',
     re.IGNORECASE
 )
 
@@ -342,15 +400,39 @@ def _expand_location_terms(raw_terms: list, stop_words: frozenset = STOP_WORDS) 
 
 
 def _extract_location_from_text(text: str) -> list:
-    """Extract required location terms from a query or JD using regex."""
-    match = LOCATION_PATTERN.search(text)
+    """Extract required location terms from a query or JD using regex + direct city detection.
+    
+    Uses a two-pass approach:
+    1. Regex-based extraction (handles "based in Dubai", "from Chennai", etc.)
+    2. Direct known-city detection as fallback (handles "Dubai accountants", "Mumbai developers")
+    """
     terms = []
+    
+    # Pass 1: Regex-based extraction
+    match = LOCATION_PATTERN.search(text)
     if match:
         raw_loc = match.group(1).strip().strip(',').strip()
         for part in raw_loc.split(','):
             part = part.strip().lower()
             if part and part not in STOP_WORDS and len(part) > 1:
                 terms.append(part)
+    
+    # Pass 2: Direct known-city/country detection (catches "Dubai accountants", etc.)
+    if not terms:
+        text_lower = text.lower()
+        # Check multi-word locations first (e.g. "abu dhabi", "new york", "san francisco")
+        for loc in sorted(KNOWN_LOCATIONS, key=len, reverse=True):
+            if ' ' in loc and loc in text_lower:
+                terms.append(loc)
+                break
+        # Then single-word locations
+        if not terms:
+            text_words = set(re.sub(r'[^\w\s]', ' ', text_lower).split())
+            for loc in KNOWN_LOCATIONS:
+                if ' ' not in loc and loc in text_words:
+                    terms.append(loc)
+                    break  # Take the first match to avoid over-detecting
+    
     return terms
 
 
@@ -1222,37 +1304,56 @@ Return JSON:
         msg = message.lower().strip()
 
         # Greetings / pleasantries (exact short messages only)
-        if msg in ('hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening', 'thanks', 'thank you', 'ok', 'okay', 'bye', 'goodbye'):
+        if msg in ('hi', 'hello', 'hey', 'good morning', 'good afternoon', 'good evening',
+                    'thanks', 'thank you', 'ok', 'okay', 'bye', 'goodbye', 'see you',
+                    'welcome', 'sup', 'howdy', 'hola', 'namaste', 'salaam', 'salam'):
             return 'greeting'
 
         # Follow-up / conversational (short messages referencing prior context)
-        if len(msg.split()) <= 4 and any(w in msg for w in ['yes', 'no', 'more', 'next', 'sure', 'go ahead', 'continue', 'elaborate', 'explain']):
+        if len(msg.split()) <= 4 and any(w in msg for w in ['yes', 'no', 'more', 'next', 'sure', 'go ahead', 'continue', 'elaborate', 'explain', 'details', 'again']):
             return 'followup'
 
         # Analytics / statistics queries
         analytics_signals = [
             'how many', 'count', 'total', 'statistics', 'stats', 'average', 'breakdown',
             'distribution', 'percentage', 'ratio', 'trend', 'report', 'summary of',
-            'overview', 'dashboard', 'analyze the database', 'analyze our'
+            'overview', 'dashboard', 'analyze the database', 'analyze our', 'number of',
+            'pie chart', 'bar chart', 'graph', 'metric', 'kpi',
         ]
         if any(sig in msg for sig in analytics_signals):
             return 'analytics'
 
         # Comparison queries
-        if any(w in msg for w in ['compare', 'comparison', 'versus', 'vs', 'better between', 'side by side', 'which one']):
+        if any(w in msg for w in ['compare', 'comparison', 'versus', 'vs', 'better between',
+                                   'side by side', 'which one', 'who is better', 'rank these',
+                                   'difference between']):
             return 'comparison'
+
+        # ── Search signal detection (expanded) ──
+        search_overrides = [
+            'find', 'show', 'list', 'get', 'candidates', 'shortlist', 'search',
+            'filter', 'locate', 'identify', 'recruit', 'who', 'look for', 'fetch',
+            'cvs', 'profiles', 'resumes', 'applicants', 'people',
+            'experience', 'years', 'location', 'based in', 'skills', 'developer',
+            'engineer', 'manager', 'designer', 'analyst', 'consultant', 'accountant',
+            'administrator', 'coordinator', 'specialist', 'architect', 'director',
+            'nurse', 'doctor', 'teacher', 'driver', 'technician', 'executive',
+        ]
+        has_search_signal = any(w in msg for w in search_overrides)
+        
+        # Also check if any known location is mentioned — strong search signal
+        msg_words = set(re.sub(r'[^\\w\\s]', ' ', msg).split())
+        has_location_signal = any(loc in msg for loc in KNOWN_LOCATIONS if ' ' in loc) or \
+                             bool(msg_words & {loc for loc in KNOWN_LOCATIONS if ' ' not in loc})
+        
+        # Also check for seniority level mentions — search signal
+        has_seniority = bool(SENIORITY_PATTERN.search(msg))
+        
+        # Also check for experience mentions — search signal
+        has_experience = bool(EXPERIENCE_PATTERN.search(msg)) or bool(EXPERIENCE_RANGE_PATTERN.search(msg)) or bool(FRESHER_PATTERN.search(msg))
 
         # Recruitment advice / general knowledge
         # BUT: if the message also contains candidate search signals, prefer 'search'
-        search_overrides = [
-            'find', 'show', 'list', 'get', 'candidates', 'shortlist', 'search',
-            'filter', 'locate', 'identify', 'recruit', 'who', 'look for',
-            'cvs', 'profiles', 'resumes', 'applicants',
-            'experience', 'years', 'location', 'based in', 'skills',
-            'abu dhabi', 'dubai', 'chennai', 'mumbai', 'bangalore', 'riyadh',
-        ]
-        has_search_signal = any(w in msg for w in search_overrides)
-
         advice_signals = [
             'how to', 'how do i', 'how should', 'what is the best way', 'what are the best',
             'tips for', 'advice on', 'best practices', 'strategy for', 'suggest a',
@@ -1265,14 +1366,20 @@ Return JSON:
             'how to assess', 'screening tips', 'evaluation criteria',
             'what to look for', 'hiring tips', 'recruitment tips',
         ]
-        if any(sig in msg for sig in advice_signals) and not has_search_signal:
+        if any(sig in msg for sig in advice_signals) and not (has_search_signal or has_location_signal):
             return 'advice'
 
         # Complex multi-criteria prompts → always 'search' (these are job spec prompts)
         criteria_signals = ['criteria', 'mandatory', 'exclude', 'include', 'domain',
                            'industry', 'background', 'do not', 'must have', 'strictly',
-                           'acceptable', 'primary', 'secondary', 'ensure', 'prioritize']
-        if sum(1 for sig in criteria_signals if sig in msg) >= 2:
+                           'acceptable', 'primary', 'secondary', 'ensure', 'prioritize',
+                           'require', 'qualified', 'certified', 'proficient', 'fluent']
+        criteria_count = sum(1 for sig in criteria_signals if sig in msg)
+        if criteria_count >= 2:
+            return 'search'
+        
+        # If any strong search signal (location, seniority, experience), route to search
+        if has_location_signal or has_seniority or has_experience:
             return 'search'
 
         # Default: candidate search
@@ -1339,6 +1446,8 @@ Return JSON:
         expanded_location_terms: list = []
         required_min_experience = 0
         required_max_experience = 999  # No upper limit by default
+        negative_terms: set = set()
+        required_seniority: Optional[str] = None
         
         # ── Server-side count extraction from message (override frontend default) ──
         _count_match = COUNT_PATTERN.search(message)
@@ -1386,6 +1495,29 @@ Return JSON:
             else:
                 _exp_match = EXPERIENCE_PATTERN.search(message)
                 required_min_experience = int(_exp_match.group(1)) if _exp_match else 0
+            
+            # Detect fresher/zero experience requirement
+            if FRESHER_PATTERN.search(message):
+                if required_max_experience == 999:  # Only set if not already set by range
+                    required_max_experience = 2  # Freshers = max 2 years
+                    required_min_experience = 0
+                    logger.info("Fresher/entry-level detected — setting experience range 0-2")
+            
+            # ── Extract negative/exclusion keywords ──
+            negative_terms: set = set()
+            _neg_match = NEGATIVE_PATTERN.search(message)
+            if _neg_match:
+                neg_raw = _neg_match.group(1).strip().lower()
+                for part in re.split(r'[,;&]+', neg_raw):
+                    part = part.strip()
+                    if part and part not in STOP_WORDS and len(part) > 1:
+                        negative_terms.add(part)
+                if negative_terms:
+                    logger.info(f"Exclusion terms detected: {negative_terms}")
+            
+            # ── Detect required seniority level ──
+            _seniority_match = SENIORITY_PATTERN.search(message)
+            required_seniority = _seniority_match.group(1).lower().strip() if _seniority_match else None
             
             # Expand keywords with location aliases
             expanded_keywords = set(keywords)
@@ -1452,6 +1584,58 @@ Return JSON:
                     continue  # Skip this candidate entirely
                 if required_max_experience < 999 and required_min_experience > 0 and experience < required_min_experience:
                     continue  # Below minimum in a range query — skip
+                
+                # ── HARD FILTER: Negative keywords ──
+                # If user says "exclude sales" or "not marketing", skip candidates matching those
+                if negative_terms:
+                    candidate_text = f"{name} {skills_str} {category} {subcategory} {wh_full_text}".lower()
+                    neg_hit = False
+                    for neg in negative_terms:
+                        if neg in candidate_text:
+                            neg_hit = True
+                            break
+                    if neg_hit:
+                        continue  # Skip excluded candidates
+                
+                # ── Seniority level scoring ──
+                if required_seniority:
+                    seniority_fit = 0
+                    if required_seniority in ('junior', 'entry-level', 'entry level', 'fresher', 'fresh graduate', 'intern', 'trainee', 'beginner'):
+                        if experience <= 2:
+                            seniority_fit = 25
+                        elif experience <= 3:
+                            seniority_fit = 10
+                        else:
+                            seniority_fit = -20  # Overqualified
+                    elif required_seniority in ('mid-level', 'mid level', 'midlevel'):
+                        if 3 <= experience <= 7:
+                            seniority_fit = 25
+                        elif 2 <= experience <= 9:
+                            seniority_fit = 10
+                        else:
+                            seniority_fit = -15
+                    elif required_seniority in ('senior', 'lead', 'principal', 'staff'):
+                        if experience >= 7:
+                            seniority_fit = 25
+                        elif experience >= 5:
+                            seniority_fit = 15
+                        else:
+                            seniority_fit = -20  # Under-qualified
+                    elif required_seniority in ('director', 'head', 'vp', 'c-level', 'chief', 'executive'):
+                        if experience >= 12:
+                            seniority_fit = 25
+                        elif experience >= 8:
+                            seniority_fit = 10
+                        else:
+                            seniority_fit = -25
+                    elif required_seniority == 'manager':
+                        if experience >= 5:
+                            seniority_fit = 20
+                        elif experience >= 3:
+                            seniority_fit = 10
+                        else:
+                            seniority_fit = -15
+                    relevance += seniority_fit
                 
                 # ── Location-aware scoring ──
                 location_matched = False
@@ -1594,33 +1778,36 @@ Return JSON:
                     except (ValueError, TypeError):
                         pass
                 
-                # Experience-based queries — richer seniority detection
-                if any(w in query_lower for w in ['senior', 'experienced', 'lead', 'principal', 'director', 'head', 'vp', 'chief']):
-                    if experience >= 10:
-                        relevance += 20
-                    elif experience >= 7:
-                        relevance += 15
-                    elif experience >= 5:
-                        relevance += 5
-                    else:
-                        relevance -= 10  # Penalty for juniors on senior queries
-                elif any(w in query_lower for w in ['mid', 'intermediate', 'mid-level', 'moderate']):
-                    if 3 <= experience <= 7:
-                        relevance += 15
-                elif any(w in query_lower for w in ['junior', 'entry', 'fresher', 'graduate', 'intern', 'trainee', 'beginner']):
-                    if experience <= 2:
-                        relevance += 15
-                    elif experience <= 3:
-                        relevance += 5
-                    else:
-                        relevance -= 10  # Penalty for seniors on junior queries
+                # Experience-based queries — seniority scoring (only if no explicit seniority pattern matched)
+                if not required_seniority:
+                    if any(w in query_lower for w in ['senior', 'experienced', 'lead', 'principal', 'director', 'head', 'vp', 'chief']):
+                        if experience >= 10:
+                            relevance += 20
+                        elif experience >= 7:
+                            relevance += 15
+                        elif experience >= 5:
+                            relevance += 5
+                        else:
+                            relevance -= 10
+                    elif any(w in query_lower for w in ['mid', 'intermediate', 'mid-level', 'moderate']):
+                        if 3 <= experience <= 7:
+                            relevance += 15
+                    elif any(w in query_lower for w in ['junior', 'entry', 'fresher', 'graduate', 'intern', 'trainee', 'beginner']):
+                        if experience <= 2:
+                            relevance += 15
+                        elif experience <= 3:
+                            relevance += 5
+                        else:
+                            relevance -= 10
                 
                 scored_candidates.append((relevance, idx, c))
             
             # Log hard-filter exclusion stats
             hard_filtered_out = total_scanned - len(scored_candidates)
             if hard_filtered_out > 0:
-                logger.info(f"🚫 Hard filter excluded {hard_filtered_out}/{total_scanned} candidates (exp={required_min_experience}-{required_max_experience}y)")
+                logger.info(f"🚫 Hard filter excluded {hard_filtered_out}/{total_scanned} candidates "
+                           f"(exp={required_min_experience}-{required_max_experience}y, "
+                           f"neg={negative_terms or 'none'})")
             
             # Sort by relevance and take top candidates (idx as tiebreaker to avoid dict comparison)
             scored_candidates.sort(key=lambda x: x[0], reverse=True)
@@ -1655,6 +1842,8 @@ Return JSON:
                 f"(MAX={MAX_CANDIDATES_TO_GEMINI}, keywords={list(keywords)[:8]}, "
                 f"location={'yes' if has_location_requirement else 'no'}, "
                 f"exp={required_min_experience}-{required_max_experience}y, "
+                f"seniority={required_seniority or 'any'}, "
+                f"neg={list(negative_terms)[:3] if negative_terms else 'none'}, "
                 f"phrases={list(query_phrases)[:4]}) "
                 f"Top5: {top5_scores}"
             )
@@ -1719,6 +1908,10 @@ Return JSON:
             constraints.append(f"EXPERIENCE RANGE FILTER (STRICT): Only {required_min_experience}-{required_max_experience} years. EXCLUDE any candidate with more than {required_max_experience} years of experience — this is a hard requirement, not a preference.")
         elif required_min_experience > 0:
             constraints.append(f"EXPERIENCE FILTER: Minimum {required_min_experience}+ years. Flag candidates below this threshold.")
+        if negative_terms:
+            constraints.append(f"EXCLUSION FILTER (STRICT): EXCLUDE candidates matching: {', '.join(negative_terms)}. This is a hard filter — do NOT include any candidate whose skills, category, role, or background matches these terms.")
+        if required_seniority:
+            constraints.append(f"SENIORITY FILTER: Target seniority level is '{required_seniority}'. Prioritize candidates whose experience level matches this seniority.")
         
         constraints_text = "\n".join(f"• {c}" for c in constraints) if constraints else "No special filters."
 

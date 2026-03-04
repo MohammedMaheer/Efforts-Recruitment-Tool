@@ -1153,7 +1153,16 @@ def quick_health_check(conn) -> Dict[str, Any]:
     """)
     system_emails = cursor.fetchone()[0]
     
-    has_issues = zero_score > 0 or bad_names > 0 or mojibake_text > 0 or system_emails > 0
+    # CID artifact detection (PDF font garbage)
+    cursor.execute("""
+        SELECT COUNT(*) FROM candidates
+        WHERE (is_active = 1 OR is_active IS NULL)
+        AND (phone LIKE '%(cid:%' OR name LIKE '%(cid:%' 
+             OR summary LIKE '%(cid:%' OR location LIKE '%(cid:%')
+    """)
+    cid_artifacts = cursor.fetchone()[0]
+    
+    has_issues = zero_score > 0 or bad_names > 0 or mojibake_text > 0 or system_emails > 0 or cid_artifacts > 0
     
     return {
         'total_candidates': total,
@@ -1161,6 +1170,7 @@ def quick_health_check(conn) -> Dict[str, Any]:
         'bad_names': bad_names,
         'mojibake_text': mojibake_text,
         'system_emails': system_emails,
+        'cid_artifacts': cid_artifacts,
         'needs_repair': has_issues,
-        'issue_count': zero_score + bad_names + mojibake_text + system_emails,
+        'issue_count': zero_score + bad_names + mojibake_text + system_emails + cid_artifacts,
     }
