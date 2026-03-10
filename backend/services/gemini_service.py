@@ -30,6 +30,15 @@ STOP_WORDS = frozenset({
     'any', 'some', 'good', 'from', 'to', 'of', 'that', 'this', 'be',
     'position', 'role', 'job', 'hiring', 'work', 'working', 'prefer', 'preferred',
     'should', 'must', 'minimum', 'experience', 'years', 'year', 'office',
+    # Common verbs and noise words that don't carry search signal
+    'worked', 'works', 'based', 'wanted', 'looking', 'currently', 'previously',
+    'between', 'company', 'companies', 'organization', 'organisations', 'organizations',
+    'also', 'would', 'like', 'could', 'able', 'well', 'very', 'much', 'more',
+    'within', 'at', 'their', 'them', 'they', 'he', 'she', 'his', 'her', 'it',
+    'its', 'been', 'being', 'other', 'both', 'each', 'every', 'but', 'not',
+    'only', 'than', 'just', 'most', 'those', 'such', 'will', 'one', 'two',
+    'had', 'where', 'when', 'there', 'here', 'make', 'made', 'over', 'under',
+    'around', 'through', 'during', 'after', 'before', 'while', 'already',
 })
 
 LOCATION_ALIASES = {
@@ -1628,26 +1637,65 @@ Return JSON:
             
             # Expand keywords with skill synonyms for broader pre-filter recall
             # e.g. if user says "react", also score candidates with "reactjs", "react.js"
+            # BUT: don't expand broad industry terms like "it" to avoid drowning signal
+            BROAD_EXPANSION_SKIP = {'it', 'cloud', 'api', 'database', 'frontend', 'backend',
+                                    'fullstack', 'full stack', 'security', 'qa', 'testing'}
             synonym_expanded = set()
             for kw in list(expanded_keywords):
+                if kw in BROAD_EXPANSION_SKIP:
+                    continue  # Skip overly broad terms that would expand to hundreds of candidates
                 syns = SKILL_SYNONYMS.get(kw, set())
                 if syns:
-                    # Only add close synonyms (same tool/tech), not broad generalizations
                     for syn in syns:
                         if len(syn) >= 2:
                             synonym_expanded.add(syn)
             expanded_keywords.update(synonym_expanded)
+            
+            # ── Detect OR-separated role alternatives ──
+            # "sales or account manager" → ["sales", "account manager"] as alternative roles
+            # These get extra phrase weight since the user explicitly listed them
+            or_alternatives = []
+            or_pattern = re.compile(
+                r'\b(\w+(?:\s+\w+)?)\s+or\s+(\w+(?:\s+\w+){0,2})\b',
+                re.IGNORECASE
+            )
+            for m in or_pattern.finditer(query_lower):
+                alt_a = m.group(1).strip()
+                alt_b = m.group(2).strip()
+                # Filter out stop words and locations from alternatives
+                if alt_a not in STOP_WORDS and alt_a not in KNOWN_LOCATIONS:
+                    or_alternatives.append(alt_a)
+                if alt_b not in STOP_WORDS and alt_b not in KNOWN_LOCATIONS:
+                    or_alternatives.append(alt_b)
+            if or_alternatives:
+                logger.info(f"OR-alternatives detected: {or_alternatives}")
                     
             # ── Build multi-word phrases from query for phrase matching ──
             # e.g. "data science" should match as a phrase, not just "data" + "science"
+            # Also include 3-word phrases for "account manager", "it service company"
             query_clean = re.sub(r'[^\w\s]', ' ', query_lower)
-            query_words_ordered = [w for w in query_clean.split() if w not in STOP_WORDS and len(w) >= 2]
+            query_words_all = query_clean.split()
+            query_words_ordered = [w for w in query_words_all if w not in STOP_WORDS and len(w) >= 2]
             query_phrases = set()
+            # 2-word phrases from non-stop words
             for pi in range(len(query_words_ordered) - 1):
                 phrase = f"{query_words_ordered[pi]} {query_words_ordered[pi+1]}"
-                # Only keep phrases that are meaningful (both words appear consecutively in original)
                 if phrase in query_lower:
                     query_phrases.add(phrase)
+            # Also build 2-word and 3-word phrases from ALL words (including stop words)
+            # This catches "account manager", "it service", "it services"
+            for pi in range(len(query_words_all) - 1):
+                p2 = f"{query_words_all[pi]} {query_words_all[pi+1]}"
+                if p2 in query_lower and any(w not in STOP_WORDS for w in [query_words_all[pi], query_words_all[pi+1]]):
+                    query_phrases.add(p2)
+            for pi in range(len(query_words_all) - 2):
+                p3 = f"{query_words_all[pi]} {query_words_all[pi+1]} {query_words_all[pi+2]}"
+                if p3 in query_lower and sum(1 for w in p3.split() if w not in STOP_WORDS) >= 2:
+                    query_phrases.add(p3)
+            # Add OR alternatives as high-priority phrases
+            query_phrases.update(or_alternatives)
+            if query_phrases:
+                logger.info(f"Phrase matching active: {query_phrases}")
             
             for idx, c in enumerate(candidates_data):
                 relevance = 0
@@ -1800,19 +1848,49 @@ Return JSON:
                             relevance -= 20  # Nationality mismatch when explicitly requested
                 
                 # ── Multi-word phrase matching (bonus on top of individual keyword scores) ──
+                # Phrases carry MUCH higher weight than individual keywords because
+                # they indicate structured intent (e.g. "account manager", "it services")
+                all_candidate_text = f"{skills_str} {wh_full_text} {summary} {category} {subcategory} {job_applied_for} {edu_text} {certs_text} {resume_text[:500]}"
+                or_alt_matched = False
                 for phrase in query_phrases:
+                    is_or_alt = phrase in or_alternatives
+                    phrase_boost = 30 if is_or_alt else 15  # OR alternatives get 2x boost
                     if phrase in skills_str:
-                        relevance += 15  # Strong: phrase found in skills (e.g. "data science")
+                        relevance += phrase_boost
+                        if is_or_alt: or_alt_matched = True
                     if phrase in wh_full_text:
-                        relevance += 14  # Strong: phrase in work history
+                        relevance += phrase_boost
+                        if is_or_alt: or_alt_matched = True
                     if phrase in summary:
-                        relevance += 10
+                        relevance += int(phrase_boost * 0.7)
+                        if is_or_alt: or_alt_matched = True
                     if phrase in category or phrase in subcategory:
-                        relevance += 14  # Category phrase match is very strong
+                        relevance += phrase_boost
+                        if is_or_alt: or_alt_matched = True
+                    if phrase in job_applied_for:
+                        relevance += phrase_boost
+                        if is_or_alt: or_alt_matched = True
                     if phrase in edu_text:
                         relevance += 8
                     if phrase in certs_text:
                         relevance += 10
+                # If user gave OR alternatives but NONE matched, penalize
+                if or_alternatives and not or_alt_matched:
+                    relevance -= 20
+                
+                # ── Industry/company-type matching ──
+                # When query mentions industry context like "IT service company",
+                # check work history companies against that context
+                industry_terms = set()
+                for phrase in query_phrases:
+                    # Phrases containing "service", "services", "consulting", "technology" signal industry
+                    if any(ind in phrase for ind in ['service', 'consulting', 'technology', 'software', 'fintech', 'healthcare', 'manufacturing', 'banking', 'telecom', 'retail', 'media', 'pharma']):
+                        industry_terms.update(phrase.split())
+                if industry_terms:
+                    industry_terms -= STOP_WORDS
+                    comp_text = ' '.join(wh_companies)
+                    ind_match = sum(1 for t in industry_terms if t in comp_text or t in summary)
+                    relevance += ind_match * 10
                 
                 # ── Job title matching — high value signal for role-specific queries ──
                 # Check if any work history title closely matches the query role
@@ -1824,6 +1902,10 @@ Return JSON:
                         role_title_bonus = max(role_title_bonus, 25)
                     elif title_kw_overlap == 1 and any(kw in title for kw in expanded_keywords if len(kw) >= 4):
                         role_title_bonus = max(role_title_bonus, 15)
+                    # Check OR alternatives against job titles specifically
+                    for alt in or_alternatives:
+                        if alt in title:
+                            role_title_bonus = max(role_title_bonus, 35)  # Very strong: title matches an OR alternative
                 relevance += role_title_bonus
                 
                 # Score based on keyword matches (word-boundary, not substring)

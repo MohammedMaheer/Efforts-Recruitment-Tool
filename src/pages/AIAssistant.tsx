@@ -585,8 +585,43 @@ export default function AIAssistant() {
   const prefillHandled = useRef(false)
   const pendingAutoSend = useRef(false)
   useEffect(() => {
-    const state = location.state as { prefillQuery?: string } | null
-    if (state?.prefillQuery && !prefillHandled.current) {
+    const state = location.state as { prefillQuery?: string; restoreSessionQuery?: string } | null
+    if (!state || prefillHandled.current) return
+
+    // restoreSessionQuery: try to find an existing session with this query and restore it
+    if (state.restoreSessionQuery) {
+      prefillHandled.current = true
+      window.history.replaceState({}, '')
+      const queryNorm = state.restoreSessionQuery.trim().toLowerCase()
+      // Search chatSessions for a session whose first user message matches
+      const existingSessions = loadChatSessions()
+      const match = existingSessions.find(s => {
+        const firstUserMsg = s.messages.find(m => m.type === 'user')
+        if (firstUserMsg) {
+          return firstUserMsg.content.trim().toLowerCase() === queryNorm
+        }
+        return s.title.trim().toLowerCase().replace(/\.{3}$/, '') === queryNorm.slice(0, 50)
+      })
+      if (match) {
+        // Restore existing session — no new API call
+        loadSession(match)
+        return
+      }
+      // No matching session found — fall through to new search
+      const newId = Date.now().toString()
+      setActiveSessionId(newId)
+      setMessages([])
+      setResultsView(false)
+      setResultsCandidates([])
+      setResultDetailCandidate(null)
+      setSelectedIds(new Set())
+      setInput(state.restoreSessionQuery)
+      pendingAutoSend.current = true
+      return
+    }
+
+    // prefillQuery: always start a new search (from Dashboard quick actions etc.)
+    if (state.prefillQuery) {
       prefillHandled.current = true
       // Clear navigation state so refreshing doesn't re-trigger
       window.history.replaceState({}, '')

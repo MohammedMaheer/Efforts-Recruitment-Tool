@@ -174,7 +174,7 @@ export default function SearchReports() {
                         </td>
                         <td className="px-4 py-4 text-center">
                           <div className="flex items-center justify-center gap-1">
-                            <button onClick={() => navigate('/ai-assistant', { state: { prefillQuery: s.query } })} className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-600 transition-colors" title="View Results in AI Search">
+                            <button onClick={() => navigate('/ai-assistant', { state: { restoreSessionQuery: s.query } })} className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-600 transition-colors" title="View Results in AI Search">
                               <Eye className="w-4 h-4" />
                             </button>
                             <button onClick={() => handleDeleteOne(s.id || s._id || '')} className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 transition-colors" title="Delete">
