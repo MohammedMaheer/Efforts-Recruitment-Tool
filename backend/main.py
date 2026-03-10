@@ -328,6 +328,7 @@ async def auto_sync_emails():
                                 
                                 # Skip Indeed/LinkedIn employer notifications (not candidate applications)
                                 _notification_patterns = [
+                                    # Employer/recruiter notifications
                                     r'^your\s+job[,:]',
                                     r'you\s+have\s+\d+\s+new\s+applicants',
                                     r'^your\s+sponsored\s+job',
@@ -335,25 +336,54 @@ async def auto_sync_emails():
                                     r'job\s+performance\s+report',
                                     r'^hiring\s+insights',
                                     r'^budget\s+alert',
-                                    r'^confirm\s+your\s+account',
-                                    r'^welcome\s+to\s+microsoft',
                                     r'^find\s+your\s+next\s+star',
                                     r'^your\s+jobs\s+are\s+on',
-                                    r'^undeliverable:',
-                                    r'wants\s+to\s+access',
-                                    r'^your\s+invoice',
+                                    # Account & security
+                                    r'^confirm\s+your\s+account',
+                                    r'^welcome\s+to\s+microsoft',
                                     r'^password\s+reset',
                                     r'^verify\s+your\s+email',
+                                    r'^sign.in\s+activity',
+                                    r'^security\s+alert',
+                                    r'^unusual\s+sign.in',
+                                    # Billing & transactional
+                                    r'^your\s+invoice',
                                     r'^your\s+subscription',
+                                    r'^payment\s+received',
+                                    r'^billing\s+statement',
+                                    r'^receipt\s+for\s+your',
+                                    r'^order\s+confirm',
+                                    # Delivery & system
+                                    r'^undeliverable:',
+                                    r'wants\s+to\s+access',
+                                    # Marketing & promotional
+                                    r'^weekly\s+digest',
+                                    r'^monthly\s+roundup',
+                                    r'^your\s+weekly',
+                                    r'limited\s+time\s+offer',
+                                    r'^upgrade\s+your\s+plan',
+                                    r'^trial\s+expir',
+                                    r'^your\s+free\s+trial',
+                                    r'^special\s+offer',
+                                    r'^act\s+now',
+                                    r'^don.t\s+miss\s+out',
                                 ]
                                 if any(re.search(p, _pre_subj_lower) for p in _notification_patterns):
                                     return 'no-candidate'
                                 
-                                # Skip emails from system senders that have no resume attachment
-                                _system_senders = ['noreply', 'no-reply', 'postmaster', 'mailer-daemon', 
-                                                   'notifications', 'system', 'donotreply', 'do-not-reply']
-                                if any(s in _pre_email_lower for s in _system_senders):
-                                    return 'no-candidate'
+                                # Skip emails from system senders — but WHITELIST job board
+                                # noreply addresses that forward real candidate applications
+                                _job_board_domains = [
+                                    'indeed.com', 'linkedin.com', 'glassdoor.com', 'ziprecruiter.com',
+                                    'naukri.com', 'bayt.com', 'gulftalent.com', 'monster.com',
+                                    'careerbuilder.com', 'dice.com', 'reed.co.uk', 'seek.com',
+                                ]
+                                _is_job_board = any(d in _pre_email_lower for d in _job_board_domains)
+                                if not _is_job_board:
+                                    _system_senders = ['noreply', 'no-reply', 'postmaster', 'mailer-daemon',
+                                                       'notifications', 'system', 'donotreply', 'do-not-reply']
+                                    if any(s in _pre_email_lower for s in _system_senders):
+                                        return 'no-candidate'
                                 
                                 # Extract candidate
                                 candidate = await scraper_service.extract_candidate_from_email(email_data)
@@ -829,11 +859,23 @@ async def auto_sync_emails():
                                         else:
                                             candidate['matchScore'] = 30
                                 
+                                # Save resume file if present (mirror Graph API path)
+                                resume_file = candidate.pop('resume_file_data', None)
+                                resume_filename = candidate.pop('resume_filename', None)
+                                
                                 # Save to database
                                 if existing:
                                     await asyncio.to_thread(db_service.update_candidate, candidate)
                                 else:
                                     await asyncio.to_thread(db_service.insert_candidate, candidate)
+                                
+                                # Save resume binary for download
+                                if resume_file and resume_filename:
+                                    try:
+                                        content_type = 'application/pdf' if resume_filename.lower().endswith('.pdf') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                                        await asyncio.to_thread(db_service.save_resume, candidate['id'], resume_filename, resume_file, content_type)
+                                    except Exception as e:
+                                        logger.warning(f"Failed to save resume for {candidate.get('id', 'unknown')}: {e}")
                                 
                                 # ------ Mark email as processed for idempotent sync ------
                                 if msg_id:
@@ -6399,7 +6441,8 @@ async def oauth2_callback_get(code: str = None, error: str = None, error_descrip
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID', 'common')
         email_address = os.getenv('EMAIL_ADDRESS')
-        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', 'http://localhost:3000/auth/callback')
+        default_redirect = f"{frontend_url}/auth/callback"
+        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', default_redirect)
         
         if not all([client_id, client_secret, email_address]):
             return RedirectResponse(url=f"{frontend_url}/email?error=not_configured")
@@ -6437,9 +6480,10 @@ async def get_oauth2_url_simple(request: Request = None, current_user: dict = De
     try:
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID', 'common')
-        # Use env var if set, otherwise auto-detect from FRONTEND_URL or default to production Firebase
-        default_redirect = 'https://efforts-recruitment.web.app/auth/callback'
-        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', os.getenv('OAUTH_REDIRECT_URI', default_redirect))
+        # Use env var if set, otherwise derive from CORS_ORIGINS (same logic as GET callback)
+        frontend_url = os.getenv('CORS_ORIGINS', 'http://localhost:5173').split(',')[0].strip()
+        default_redirect = f"{frontend_url}/auth/callback"
+        redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', default_redirect)
         
         if not client_id:
             raise HTTPException(400, "Microsoft OAuth2 not configured. Set MICROSOFT_CLIENT_ID in .env")
