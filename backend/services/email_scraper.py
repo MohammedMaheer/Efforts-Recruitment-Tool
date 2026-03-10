@@ -1277,7 +1277,7 @@ class EmailScraperService:
                 if llm_service.available:
                     llm_portal_data = await llm_service.parse_candidate_email(
                         subject=subject,
-                        body=clean_body[:4000],
+                        body=clean_body[:6000],
                         sender=sender_email
                     )
                     if llm_portal_data:
@@ -1293,7 +1293,7 @@ class EmailScraperService:
                     if gemini_svc and gemini_svc.available:
                         llm_portal_data = await gemini_svc.parse_candidate_email(
                             subject=subject,
-                            body=clean_body[:4000],
+                            body=clean_body[:6000],
                             sender=sender_email,
                             resume_text=_raw_resume_text
                         )
@@ -1465,10 +1465,8 @@ class EmailScraperService:
                 logger.info(f"🚫 Smart filter: blocked Indeed relay email: {actual_candidate_email[:60]}")
                 return None
             
-            # Use AI to infer job category/role
-            self._last_subcategory = ''
-            job_category = await self.infer_job_category(email_data, resume_data)
-            job_subcategory = getattr(self, '_last_subcategory', '')
+            # Use AI to infer job category/role (thread-safe: returns tuple)
+            job_category, job_subcategory = await self.infer_job_category(email_data, resume_data)
             
             # Determine best name:
             # 1. From job portal data (Indeed/LinkedIn) - most reliable
@@ -1538,7 +1536,7 @@ class EmailScraperService:
             summary = sanitize_summary(raw_summary, resume_data)
             
             # Get raw text for AI analysis (prefer resume text over email body)
-            raw_text = resume_data.get('raw_text', '') or clean_body[:1000]
+            raw_text = resume_data.get('raw_text', '') or clean_body[:3000]
             
             # Get education and work history, convert to JSON-serializable format
             education = resume_data.get('education', [])
@@ -1596,17 +1594,16 @@ class EmailScraperService:
             logger.warning(f"Error extracting candidate: {e}")
             return None
     
-    async def infer_job_category(self, email_data: Dict, resume_data: Dict) -> str:
+    async def infer_job_category(self, email_data: Dict, resume_data: Dict) -> tuple:
         """
         Determine job category AND subcategory using the job taxonomy.
-        Returns category string. Also sets self._last_subcategory for the caller.
+        Returns (category, subcategory) tuple for thread-safety.
         """
         from services.job_taxonomy import classify_job_title
         
         # If LLM already classified, use that
         if resume_data.get('job_category') and resume_data['job_category'] != 'General':
-            self._last_subcategory = resume_data.get('job_subcategory', '')
-            return resume_data['job_category']
+            return (resume_data['job_category'], resume_data.get('job_subcategory', ''))
         
         # Build text to analyze
         subject = email_data.get('subject', '')
@@ -1615,16 +1612,14 @@ class EmailScraperService:
         job_title = resume_data.get('job_title_applied', '') or resume_data.get('job_applied_for', '')
         if job_title:
             cat, sub = classify_job_title(job_title)
-            self._last_subcategory = sub
             if cat != 'General':
-                return cat
+                return (cat, sub)
         
         # Try from email subject
         if subject:
             cat, sub = classify_job_title(subject)
             if cat != 'General':
-                self._last_subcategory = sub
-                return cat
+                return (cat, sub)
         
         # Try from most recent work history title
         work_history = resume_data.get('work_history', [])
@@ -1633,23 +1628,18 @@ class EmailScraperService:
             if isinstance(first_job, dict) and first_job.get('title'):
                 cat, sub = classify_job_title(first_job['title'])
                 if cat != 'General':
-                    self._last_subcategory = sub
-                    return cat
+                    return (cat, sub)
         
         # Fallback to skill-based categorization using taxonomy keyword matcher
         skills = resume_data.get('skills', [])
         skills_text = ' '.join(skills).lower() if skills else ''
         text = f"{subject} {skills_text}"
         cat, sub = classify_job_title(text)
-        self._last_subcategory = sub
-        return cat
+        return (cat, sub)
     
-    async def process_batch(self, candidates: List[Dict], db_connection):
-        """
-        Process a batch of candidates efficiently
-        - Check for duplicates by email
-        - Update existing or insert new
-        - Only process NEW candidates for matching
+    async def process_batch(self, candidates: List[Dict], db_service) -> Dict:
+        """Process a batch of extracted candidates into the database.
+        Uses synchronous DatabaseService calls (not async).
         """
         processed = []
         updated = []
@@ -1657,40 +1647,54 @@ class EmailScraperService:
         
         for candidate in candidates:
             try:
-                # Check if candidate exists (by email hash)
-                existing = await db_connection.get_candidate_by_email(candidate['email'])
+                # Check if candidate exists (by email hash) — sync DB calls
+                existing = db_service.get_candidate_by_email(candidate['email'])
                 
                 if existing:
                     # UPDATE existing candidate
                     candidate['id'] = existing['id']
-                    candidate['appliedDate'] = existing['appliedDate']  # Keep original application date
-                    await db_connection.update_candidate(candidate)
+                    candidate['appliedDate'] = existing.get('appliedDate', '')
+                    db_service.update_candidate(candidate)
                     updated.append(candidate)
                 else:
                     # INSERT new candidate
-                    await db_connection.insert_candidate(candidate)
+                    db_service.insert_candidate(candidate)
                     new_candidates.append(candidate)
+                
+                # Store resume file if available
+                resume_data = candidate.get('resume_file_data')
+                resume_name = candidate.get('resume_filename')
+                if resume_data and resume_name:
+                    try:
+                        db_service.save_resume(
+                            candidate['id'],
+                            resume_name,
+                            'application/pdf' if resume_name.lower().endswith('.pdf') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+                            resume_data
+                        )
+                    except Exception as res_err:
+                        logger.warning(f"Failed to save resume for {candidate.get('email', '?')}: {res_err}")
                 
                 processed.append(candidate)
                 
             except Exception as e:
-                print(f"Error processing candidate {candidate.get('email')}: {e}")
+                logger.error(f"Error processing candidate {candidate.get('email', '?')}: {e}")
         
         return {
             'processed': len(processed),
             'new': len(new_candidates),
             'updated': len(updated),
-            'new_candidates': new_candidates  # Only these need AI matching
+            'new_candidates': new_candidates
         }
     
-    async def run_continuous_scraper(self, interval_seconds: int = 60):
+    async def run_continuous_scraper(self, interval_seconds: int = 60, db_service=None):
         """ALL email accounts
         - First run: Process ALL historical emails
         - Subsequent runs: Process only NEW emails
         """
-        print(f"ðŸ”„ Multi-account email scraper started")
-        print(f"ðŸ“§ Monitoring {len(self.email_accounts)} email account(s)")
-        print(f"â±ï¸  Checking every {interval_seconds} seconds")
+        logger.info("Multi-account email scraper started")
+        logger.info(f"Monitoring {len(self.email_accounts)} email account(s)")
+        logger.info(f"Checking every {interval_seconds} seconds")
         
         first_run = True
         
@@ -1707,34 +1711,45 @@ class EmailScraperService:
                         new_emails = await self.fetch_emails(mail, process_all=process_all)
                         
                         if new_emails:
-                            print(f"ðŸ“§ [{account.name}] Found {len(new_emails)} emails to process")
+                            logger.info(f"[{account.name}] Found {len(new_emails)} emails to process")
                             
                             # Extract candidates from emails
                             candidates = []
                             for email_data in new_emails:
-                                candidate = await self.extract_candidate_from_email(email_data)
-                                if candidate:
-                                    candidates.append(candidate)
+                                try:
+                                    candidate = await self.extract_candidate_from_email(email_data)
+                                    if candidate:
+                                        candidates.append(candidate)
+                                except Exception as extract_err:
+                                    logger.warning(f"[{account.name}] Extraction error: {extract_err}")
+                                    continue
                             
-                            print(f"ðŸ‘¥ [{account.name}] Extracted {len(candidates)} candidates")
+                            logger.info(f"[{account.name}] Extracted {len(candidates)} candidates")
                             account.processed_count += len(candidates)
                             
-                            # TODO: Process batch and save to database
-                            # result = await self.process_batch(candidates, db_connection)
-                            # print(f"âœ… Processed: {result['new']} new, {result['updated']} updated")
+                            # Process batch and save to database
+                            if db_service and candidates:
+                                try:
+                                    result = await self.process_batch(candidates, db_service)
+                                    logger.info(f"[{account.name}] Saved: {result['new']} new, {result['updated']} updated")
+                                except Exception as db_err:
+                                    logger.error(f"[{account.name}] Database save error: {db_err}")
                         
-                        mail.logout()
+                        try:
+                            mail.logout()
+                        except Exception:
+                            pass
                         account.last_check = datetime.now()
                         
                     except Exception as e:
-                        print(f"âŒ [{account.name}] Error: {e}")
+                        logger.error(f"[{account.name}] Error: {e}")
                 
-                first_run = False  # After first run, only process new emailslast_check = datetime.now()
+                first_run = False
                 
                 await asyncio.sleep(interval_seconds)
                 
             except Exception as e:
-                print(f"âŒ Scraper error: {e}")
+                logger.error(f"Scraper error: {e}")
                 await asyncio.sleep(interval_seconds)
 
 # Singleton instance

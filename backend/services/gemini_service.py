@@ -648,7 +648,7 @@ class GeminiService:
             self._daily_call_count = 0
         if self._daily_call_count >= self._daily_call_limit:
             logger.warning(f"⚠️ Gemini daily limit reached ({self._daily_call_limit} calls). Skipping API call.")
-            return ""
+            raise RuntimeError(f"Gemini daily call limit reached ({self._daily_call_limit})")
         self._daily_call_count += 1
         start = time.time()
         try:
@@ -722,29 +722,46 @@ class GeminiService:
 
         from services.job_taxonomy import classify_job_title
 
-        # COST OPTIMIZED: Removed taxonomy, reduced resume text to 3K
-        prompt = f"""Expert resume parser. Extract ALL info accurately. Return ONLY valid JSON.
+        # Gemini 2.5 Flash supports 1M tokens — send up to 10K chars for thorough extraction
+        prompt = f"""You are an expert resume/CV parser for a recruitment agency. Extract ALL information with maximum accuracy. Return ONLY valid JSON — no commentary.
 
-RESUME:
-{text[:3000]}
+RESUME TEXT:
+{text[:10000]}
+
+EXTRACTION RULES:
+1. Extract the EXACT name, email, phone, location as written — do not guess or infer.
+2. For experience_years: calculate from the earliest work start date to present. If stated explicitly (e.g., "10+ years"), use that number.
+3. For skills: extract ALL technical skills, tools, programming languages, frameworks, methodologies, soft skills, and domain expertise mentioned anywhere in the resume. Include certifications-related skills too. Do NOT cap the list.
+4. For work_history: extract ALL positions with full details. Include description with key responsibilities and achievements.
+5. For nationality/visa: only if explicitly mentioned (e.g., "Indian national", "UAE residence visa", "US citizen").
+6. For notice_period: look for phrases like "immediate joiner", "30 days notice", "available from [date]", "currently serving notice".
+7. For salary: look for "current salary", "expected salary", "CTC", "package" mentions.
+8. For source/portal: if the resume mentions where it was uploaded or forwarded from (Indeed, LinkedIn, Bayt, Naukri, GulfTalent etc.).
 
 Return JSON:
 {{
-    "name": "Full name",
-    "email": "email",
-    "phone": "phone",
-    "location": "City, Country",
+    "name": "Full name exactly as written",
+    "email": "email address",
+    "phone": "phone number with country code if present",
+    "location": "City, Country (as specific as possible)",
+    "nationality": "Nationality if explicitly stated, else empty",
     "linkedin": "LinkedIn URL or empty",
-    "summary": "2-3 sentence professional summary",
-    "skills": ["all skills, tools, languages, frameworks"],
+    "summary": "3-4 sentence professional summary capturing their expertise level and domain",
+    "skills": ["ALL skills, tools, languages, frameworks, methodologies, domain expertise — be comprehensive"],
     "experience_years": 0,
-    "work_history": [{{"title": "Title", "company": "Company", "period": "Dates", "description": "1-2 sentences"}}],
-    "education": [{{"degree": "Degree", "field": "Field", "institution": "School", "year": "Year"}}],
-    "certifications": ["cert names"],
-    "languages": ["languages"]
+    "work_history": [{{"title": "Job Title", "company": "Company Name", "period": "Start - End dates", "duration": "X years Y months", "description": "Key responsibilities and achievements in 2-3 sentences"}}],
+    "education": [{{"degree": "Degree", "field": "Field of Study", "institution": "Institution Name", "year": "Graduation Year"}}],
+    "certifications": ["certification names with issuing body if mentioned"],
+    "languages": ["languages with proficiency level if mentioned"],
+    "notice_period": "Notice period or availability if mentioned, else empty",
+    "current_salary": "Current salary/CTC if mentioned, else empty",
+    "expected_salary": "Expected salary if mentioned, else empty",
+    "source_portal": "Job portal source if identifiable, else empty",
+    "job_applied_for": "Specific job title they applied for if mentioned, else empty",
+    "job_title_applied": "Their most recent/current job title"
 }}
 
-Only extract explicitly stated data. Never fabricate."""
+CRITICAL: Only extract data that is EXPLICITLY present in the resume. Never fabricate or hallucinate any information."""
 
         result = await self._agenerate_json(prompt, temperature=0.05)
 
@@ -1415,7 +1432,7 @@ Return JSON:
         has_search_signal = any(w in msg for w in search_overrides)
         
         # Also check if any known location is mentioned — strong search signal
-        msg_words = set(re.sub(r'[^\\w\\s]', ' ', msg).split())
+        msg_words = set(re.sub(r'[^\w\s]', ' ', msg).split())
         has_location_signal = any(loc in msg for loc in KNOWN_LOCATIONS if ' ' in loc) or \
                              bool(msg_words & {loc for loc in KNOWN_LOCATIONS if ' ' not in loc})
         
@@ -1909,14 +1926,14 @@ Return JSON:
             has_many_keywords = len(keywords) >= 4
             
             if has_many_keywords:
-                MAX_CANDIDATES_TO_GEMINI = 12  # Complex query — tight focus
+                MAX_CANDIDATES_TO_GEMINI = 20  # Complex query — enough for thorough ranking
             elif has_specific_keywords:
-                MAX_CANDIDATES_TO_GEMINI = 15  # Moderate query
+                MAX_CANDIDATES_TO_GEMINI = 25  # Moderate query
             else:
-                MAX_CANDIDATES_TO_GEMINI = 18  # Broad/simple query
+                MAX_CANDIDATES_TO_GEMINI = 30  # Broad/simple query
             
             # Ensure we request at least enough for the user's num_candidates
-            MAX_CANDIDATES_TO_GEMINI = max(MAX_CANDIDATES_TO_GEMINI, min(num_candidates + 3, 20))
+            MAX_CANDIDATES_TO_GEMINI = max(MAX_CANDIDATES_TO_GEMINI, min(num_candidates + 5, 35))
             
             if has_specific_keywords:
                 relevant = [(score, idx, c) for score, idx, c in scored_candidates if score > 0]
@@ -1947,7 +1964,7 @@ Return JSON:
             candidates_context = f"\n\nCANDIDATES ({relevant_count} pre-filtered from {total_scanned}):\n"
             for i, (rel_score, _idx, c) in enumerate(selected[:MAX_CANDIDATES_TO_GEMINI]):
                 skills_raw = c.get('skills', [])
-                skills_str = ', '.join(skills_raw[:15]) if isinstance(skills_raw, list) else str(skills_raw or '')
+                skills_str = ', '.join(skills_raw[:25]) if isinstance(skills_raw, list) else str(skills_raw or '')
                 work = c.get('workHistory', c.get('work_history', []))
                 if isinstance(work, list):
                     work_entries = []
@@ -1978,6 +1995,10 @@ Return JSON:
                     f"   Edu: {edu_str}\n"
                     f"   Contact: {c.get('email', 'N/A')} | {c.get('phone', 'N/A')}\n"
                 )
+                # Add summary for richer context
+                _summary = c.get('summary', '')
+                if _summary and len(str(_summary)) > 10:
+                    candidates_context += f"   Summary: {str(_summary)[:200]}\n"
                 # Append enriched fields only when they have meaningful values
                 _extra_lines = []
                 _nat = c.get('nationality', '')
@@ -2188,6 +2209,13 @@ HISTORY:{history_text}
 
 QUERY: {message}
 
+CRITICAL — EXACT MATCHING RULES:
+- When the user specifies a LOCATION (city, country, region), ONLY return candidates whose location field matches that location. Do NOT include candidates from other locations unless you have exhausted all local matches and need to fill spots — in that case, explicitly flag them as "Non-local".
+- When the user specifies EXPERIENCE (e.g., "5+ years", "3-7 years"), strictly enforce the range. A candidate with 2 years does NOT qualify for "5+ years". A candidate with 12 years does NOT qualify for "3-7 years".
+- When the user specifies SKILLS (e.g., "React developer", "SAP FICO"), the candidate MUST have that exact skill or a direct equivalent listed. Do not return candidates who lack the core required skill.
+- When the user says "ONLY", "must have", "strictly", "exclude", "no" — treat these as absolute deal-breakers with ZERO flexibility.
+- When the user specifies a JOB TITLE or ROLE, match it to the candidate's work history, job category, and skills — not just keywords.
+
 ANALYSIS FRAMEWORK:
 1. Parse query deeply: extract role, seniority level, must-have skills, nice-to-have skills, location preference, experience range, industry/domain, exclusions, and implicit requirements
 2. Evaluate candidates on a weighted multi-dimensional scoring matrix:
@@ -2205,6 +2233,7 @@ ANALYSIS FRAMEWORK:
 4. Apply hard filters ("ONLY", "must", "exclude", "no more than") as deal-breakers — auto-disqualify violators
 5. NEVER fabricate candidates. Use ONLY candidates from the pool above.
 6. If few match, say so honestly and suggest specific ways to broaden criteria.
+7. Double-check each candidate against ALL query criteria before including them. If a candidate fails ANY hard filter, EXCLUDE them regardless of other strengths.
 
 Return exactly {num_candidates} candidates (or fewer if not enough qualify):
 

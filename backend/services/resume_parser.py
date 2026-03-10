@@ -430,14 +430,14 @@ class ResumeParser:
         llm_result = await self._parse_with_llm(text)
         if llm_result:
             logger.info(f"Resume parsed with LLM: {llm_result.get('name', 'Unknown')}")
-            llm_result['raw_text'] = text[:5000]
+            llm_result['raw_text'] = text[:8000]
             return llm_result
         
         # Strategy 2: Try Gemini-powered extraction (production fallback)
         gemini_result = await self._parse_with_gemini(text)
         if gemini_result:
             logger.info(f"Resume parsed with Gemini: {gemini_result.get('name', 'Unknown')}")
-            gemini_result['raw_text'] = text[:5000]
+            gemini_result['raw_text'] = text[:8000]
             return gemini_result
         
         # Strategy 3: Fallback to regex-based extraction
@@ -512,8 +512,8 @@ class ResumeParser:
         """Parse resume using Gemini AI service as production fallback.
         
         This is critical for Cloud Run where Ollama isn't available.
-        Uses the same comprehensive extraction as analyze_candidate but
-        returns data in resume parser format.
+        Uses gemini.parse_resume() which has a dedicated extraction prompt
+        with comprehensive field extraction.
         """
         try:
             from services.gemini_service import get_gemini_service
@@ -522,8 +522,9 @@ class ResumeParser:
                 logger.info("Gemini service not available for resume parsing")
                 return None
             
-            # Use analyze_candidate which has a comprehensive prompt
-            result = await gemini.analyze_candidate(text)
+            # Use parse_resume which has a dedicated extraction prompt
+            # (NOT analyze_candidate which is for scoring/quality assessment)
+            result = await gemini.parse_resume(text)
             
             if result and (result.get('name') or result.get('email') or result.get('skills')):
                 # Normalize work_history format
@@ -799,7 +800,7 @@ class ResumeParser:
             if re.search(r'\b' + re.escape(skill) + r'\b', text_lower):
                 found_skills.append(skill.title())
         
-        return list(set(found_skills))[:15]  # Return up to 15 unique skills
+        return list(set(found_skills))[:30]  # Return up to 30 unique skills
     
     def _extract_experience(self, text: str) -> int:
         """Extract years of experience"""

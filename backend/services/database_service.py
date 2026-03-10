@@ -583,7 +583,10 @@ class DatabaseService:
             conn.close()
     
     def insert_candidate(self, candidate: Dict):
-        """Insert new candidate (or update if exists). Blocks Indeed relay emails."""
+        """Insert new candidate (or merge if exists). Blocks Indeed relay emails."""
+        # Sanitize all fields before writing — prevent CID artifacts and garbage
+        candidate = sanitize_candidate_data(candidate)
+        
         # Smart filter: block Indeed relay / garbage emails at DB level
         candidate_email = candidate.get('email', '')
         if self.is_blocked_email(candidate_email):
@@ -596,6 +599,16 @@ class DatabaseService:
             
             email_hash = self.email_to_hash(candidate['email'])
             
+            # Check if candidate already exists — merge instead of silently ignoring
+            cursor.execute("SELECT id FROM candidates WHERE email_hash = ?", (email_hash,))
+            existing = cursor.fetchone()
+            if existing:
+                # Candidate exists — delegate to update (which does smart merge)
+                candidate['id'] = existing[0]
+                logger.info(f"📝 Candidate exists, merging: {candidate.get('name', 'Unknown')} ({candidate_email[:40]})")
+                conn.close()
+                return self.update_candidate(candidate)
+            
             # Handle education - ensure it's JSON string
             education_data = candidate.get('education', '[]')
             if isinstance(education_data, list):
@@ -604,7 +617,7 @@ class DatabaseService:
                 education_data = '[]'
             
             cursor.execute("""
-                INSERT OR IGNORE INTO candidates (
+                INSERT INTO candidates (
                     id, email, email_hash, name, phone, location, 
                     skills, experience, education, summary, work_history,
                     linkedin, status, match_score, job_category, job_subcategory,
@@ -837,7 +850,8 @@ class DatabaseService:
             conn.close()
     
     def _update_candidate_row(self, cursor, candidate: Dict):
-        """Update or insert a candidate row using all merged data."""
+        """Update or insert a candidate row using all merged data (includes v2.1 enriched fields)."""
+        candidate = sanitize_candidate_data(candidate)
         education_data = candidate.get('education', [])
         if isinstance(education_data, list):
             education_data = json.dumps(education_data)
@@ -847,8 +861,10 @@ class DatabaseService:
                 skills, experience, education, summary, work_history,
                 linkedin, status, match_score, job_category, job_subcategory,
                 applied_date, last_updated, raw_email_subject, is_active,
-                certifications, languages, resume_text
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+                certifications, languages, resume_text,
+                nationality, notice_period, current_salary, expected_salary,
+                source_portal, job_applied_for
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             candidate['id'],
             candidate.get('email', ''),
@@ -872,6 +888,12 @@ class DatabaseService:
             json.dumps(candidate.get('certifications', [])),
             json.dumps(candidate.get('languages', [])),
             candidate.get('resume_text', ''),
+            candidate.get('nationality', ''),
+            candidate.get('notice_period', ''),
+            candidate.get('current_salary', ''),
+            candidate.get('expected_salary', ''),
+            candidate.get('source_portal', 'Direct'),
+            candidate.get('job_applied_for', ''),
         ))
 
     @staticmethod
@@ -1331,13 +1353,18 @@ class DatabaseService:
                         education_data = '[]'
                     
                     if existing:
-                        # Update existing
+                        # Update existing — include all v2.1 enriched fields
                         cursor.execute("""
                             UPDATE candidates SET
                                 name = ?, phone = ?, location = ?, skills = ?,
                                 experience = ?, education = ?, summary = ?,
                                 work_history = ?, linkedin = ?, match_score = ?,
-                                job_category = ?, job_subcategory = ?, last_updated = ?
+                                job_category = ?, job_subcategory = ?, last_updated = ?,
+                                certifications = ?, languages = ?,
+                                nationality = ?, notice_period = ?,
+                                current_salary = ?, expected_salary = ?,
+                                source_portal = ?, job_applied_for = ?,
+                                resume_text = COALESCE(?, resume_text)
                             WHERE email_hash = ?
                         """, (
                             candidate['name'],
@@ -1353,18 +1380,30 @@ class DatabaseService:
                             candidate.get('job_category', 'General'),
                             candidate.get('job_subcategory', ''),
                             candidate.get('last_updated'),
+                            json.dumps(candidate.get('certifications', [])),
+                            json.dumps(candidate.get('languages', [])),
+                            candidate.get('nationality', ''),
+                            candidate.get('notice_period', ''),
+                            candidate.get('current_salary', ''),
+                            candidate.get('expected_salary', ''),
+                            candidate.get('source_portal', 'Direct'),
+                            candidate.get('job_applied_for', ''),
+                            candidate.get('resume_text', None),
                             email_hash
                         ))
                         updated += 1
                     else:
-                        # Insert new
+                        # Insert new — include all v2.1 enriched fields
                         cursor.execute("""
                             INSERT INTO candidates (
                                 id, email, email_hash, name, phone, location, 
                                 skills, experience, education, summary, work_history,
                                 linkedin, status, match_score, job_category, job_subcategory,
-                                applied_date, last_updated, raw_email_subject
-                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                applied_date, last_updated, raw_email_subject,
+                                certifications, languages, resume_text,
+                                nationality, notice_period, current_salary, expected_salary,
+                                source_portal, job_applied_for
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, (
                             candidate['id'],
                             candidate['email'],
@@ -1384,7 +1423,16 @@ class DatabaseService:
                             candidate.get('job_subcategory', ''),
                             candidate.get('appliedDate'),
                             candidate.get('last_updated'),
-                            candidate.get('raw_email_subject', '')
+                            candidate.get('raw_email_subject', ''),
+                            json.dumps(candidate.get('certifications', [])),
+                            json.dumps(candidate.get('languages', [])),
+                            candidate.get('resume_text', ''),
+                            candidate.get('nationality', ''),
+                            candidate.get('notice_period', ''),
+                            candidate.get('current_salary', ''),
+                            candidate.get('expected_salary', ''),
+                            candidate.get('source_portal', 'Direct'),
+                            candidate.get('job_applied_for', ''),
                         ))
                         inserted += 1
                 
