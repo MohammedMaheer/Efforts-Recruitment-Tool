@@ -197,13 +197,20 @@ class HealthCheckManager:
         """Run all health checks"""
         results = {}
         
-        # Run checks concurrently
+        # Run checks concurrently with overall timeout
         tasks = {
             name: check.check()
             for name, check in self._checks.items()
         }
         
-        completed = await asyncio.gather(*tasks.values(), return_exceptions=True)
+        try:
+            completed = await asyncio.wait_for(
+                asyncio.gather(*tasks.values(), return_exceptions=True),
+                timeout=30
+            )
+        except asyncio.TimeoutError:
+            logger.error("Health check gather timed out after 30s")
+            completed = [TimeoutError("Health check timed out")] * len(tasks)
         
         for name, result in zip(tasks.keys(), completed):
             if isinstance(result, Exception):

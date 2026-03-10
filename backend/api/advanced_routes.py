@@ -169,25 +169,18 @@ async def retrain_ml_model():
 @router.post("/skills/extract", response_model=SkillExtractionResponse)
 async def extract_skills(request: SkillExtractionRequest):
     """
-    Extract skills from resume text.
-    Uses GPT-4 for advanced inference if enabled.
+    Extract skills from resume text using local pattern matching.
     """
     try:
         service = get_skill_extractor()
-        
-        if request.use_gpt4:
-            result = await service.extract_skills_gpt4(request.resume_text)
-            method = "gpt4"
-        else:
-            result = service.extract_skills_local(request.resume_text)
-            method = "local"
+        result = await service.extract_skills(request.resume_text)
         
         return SkillExtractionResponse(
             technical_skills=result.get('technical_skills', []),
             soft_skills=result.get('soft_skills', []),
             certifications=result.get('certifications', []),
             tools=result.get('tools', []),
-            extraction_method=method
+            extraction_method="local"
         )
     except Exception as e:
         logger.error(f"Skill extraction error: {e}")
@@ -209,7 +202,7 @@ async def analyze_skill_gap(request: SkillGapRequest):
         candidate_skills = candidate_data.get('skills', []) if candidate_data else []
         job = {'required_skills': [], 'preferred_skills': []}
         
-        result = service.analyze_skill_gaps(candidate_skills, job)
+        result = await service.analyze_skill_gaps(candidate_skills, job)
         
         return SkillGapResponse(
             candidate_id=request.candidate_id,

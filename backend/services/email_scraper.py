@@ -19,7 +19,6 @@ from html import unescape
 
 from services.resume_parser import ResumeParser
 from services.email_parser import EmailParser
-# NOTE: OpenAI service removed - using local keyword matching for job categorization (zero API cost)
 
 
 # ============================================================================
@@ -926,7 +925,6 @@ class EmailScraperService:
     def __init__(self):
         self.resume_parser = ResumeParser()
         self.email_parser = EmailParser()
-        # NOTE: OpenAI removed - job categorization now uses local keyword matching (zero API cost)
         
         # Multiple email accounts
         self.email_accounts = self._load_email_accounts()

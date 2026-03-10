@@ -1,22 +1,18 @@
 """
 Advanced Skill Extraction Service
-Uses GPT-4 for complex skill inference from resume context
+Uses local pattern matching for complex skill inference from resume context
 Identifies implicit skills, skill levels, and related technologies
 """
-import asyncio
-import json
 import logging
-import os
 import re
-from typing import Dict, List, Optional, Set, Tuple
-from datetime import datetime
+from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
 
 class AdvancedSkillExtractor:
     """
-    GPT-4 powered skill extraction with:
+    Local skill extraction with:
     - Implicit skill inference (mentions React → knows JavaScript)
     - Skill level assessment (beginner/intermediate/expert)
     - Technology stack grouping
@@ -94,88 +90,18 @@ class AdvancedSkillExtractor:
     }
     
     def __init__(self):
-        self.openai_client = None
-        self.use_gpt = os.getenv('USE_OPENAI', 'false').lower() == 'true'
-        self._init_openai()
+        pass
     
-    def _init_openai(self):
-        """Initialize OpenAI client if API key available"""
-        api_key = os.getenv('OPENAI_API_KEY')
-        if api_key and len(api_key) > 20:
-            try:
-                from openai import AsyncOpenAI
-                self.openai_client = AsyncOpenAI(api_key=api_key)
-                logger.info("✅ GPT-4 skill extraction enabled")
-            except ImportError:
-                logger.warning("OpenAI package not installed")
-    
-    async def extract_skills_gpt4(self, resume_text: str) -> Dict:
+    async def extract_skills(self, resume_text: str) -> Dict:
         """
-        Use GPT-4 for comprehensive skill extraction
-        Returns structured skill data with levels and categories
+        Extract skills from resume using local pattern matching.
+        Returns structured skill data with levels and categories.
         """
-        if not self.openai_client:
-            return await self.extract_skills_local(resume_text)
-        
-        prompt = f"""Analyze this resume and extract ALL skills. Be comprehensive.
-
-Resume:
-{resume_text[:4000]}
-
-Return a JSON object with:
-{{
-    "technical_skills": [
-        {{"name": "Python", "level": "expert", "years": 5, "context": "Used for ML pipelines"}},
-        ...
-    ],
-    "soft_skills": [
-        {{"name": "Leadership", "evidence": "Led team of 5 engineers"}},
-        ...
-    ],
-    "certifications": ["AWS Solutions Architect", ...],
-    "tools": ["Git", "JIRA", "Figma", ...],
-    "languages": ["English", "Spanish", ...],
-    "inferred_skills": [
-        {{"name": "JavaScript", "inferred_from": "React experience"}},
-        ...
-    ]
-}}
-
-Skill levels: beginner, intermediate, expert
-Be thorough - extract both explicit and implicit skills."""
-
-        try:
-            response = await asyncio.wait_for(
-                self.openai_client.chat.completions.create(
-                    model=os.getenv('OPENAI_MODEL', 'gpt-4o-mini'),
-                    messages=[
-                        {"role": "system", "content": "You are an expert technical recruiter who extracts skills from resumes. Always return valid JSON."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    temperature=0.3,
-                    max_tokens=2000
-                ),
-                timeout=30
-            )
-            
-            content = response.choices[0].message.content
-            
-            # Extract JSON from response
-            json_match = re.search(r'\{[\s\S]*\}', content)
-            if json_match:
-                return json.loads(json_match.group())
-            
-        except asyncio.TimeoutError:
-            logger.warning("GPT-4 skill extraction timed out")
-        except Exception as e:
-            logger.warning(f"GPT-4 skill extraction error: {e}")
-        
-        # Fallback to local extraction
         return await self.extract_skills_local(resume_text)
     
     async def extract_skills_local(self, resume_text: str) -> Dict:
         """
-        Local skill extraction without GPT-4
+        Local skill extraction using pattern matching.
         Uses pattern matching and skill relationships
         """
         text_lower = resume_text.lower()

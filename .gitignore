@@ -36,9 +36,13 @@ ENV/
 
 # Environment variables
 .env
+.env.*
 .env.local
 .env.production
 .env.backup
+
+# Sensitive tokens
+**/oauth_tokens.json
 
 # Database
 *.db

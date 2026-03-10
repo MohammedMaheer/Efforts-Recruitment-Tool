@@ -1374,7 +1374,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       // Determine how many candidate cards to show
       const requestedCount = extractRequestedCount(userInput)
       
-      // Use AI chat (3-tier: Gemini → LLM → OpenAI → rule-based)
+      // Use AI chat (3-tier: Gemini → LLM → Rule-based)
       // The backend now returns candidates_lookup alongside the text response
       const chatResult = await aiApi.chat(userInput, true, conversationHistory, requestedCount)
       

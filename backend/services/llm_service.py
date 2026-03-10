@@ -420,7 +420,7 @@ class LLMService:
         temperature: float = 0.05,
     ) -> Optional[Dict]:
         """Generate structured JSON output from LLM with advanced repair.
-        If Ollama is unavailable, falls through the AI tier chain (Gemini → OpenAI)."""
+        If Ollama is unavailable, falls through the AI tier chain (Gemini → Keyword)."""
         
         # If Ollama is available, try it first
         if self.available:
@@ -457,7 +457,7 @@ class LLMService:
                 
                 logger.warning(f"Failed to parse JSON from LLM response after repair: {result[:200]}")
         
-        # Ollama unavailable or failed — try tier fallback (Gemini → OpenAI)
+        # Ollama unavailable or failed — try tier fallback (Gemini → Keyword)
         return await self._tier_generate_json(prompt, temperature=temperature, model=model, system=system)
     
     # ========================================================================
@@ -1092,7 +1092,7 @@ Set "is_candidate_email" to false if this email does NOT contain a job applicati
         return normalized
     
     # ========================================================================
-    # DEEP CANDIDATE ANALYSIS - NO OPENAI NEEDED
+    # DEEP CANDIDATE ANALYSIS
     # ========================================================================
     
     async def analyze_candidate_deep(self, candidate_data: Dict) -> Dict:

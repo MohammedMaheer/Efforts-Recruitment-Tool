@@ -2572,7 +2572,7 @@ async def admin_update_candidate(candidate_id: str, request: Request, current_us
 async def reset_and_reparse_all_emails(current_user: dict = Depends(require_admin)):
     """
     Clear all candidates and re-parse ALL emails from inbox.
-    Parses email body, attached resumes, and uses Local AI (with OpenAI fallback) for analysis.
+    Parses email body, attached resumes, and uses Local AI for analysis.
     """
     try:
         # Clear response cache
@@ -2680,7 +2680,7 @@ async def reset_and_reparse_all_emails(current_user: dict = Depends(require_admi
                 if _name_lower in _BLOCKED_NAMES or len(_name_lower) < 2:
                     return
                 
-                # AI Analysis: Use Local AI first, OpenAI as fallback
+                # AI Analysis: Use Local AI first, Gemini as fallback
                 # Prefer resume_text if available, otherwise use summary + skills
                 resume_text = candidate.get('resume_text', '') or (candidate.get('summary', '') + ' ' + ' '.join(candidate.get('skills', [])))
                 if resume_text.strip():
@@ -4907,7 +4907,7 @@ async def compare_candidates(
                 "reasoning": "Highest match score",
                 "runner_up": candidates[1]['name'] if len(candidates) > 1 else None
             },
-            "recommendation": "Configure Ollama or OPENAI_API_KEY for detailed comparison",
+            "recommendation": "Configure Ollama or Gemini API key for detailed comparison",
             "ai_powered": False,
             "source": "rule_based"
         }
@@ -4930,7 +4930,7 @@ async def ai_chat(
     """
     Enhanced AI chat with full database search capability.
     2-STAGE APPROACH: Pre-filter candidates by query relevance → Send subset to AI
-    3-TIER FALLBACK: Gemini → OpenAI → Rule-based
+    3-TIER FALLBACK: Gemini → Ollama → Rule-based
     """
     # ── Input validation ──
     if not message or not message.strip():
@@ -5777,7 +5777,7 @@ async def sync_email_applications(request: EmailSyncRequest, current_user: dict 
                     resume_content = f"{candidate.get('body', '')}\n\n{candidate.get('extracted_info', {}).get('text', '')}"
                     
                     if resume_content.strip():
-                        # Use Local AI ONLY (zero cost, no OpenAI fallback)
+                        # Use Local AI ONLY (zero cost)
                         try:
                             ai_analysis = await asyncio.wait_for(
                                 ai_service.analyze_candidate(resume_content),

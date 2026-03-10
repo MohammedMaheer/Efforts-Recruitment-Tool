@@ -632,7 +632,7 @@ def _repair_json(text: str) -> Optional[Dict]:
 
 class GeminiService:
     """
-    Google Gemini AI Service — mirrors the interface of LLMService / OpenAIService
+    Google Gemini AI Service — mirrors the interface of LLMService
     so it can be used as a drop-in replacement in the AI tier chain.
 
     Capabilities:

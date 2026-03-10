@@ -1108,12 +1108,12 @@ class LocalAIService:
         return ' '.join(parts)
     
     # ========================================================================
-    # DEEP ANALYSIS (LLM-POWERED - NO OPENAI NEEDED)
+    # DEEP ANALYSIS (LLM-POWERED)
     # ========================================================================
     
     async def analyze_candidate_deep(self, candidate_data: Dict) -> Dict:
         """
-        Deep analysis using local LLM - no OpenAI needed.
+        Deep analysis using local LLM.
         Returns pros, cons, strengths, recommendations.
         """
         await self._ensure_llm()

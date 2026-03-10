@@ -488,7 +488,7 @@ export const statsApi = {
    */
   async getAIStatus(): Promise<ApiResponse<{
     local_ai: { status: string; model: string };
-    openai: { status: string; model?: string };
+    gemini: { status: string; model?: string };
   }>> {
     return client.get('/api/ai/status');
   },
@@ -999,7 +999,7 @@ export const aiApi = {
    */
   async getStatus(): Promise<ApiResponse<{
     local_ai: { status: string; model: string };
-    openai: { status: string; model?: string };
+    gemini: { status: string; model?: string };
     llm: { status: string; model?: string };
   }>> {
     return client.get('/api/ai/status');

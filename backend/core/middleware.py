@@ -426,9 +426,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             now = time.time()
             window_start = now - self.window_size
             
-            # Evict all entries if dict exceeds 10,000 IPs to prevent OOM
+            # Evict oldest IPs if dict exceeds 10,000 to prevent OOM
             if len(self._request_counts) > 10_000:
-                self._request_counts.clear()
+                # Remove the 2000 oldest entries instead of clearing all
+                sorted_ips = sorted(
+                    self._request_counts.items(),
+                    key=lambda kv: max(kv[1]) if kv[1] else 0
+                )
+                for ip, _ in sorted_ips[:2000]:
+                    del self._request_counts[ip]
 
             # Clean old requests
             self._request_counts[client_ip] = [

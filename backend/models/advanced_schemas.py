@@ -82,7 +82,6 @@ class HiringDecisionRequest(BaseModel):
 class SkillExtractionRequest(BaseModel):
     """Request to extract skills from resume text"""
     resume_text: str = Field(..., min_length=10, description="Resume text to analyze")
-    use_gpt4: bool = Field(default=False, description="Use GPT-4 for advanced extraction")
 
 
 class ExtractedSkill(BaseModel):
@@ -102,7 +101,7 @@ class SkillExtractionResponse(BaseModel):
     soft_skills: List[ExtractedSkill]
     certifications: List[str]
     tools: List[str]
-    extraction_method: str  # "gpt4" or "local"
+    extraction_method: str  # "local"
 
 
 class SkillGapRequest(BaseModel):
