@@ -71,9 +71,6 @@ brotli==1.1.0
 # ================== ENVIRONMENT ==================
 python-dotenv==1.0.0
 
-# ================== OPENAI (OPTIONAL FALLBACK) ==================
-openai==1.7.2
-
 # ================== GOOGLE GEMINI (PRIMARY FOR DEPLOYMENT) ==================
 google-genai>=1.0.0,<2.0.0
 

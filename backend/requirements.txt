@@ -58,9 +58,6 @@ transformers>=4.35.0  # Additional NLP capabilities
 spacy>=3.7.0  # NLP pipeline for NER
 # Download model: python -m spacy download en_core_web_sm
 
-# AI - EMERGENCY FALLBACK ONLY (costs money)
-openai>=1.0.0  # Only used on timeout/error
-
 # Performance & Optimization
 cachetools>=5.3.0  # Advanced caching
 redis>=5.0.0  # Optional: Redis cache for production
