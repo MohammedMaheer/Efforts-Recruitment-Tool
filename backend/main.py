@@ -276,7 +276,12 @@ async def auto_sync_emails():
                             try:
                                 # ------ DEDUP: skip emails already processed ------
                                 msg_id = msg.get('id', '') or msg.get('internetMessageId', '')
-                                if msg_id and await asyncio.to_thread(db_service.is_email_processed, msg_id):
+                                if not msg_id:
+                                    # Generate stable dedup key from sender + subject
+                                    import hashlib
+                                    dedup_input = f"{msg.get('from', {}).get('emailAddress', {}).get('address', '')}{msg.get('subject', '')}"
+                                    msg_id = f"gen_{hashlib.sha256(dedup_input.encode()).hexdigest()[:16]}"
+                                if await asyncio.to_thread(db_service.is_email_processed, msg_id):
                                     return 'seen'  # already handled — skip entirely
 
                                 # Convert Graph API message to candidate format
@@ -2777,6 +2782,9 @@ async def get_candidates(
     Use search= to filter by name, email, skills, or job category
     Use status= to filter by candidate status (e.g. Shortlisted, Reviewed)
     """
+    # Validate pagination bounds
+    page = max(1, page)
+    limit = max(1, min(500, limit))
     is_light = fields == 'light'
     # Create cache key
     cache_key = f"candidates_p{page}_l{limit}_c{job_category}_s{min_score}_q{search}_st{status}_f{fields}"
@@ -4146,6 +4154,11 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
     """
     try:
         filename = file.filename or "unknown.pdf"
+        # Sanitize filename: strip path components and restrict to safe characters
+        filename = os.path.basename(filename)
+        filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename)
+        if len(filename) > 255:
+            filename = filename[:255]
         ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
         if ext not in ('pdf', 'docx'):
             raise HTTPException(400, "Only PDF and DOCX files are supported.")
@@ -6044,9 +6057,13 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
             for msg in page:
                 try:
                     msg_id = msg.get('id', '') or msg.get('internetMessageId', '')
+                    if not msg_id:
+                        import hashlib
+                        dedup_input = f"{msg.get('from', {}).get('emailAddress', {}).get('address', '')}{msg.get('subject', '')}"
+                        msg_id = f"gen_{hashlib.sha256(dedup_input.encode()).hexdigest()[:16]}"
                     
                     # Fast dedup via in-memory set (loaded from email_processing_log)
-                    if msg_id and msg_id in processed_ids:
+                    if msg_id in processed_ids:
                         skipped_count += 1
                         continue
                     
@@ -7870,9 +7887,13 @@ async def smart_email_refetch(current_user: dict = Depends(require_auth)):
         for msg in all_messages:
             try:
                 msg_id = msg.get('id', '') or msg.get('internetMessageId', '')
+                if not msg_id:
+                    import hashlib
+                    dedup_input = f"{msg.get('from', {}).get('emailAddress', {}).get('address', '')}{msg.get('subject', '')}"
+                    msg_id = f"gen_{hashlib.sha256(dedup_input.encode()).hexdigest()[:16]}"
                 
                 # Check if already processed
-                if msg_id and await asyncio.to_thread(db_service.is_email_processed, msg_id):
+                if await asyncio.to_thread(db_service.is_email_processed, msg_id):
                     skipped_already_processed += 1
                     continue
                 
@@ -9710,10 +9731,16 @@ async def ai_smart_search(
     the best-matching candidates using semantic understanding.
     Scans the ENTIRE database using efficient pre-filtering.
     """
+    # Validate inputs
+    if not query or not query.strip():
+        raise HTTPException(400, "Query cannot be empty")
+    query = query.strip()[:2000]
+    top_n = max(1, min(100, top_n))
+    
     try:
-        # 1. Get ALL active candidates (lightweight for AI matching)
+        # 1. Get active candidates (lightweight for AI matching)
         candidates = await asyncio.to_thread(
-            db_service.get_candidates_lightweight, {}, 10000
+            db_service.get_candidates_lightweight, {}, 5000
         )
         if not candidates:
             return {"results": [], "total": 0, "query": query, "message": "No candidates in database"}
@@ -9723,7 +9750,10 @@ async def ai_smart_search(
             from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()
             if gemini_svc and gemini_svc.available:
-                ranked = await gemini_svc.rank_candidates_for_job(candidates, query, top_n)
+                ranked = await asyncio.wait_for(
+                    gemini_svc.rank_candidates_for_job(candidates, query, top_n),
+                    timeout=45
+                )
                 if ranked:
                     formatted = _format_search_results(ranked, candidates)
                     return {
@@ -9733,6 +9763,8 @@ async def ai_smart_search(
                         "source": "gemini",
                         "message": f"Found {len(formatted)} matches using Gemini AI search"
                     }
+        except asyncio.TimeoutError:
+            logger.warning("Gemini smart search timed out after 45s")
         except Exception as gemini_err:
             logger.warning(f"Gemini smart search failed: {gemini_err}")
 
@@ -9741,7 +9773,10 @@ async def ai_smart_search(
             from services.llm_service import get_llm_service
             llm_svc = await get_llm_service()
             if llm_svc and llm_svc.available:
-                ranked = await llm_svc.rank_candidates_for_job(candidates, query, top_n)
+                ranked = await asyncio.wait_for(
+                    llm_svc.rank_candidates_for_job(candidates, query, top_n),
+                    timeout=30
+                )
                 formatted = _format_search_results(ranked, candidates)
                 return {
                     "results": formatted,
@@ -9750,13 +9785,18 @@ async def ai_smart_search(
                     "source": "local_llm",
                     "message": f"Found {len(formatted)} matches using AI search"
                 }
+        except asyncio.TimeoutError:
+            logger.warning("LLM smart search timed out after 30s")
         except Exception as llm_err:
             logger.warning(f"LLM smart search failed: {llm_err}")
 
         # 4. Try matching engine (semantic / TF-IDF)
         try:
             matching_engine = MatchingEngine()
-            results = await matching_engine.match_candidates(query, candidates, top_n)
+            results = await asyncio.wait_for(
+                matching_engine.match_candidates(query, candidates, top_n),
+                timeout=20
+            )
             formatted = _format_search_results(results, candidates)
             return {
                 "results": formatted,
@@ -9765,6 +9805,8 @@ async def ai_smart_search(
                 "source": "semantic",
                 "message": f"Found {len(formatted)} matches using semantic search"
             }
+        except asyncio.TimeoutError:
+            logger.warning("Semantic search timed out after 20s")
         except Exception as sem_err:
             logger.warning(f"Semantic search failed: {sem_err}")
 

@@ -373,15 +373,22 @@ class JobMatchingEngine:
         candidate_lower = candidate_loc.lower()
         job_lower = job_loc.lower()
         
-        # Direct match
-        if job_lower in candidate_lower or candidate_lower in job_lower:
-            return {'score': 100, 'status': 'match', 'note': 'Location matches'}
+        # Exact or near-exact match (only when strings are meaningful length)
+        if len(job_lower) > 3 and len(candidate_lower) > 3:
+            if job_lower == candidate_lower:
+                return {'score': 100, 'status': 'match', 'note': 'Location matches'}
         
-        # Same country/region check (simplified)
+        # Word-overlap check
         candidate_parts = set(candidate_lower.replace(',', ' ').split())
         job_parts = set(job_lower.replace(',', ' ').split())
+        # Filter out very short words to avoid false matches
+        candidate_parts = {p for p in candidate_parts if len(p) > 2}
+        job_parts = {p for p in job_parts if len(p) > 2}
         
-        if candidate_parts & job_parts:
+        overlap = candidate_parts & job_parts
+        if overlap:
+            if len(overlap) >= 2 or any(len(w) > 4 for w in overlap):
+                return {'score': 100, 'status': 'match', 'note': 'Location matches'}
             return {'score': 75, 'status': 'same_region', 'note': 'Same general area'}
         
         return {'score': 30, 'status': 'different', 'note': 'Different location - relocation required'}

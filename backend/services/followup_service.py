@@ -505,8 +505,9 @@ class AutomatedFollowUpService:
         if condition == 'has_email':
             return bool(enrollment.get('candidate_email'))
         
-        # Default: execute
-        return True
+        # Unknown condition — fail safely to prevent unintended execution
+        logger.warning(f"Unknown step condition: {condition}")
+        return False
     
     async def _execute_step(self, step: Dict, enrollment: Dict) -> Dict:
         """Execute a campaign step"""

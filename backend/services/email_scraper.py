@@ -1137,7 +1137,11 @@ class EmailScraperService:
                     # Get email body
                     if content_type == "text/plain" and "attachment" not in content_disposition:
                         try:
-                            body += part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                            part_text = part.get_payload(decode=True).decode('utf-8', errors='ignore')
+                            if part_text:
+                                if body:
+                                    body += "\n"
+                                body += part_text
                         except Exception:
                             pass
                     

@@ -603,11 +603,18 @@ class DatabaseService:
             cursor.execute("SELECT id FROM candidates WHERE email_hash = ?", (email_hash,))
             existing = cursor.fetchone()
             if existing:
-                # Candidate exists — delegate to update (which does smart merge)
-                candidate['id'] = existing[0]
-                logger.info(f"📝 Candidate exists, merging: {candidate.get('name', 'Unknown')} ({candidate_email[:40]})")
+                # Candidate exists — use smart merge to preserve existing data
+                existing_id = existing[0]
                 conn.close()
-                return self.update_candidate(candidate)
+                existing_data = self.get_candidate(existing_id)
+                if existing_data:
+                    merged = self.smart_merge_candidate(existing_data, candidate)
+                    merged['id'] = existing_id
+                    logger.info(f"📝 Candidate exists, smart-merging: {candidate.get('name', 'Unknown')} ({candidate_email[:40]})")
+                    return self.update_candidate(merged)
+                else:
+                    candidate['id'] = existing_id
+                    return self.update_candidate(candidate)
             
             # Handle education - ensure it's JSON string
             education_data = candidate.get('education', '[]')
@@ -1339,6 +1346,13 @@ class DatabaseService:
                 for candidate in batch:
                     # Sanitize before write
                     candidate = sanitize_candidate_data(candidate)
+                    
+                    # Block Indeed relay / garbage emails
+                    candidate_email = candidate.get('email', '')
+                    if self.is_blocked_email(candidate_email):
+                        logger.debug(f"🚫 Batch: blocked Indeed relay email: {candidate_email[:50]}")
+                        continue
+                    
                     email_hash = self.email_to_hash(candidate['email'])
                     
                     # Check if exists
@@ -1478,7 +1492,7 @@ class DatabaseService:
                 if not rows:
                     break
                 
-                yield [self._row_to_candidate(row) for row in rows]
+                yield [self._row_to_candidate(row, check_resume=False) for row in rows]
                 offset += batch_size
         finally:
             conn.close()
@@ -1551,7 +1565,7 @@ class DatabaseService:
                 LIMIT 5000
             """, (since_date,))
             rows = cursor.fetchall()
-            return [self._row_to_candidate(row) for row in rows]
+            return [self._row_to_candidate(row, check_resume=False) for row in rows]
         finally:
             conn.close()
     
@@ -2083,7 +2097,7 @@ class DatabaseService:
             """, (job_id,))
             
             rows = cursor.fetchall()
-            return [self._row_to_candidate(row) for row in rows]
+            return [self._row_to_candidate(row, check_resume=False) for row in rows]
         finally:
             conn.close()
     

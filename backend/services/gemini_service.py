@@ -543,8 +543,13 @@ def _extract_location_from_text(text: str) -> list:
 
 
 def _safe_int_experience(val) -> int:
-    """Safely convert experience to int, handling strings and None."""
+    """Safely convert experience to int, handling strings like '5+', '3-5', and None."""
     try:
+        if isinstance(val, str):
+            val = val.replace('+', '').replace('years', '').replace('yrs', '').strip()
+            if '-' in val:
+                parts = val.split('-')
+                val = parts[0].strip()  # use lower bound
         return int(float(val or 0))
     except (ValueError, TypeError):
         return 0
@@ -627,6 +632,7 @@ def _repair_json(text: str) -> Optional[Dict]:
         except json.JSONDecodeError:
             pass
 
+    logger.debug(f"_repair_json: all strategies failed for text ({len(text)} chars): {text[:200]}")
     return None
 
 
@@ -744,6 +750,10 @@ class GeminiService:
                 contents=prompt,
                 config=gen_config,
             )
+            # Guard against empty/blocked responses
+            if not response.candidates or not response.text:
+                logger.warning(f"Gemini returned empty response (blocked or error)")
+                return ""
             result = response.text.strip()
             elapsed = time.time() - start
             self._request_count += 1
@@ -751,7 +761,7 @@ class GeminiService:
             # Log token usage and estimated cost for monitoring
             usage = getattr(response, 'usage_metadata', None)
             input_tokens = getattr(usage, 'prompt_token_count', 0) or 0
-            output_tokens = getattr(usage, 'candidates_token_count', 0) or 0
+            output_tokens = getattr(usage, 'candidates_token_count', None) or getattr(usage, 'output_token_count', 0) or 0
             thinking_used = getattr(usage, 'thoughts_token_count', 0) or 0
             # Cost estimate: Gemini 2.5 Flash — $0.15/1M input, $0.60/1M output, $3.50/1M thinking
             est_cost = (input_tokens * 0.15 + output_tokens * 0.60 + thinking_used * 3.50) / 1_000_000
@@ -981,7 +991,7 @@ CRITICAL RULES:
             return None
 
         if result and isinstance(result, dict):
-            if not result.get('is_candidate_email', True):
+            if result.get('is_candidate_email') is False:
                 return None
             result['source'] = source
             # Validate category
@@ -1070,7 +1080,9 @@ IMPORTANT for quality_score:
 
         if result:
             # Normalize score — prefer quality_score, then match_score
-            score = result.get('quality_score') or result.get('match_score')
+            score = result.get('quality_score')
+            if score is None or score is False:
+                score = result.get('match_score')
             if score is None:
                 # Calculate a reasonable fallback from extracted data
                 skills_count = len(result.get('skills', []))
@@ -1712,6 +1724,9 @@ Return JSON:
                     required_min_experience = int(groups[10])
                     required_max_experience = int(groups[11])
                 logger.info(f"Experience range detected: {required_min_experience}-{required_max_experience} years")
+                # Ensure min <= max
+                if required_min_experience > required_max_experience:
+                    required_min_experience, required_max_experience = required_max_experience, required_min_experience
             else:
                 _exp_match = EXPERIENCE_PATTERN.search(message)
                 required_min_experience = int(_exp_match.group(1)) if _exp_match else 0
@@ -1954,7 +1969,9 @@ Return JSON:
                     candidate_text = f"{name} {skills_str} {category} {subcategory} {wh_full_text}".lower()
                     neg_hit = False
                     for neg in negative_terms:
-                        if neg in candidate_text:
+                        # Use word boundary matching to avoid false positives
+                        # e.g. "marketing" should not match "supermarket"
+                        if re.search(r'\b' + re.escape(neg) + r'\b', candidate_text):
                             neg_hit = True
                             break
                     if neg_hit:
@@ -2007,14 +2024,14 @@ Return JSON:
                     loc_words = set(re.sub(r'[^\w\s]', ' ', location).split())
                     # Check for exact city/term match first (highest priority)
                     for lt in required_location_terms:
-                        if lt in location or lt in loc_words:
+                        if lt in loc_words or (len(lt) > 3 and lt in location):
                             location_matched = True
                             location_exact_city = True
                             break
                     # If not exact, check expanded aliases (same country/region)
                     if not location_matched:
                         for lt in expanded_location_terms:
-                            if lt in location or lt in loc_words:
+                            if lt in loc_words or (len(lt) > 3 and lt in location):
                                 location_matched = True
                                 break
                     if location_exact_city:
