@@ -31,7 +31,7 @@ STOP_WORDS = frozenset({
     'position', 'role', 'job', 'hiring', 'work', 'working', 'prefer', 'preferred',
     'should', 'must', 'minimum', 'experience', 'years', 'year', 'office',
     # Common verbs and noise words that don't carry search signal
-    'worked', 'works', 'based', 'wanted', 'looking', 'currently', 'previously',
+    'worked', 'works', 'based', 'wanted', 'currently', 'previously',
     'between', 'company', 'companies', 'organization', 'organisations', 'organizations',
     'also', 'would', 'like', 'could', 'able', 'well', 'very', 'much', 'more',
     'within', 'at', 'their', 'them', 'they', 'he', 'she', 'his', 'her', 'it',
@@ -39,7 +39,77 @@ STOP_WORDS = frozenset({
     'only', 'than', 'just', 'most', 'those', 'such', 'will', 'one', 'two',
     'had', 'where', 'when', 'there', 'here', 'make', 'made', 'over', 'under',
     'around', 'through', 'during', 'after', 'before', 'while', 'already',
+    'sector', 'field', 'domain', 'background', 'relevant', 'skills',
+    'strong', 'knowledge', 'proficiency', 'expertise', 'familiar',
 })
+
+# ── Known job role titles — used to detect role intent in queries ──
+# When these appear in a query, they indicate the user is searching for a specific role
+ROLE_TITLES = frozenset({
+    # Management
+    'manager', 'director', 'head', 'lead', 'supervisor', 'coordinator', 'chief',
+    'vice president', 'vp', 'cto', 'ceo', 'cfo', 'coo', 'cio', 'cmo',
+    # Tech roles
+    'developer', 'engineer', 'architect', 'programmer', 'analyst', 'administrator',
+    'devops', 'sre', 'dba', 'data scientist', 'data engineer', 'data analyst',
+    'frontend developer', 'backend developer', 'fullstack developer', 'full stack developer',
+    'software engineer', 'web developer', 'mobile developer', 'cloud engineer',
+    'machine learning engineer', 'ai engineer', 'qa engineer', 'test engineer',
+    'security engineer', 'network engineer', 'systems engineer', 'platform engineer',
+    # Business roles
+    'accountant', 'consultant', 'specialist', 'executive', 'officer', 'associate',
+    'representative', 'advisor', 'strategist', 'planner', 'controller',
+    # Sales & Marketing
+    'sales manager', 'account manager', 'business development manager', 'marketing manager',
+    'sales executive', 'account executive', 'sales representative', 'relationship manager',
+    'brand manager', 'product manager', 'growth manager', 'regional manager',
+    # HR roles
+    'recruiter', 'hr manager', 'hr executive', 'talent acquisition',
+    # Design roles
+    'designer', 'ui designer', 'ux designer', 'graphic designer', 'product designer',
+    # Finance roles
+    'auditor', 'financial analyst', 'treasury manager', 'risk analyst',
+    # Operations
+    'operations manager', 'project manager', 'program manager', 'delivery manager',
+    'supply chain manager', 'logistics manager', 'procurement manager', 'warehouse manager',
+    # Healthcare
+    'nurse', 'doctor', 'physician', 'pharmacist', 'therapist', 'technician',
+    # Education
+    'teacher', 'professor', 'instructor', 'trainer', 'tutor', 'lecturer',
+    # General
+    'intern', 'trainee', 'assistant', 'secretary', 'receptionist', 'clerk',
+    'driver', 'chef', 'electrician', 'plumber', 'mechanic', 'welder',
+})
+
+# ── Industry/domain keywords — detect when query asks for a specific industry ──
+INDUSTRY_KEYWORDS = {
+    'it': {'information technology', 'software', 'technology', 'tech', 'it services', 'it company', 'it sector'},
+    'it services': {'information technology', 'software', 'technology services', 'managed services'},
+    'banking': {'bank', 'financial services', 'fintech', 'finance', 'nbfc'},
+    'fintech': {'financial technology', 'banking', 'payments', 'digital banking'},
+    'healthcare': {'hospital', 'medical', 'pharma', 'pharmaceutical', 'clinical', 'health'},
+    'pharmaceutical': {'pharma', 'drug', 'biotech', 'life sciences'},
+    'manufacturing': {'factory', 'production', 'industrial', 'plant', 'assembly'},
+    'retail': {'e-commerce', 'ecommerce', 'store', 'fmcg', 'consumer goods'},
+    'ecommerce': {'e-commerce', 'online retail', 'marketplace', 'digital commerce'},
+    'telecom': {'telecommunications', 'telco', 'mobile', 'network operator'},
+    'consulting': {'consultancy', 'advisory', 'management consulting', 'professional services'},
+    'construction': {'building', 'civil engineering', 'infrastructure', 'real estate'},
+    'real estate': {'property', 'realty', 'construction', 'development'},
+    'education': {'university', 'school', 'college', 'academic', 'training'},
+    'media': {'advertising', 'entertainment', 'publishing', 'digital media'},
+    'automotive': {'automobile', 'vehicle', 'car', 'ev', 'electric vehicle'},
+    'logistics': {'supply chain', 'transportation', 'freight', 'shipping', 'warehousing'},
+    'insurance': {'underwriting', 'actuarial', 'claims', 'reinsurance'},
+    'oil and gas': {'petroleum', 'energy', 'upstream', 'downstream', 'refinery'},
+    'energy': {'oil and gas', 'renewable', 'solar', 'wind', 'power'},
+    'hospitality': {'hotel', 'restaurant', 'tourism', 'catering', 'food service'},
+    'government': {'public sector', 'civil service', 'municipal'},
+    'ngo': {'non-profit', 'nonprofit', 'social enterprise', 'foundation'},
+    'startup': {'start-up', 'early stage', 'seed stage', 'growth stage'},
+    'bpo': {'call center', 'outsourcing', 'ites', 'contact center'},
+    'aviation': {'airline', 'airport', 'aerospace', 'flight'},
+}
 
 LOCATION_ALIASES = {
     # Country / region aliases
@@ -1441,11 +1511,26 @@ Return JSON:
             'who knows', 'who has', 'who can', 'working in', 'worked in',
             'having', 'holding', 'certified in', 'speaks', 'speaking',
             'nationality', 'passport', 'visa', 'notice period',
+            # Extended role titles for better classification
+            'sales', 'marketing', 'finance', 'accounting', 'hr',
+            'recruiter', 'programmer', 'tester', 'qa', 'devops', 'data',
+            'product', 'project', 'operations', 'logistics', 'procurement',
+            'auditor', 'receptionist', 'secretary', 'clerk', 'pharmacist',
+            'chef', 'electrician', 'plumber', 'mechanic', 'welder',
+            'intern', 'trainee', 'fresher', 'graduate',
+            # Industry terms that imply candidate search
+            'it company', 'it service', 'banking sector', 'healthcare',
+            'manufacturing', 'retail', 'ecommerce', 'startup',
         ]
         has_search_signal = any(w in msg for w in search_overrides)
         
-        # Check if any known SKILL is mentioned — strong search signal even without verbs
+        # Build word set once for all signal checks
         msg_word_set = set(re.sub(r'[^\w\s]', ' ', msg).split())
+        
+        # Check if any known ROLE TITLE is mentioned — strong search signal
+        has_role_signal = bool(msg_word_set & ROLE_TITLES) or any(r in msg for r in ROLE_TITLES if ' ' in r)
+        
+        # Check if any known SKILL is mentioned — strong search signal even without verbs
         skill_keywords_in_msg = msg_word_set & set(SKILL_SYNONYMS.keys())
         has_skill_signal = len(skill_keywords_in_msg) >= 1
         
@@ -1473,7 +1558,7 @@ Return JSON:
             'how to assess', 'screening tips', 'evaluation criteria',
             'what to look for', 'hiring tips', 'recruitment tips',
         ]
-        if any(sig in msg for sig in advice_signals) and not (has_search_signal or has_location_signal or has_skill_signal):
+        if any(sig in msg for sig in advice_signals) and not (has_search_signal or has_location_signal or has_skill_signal or has_role_signal):
             return 'advice'
 
         # Complex multi-criteria prompts → always 'search' (these are job spec prompts)
@@ -1485,8 +1570,8 @@ Return JSON:
         if criteria_count >= 2:
             return 'search'
         
-        # If any strong search signal (location, seniority, experience, specific skill), route to search
-        if has_location_signal or has_seniority or has_experience or has_skill_signal:
+        # If any strong search signal (location, seniority, experience, skill, role), route to search
+        if has_location_signal or has_seniority or has_experience or has_skill_signal or has_role_signal:
             return 'search'
 
         # Default: candidate search
@@ -1555,6 +1640,10 @@ Return JSON:
         required_max_experience = 999  # No upper limit by default
         negative_terms: set = set()
         required_seniority: Optional[str] = None
+        detected_roles: list = []
+        detected_industries: list = []
+        or_alternatives: list = []
+        query_phrases: set = set()
         
         # ── Server-side count extraction from message (override frontend default) ──
         _count_match = COUNT_PATTERN.search(message)
@@ -1567,17 +1656,38 @@ Return JSON:
         if candidates_data:
             total_scanned = len(candidates_data)
             
-            # Smart pre-filter: score each candidate against query keywords
+            # ══════════════════════════════════════════════════════════
+            # INTELLIGENT QUERY UNDERSTANDING ENGINE
+            # ══════════════════════════════════════════════════════════
+            # Step 1: Extract raw keywords
+            # Step 2: Detect roles, skills, industries, and modifiers
+            # Step 3: Build weighted keyword map (role > skill > generic)
+            # Step 4: Detect query structure (OR alternatives, phrases, negations)
+            # Step 5: Score candidates with weighted multi-signal matching
+            
             scored_candidates = []
             query_tokens = set(re.sub(r'[^\w\s]', ' ', query_lower).split())
             keywords = query_tokens - STOP_WORDS
             
-            # Detect explicit location requirement using shared helpers
+            # ── IT/it case-sensitive disambiguation ──
+            # "IT" (uppercase in original) = Information Technology industry
+            # "it" (lowercase/pronoun) = noise, already in STOP_WORDS
+            original_words = message.split()
+            has_explicit_IT = any(w == 'IT' for w in original_words)
+            # Also detect "IT" in context: "IT service", "IT company", "IT sector"
+            has_IT_context = bool(re.search(r'\bIT\s+(?:service|company|sector|industry|firm|consulting|solutions|infrastructure|support|operations)', message))
+            
+            if has_explicit_IT or has_IT_context:
+                # Re-add 'it' as a keyword since user meant Information Technology
+                keywords.add('it')
+                logger.info("IT (Information Technology) detected from case/context — added to keywords")
+            
+            # ── Detect explicit location requirement using shared helpers ──
             required_location_terms = _extract_location_from_text(message)
             expanded_location_terms = _expand_location_terms(required_location_terms)
             has_location_requirement = len(expanded_location_terms) > 0
             
-            # Detect experience requirement (both min and range/max)
+            # ── Detect experience requirement (both min and range/max) ──
             _range_match = EXPERIENCE_RANGE_PATTERN.search(message)
             if _range_match:
                 groups = _range_match.groups()
@@ -1629,6 +1739,82 @@ Return JSON:
             _seniority_match = SENIORITY_PATTERN.search(message)
             required_seniority = _seniority_match.group(1).lower().strip() if _seniority_match else None
             
+            # ══════════════════════════════════════════════════════════
+            # ROLE DETECTION — Identify job roles in the query
+            # ══════════════════════════════════════════════════════════
+            detected_roles = []
+            query_clean_for_roles = re.sub(r'[^\w\s]', ' ', query_lower)
+            # Check multi-word role titles first (longest match wins)
+            for role in sorted(ROLE_TITLES, key=len, reverse=True):
+                if ' ' in role and role in query_clean_for_roles:
+                    detected_roles.append(role)
+                    # Remove from query to avoid double-matching individual words
+                    query_clean_for_roles = query_clean_for_roles.replace(role, ' ')
+            # Then check single-word role titles
+            remaining_words = set(query_clean_for_roles.split()) - STOP_WORDS
+            for role in ROLE_TITLES:
+                if ' ' not in role and role in remaining_words:
+                    detected_roles.append(role)
+            if detected_roles:
+                logger.info(f"🎯 Detected roles: {detected_roles}")
+            
+            # ══════════════════════════════════════════════════════════
+            # INDUSTRY DETECTION — Identify industry/domain context
+            # ══════════════════════════════════════════════════════════
+            detected_industries = []
+            for ind_key, ind_syns in INDUSTRY_KEYWORDS.items():
+                # Check the keyword itself
+                if ind_key in query_lower:
+                    detected_industries.append(ind_key)
+                    continue
+                # Check multi-word variants
+                for syn in ind_syns:
+                    if syn in query_lower:
+                        detected_industries.append(ind_key)
+                        break
+            # Special: IT detection from uppercase
+            if (has_explicit_IT or has_IT_context) and 'it' not in detected_industries:
+                detected_industries.append('it')
+            if detected_industries:
+                logger.info(f"🏢 Detected industries: {detected_industries}")
+            
+            # Build industry expansion terms for matching
+            industry_match_terms = set()
+            for ind in detected_industries:
+                industry_match_terms.add(ind)
+                if ind in INDUSTRY_KEYWORDS:
+                    industry_match_terms.update(INDUSTRY_KEYWORDS[ind])
+            
+            # ══════════════════════════════════════════════════════════
+            # WEIGHTED KEYWORD MAP — Assign importance weights
+            # ══════════════════════════════════════════════════════════
+            # role_keywords: highest weight (what job they're looking for)
+            # skill_keywords: high weight (technical requirements)
+            # industry_keywords: medium weight (domain context)
+            # generic_keywords: lower weight (general terms)
+            role_keywords = set()
+            skill_keywords = set()
+            generic_keywords = set()
+            
+            for kw in keywords:
+                # Skip location terms — they're handled separately
+                if has_location_requirement and kw in expanded_location_terms:
+                    continue
+                # Check if it's a known role
+                if kw in ROLE_TITLES or any(kw in role for role in detected_roles):
+                    role_keywords.add(kw)
+                # Check if it's a known skill/technology
+                elif kw in SKILL_SYNONYMS:
+                    skill_keywords.add(kw)
+                else:
+                    generic_keywords.add(kw)
+            
+            # Also add detected multi-word roles as skill_keywords for matching
+            for role in detected_roles:
+                for word in role.split():
+                    if word not in STOP_WORDS and len(word) >= 2:
+                        role_keywords.add(word)
+            
             # Expand keywords with location aliases
             expanded_keywords = set(keywords)
             for alias, expansions in LOCATION_ALIASES.items():
@@ -1636,14 +1822,16 @@ Return JSON:
                     expanded_keywords.update(expansions)
             
             # Expand keywords with skill synonyms for broader pre-filter recall
-            # e.g. if user says "react", also score candidates with "reactjs", "react.js"
-            # BUT: don't expand broad industry terms like "it" to avoid drowning signal
-            BROAD_EXPANSION_SKIP = {'it', 'cloud', 'api', 'database', 'frontend', 'backend',
+            # BUT: don't expand broad industry terms to avoid drowning signal
+            BROAD_EXPANSION_SKIP = {'cloud', 'api', 'database', 'frontend', 'backend',
                                     'fullstack', 'full stack', 'security', 'qa', 'testing'}
+            # Also skip expanding 'it' unless it was explicitly detected as IT (industry)
+            if not (has_explicit_IT or has_IT_context):
+                BROAD_EXPANSION_SKIP.add('it')
             synonym_expanded = set()
             for kw in list(expanded_keywords):
                 if kw in BROAD_EXPANSION_SKIP:
-                    continue  # Skip overly broad terms that would expand to hundreds of candidates
+                    continue
                 syns = SKILL_SYNONYMS.get(kw, set())
                 if syns:
                     for syn in syns:
@@ -1653,10 +1841,9 @@ Return JSON:
             
             # ── Detect OR-separated role alternatives ──
             # "sales or account manager" → ["sales", "account manager"] as alternative roles
-            # These get extra phrase weight since the user explicitly listed them
             or_alternatives = []
             or_pattern = re.compile(
-                r'\b(\w+(?:\s+\w+)?)\s+or\s+(\w+(?:\s+\w+){0,2})\b',
+                r'\b([\w]+(?:\s+[\w]+)?)\s+or\s+([\w]+(?:\s+[\w]+){0,2})\b',
                 re.IGNORECASE
             )
             for m in or_pattern.finditer(query_lower):
@@ -1671,8 +1858,6 @@ Return JSON:
                 logger.info(f"OR-alternatives detected: {or_alternatives}")
                     
             # ── Build multi-word phrases from query for phrase matching ──
-            # e.g. "data science" should match as a phrase, not just "data" + "science"
-            # Also include 3-word phrases for "account manager", "it service company"
             query_clean = re.sub(r'[^\w\s]', ' ', query_lower)
             query_words_all = query_clean.split()
             query_words_ordered = [w for w in query_words_all if w not in STOP_WORDS and len(w) >= 2]
@@ -1682,8 +1867,7 @@ Return JSON:
                 phrase = f"{query_words_ordered[pi]} {query_words_ordered[pi+1]}"
                 if phrase in query_lower:
                     query_phrases.add(phrase)
-            # Also build 2-word and 3-word phrases from ALL words (including stop words)
-            # This catches "account manager", "it service", "it services"
+            # 2-word and 3-word phrases from ALL words (catches "account manager", "it service")
             for pi in range(len(query_words_all) - 1):
                 p2 = f"{query_words_all[pi]} {query_words_all[pi+1]}"
                 if p2 in query_lower and any(w not in STOP_WORDS for w in [query_words_all[pi], query_words_all[pi+1]]):
@@ -1692,10 +1876,18 @@ Return JSON:
                 p3 = f"{query_words_all[pi]} {query_words_all[pi+1]} {query_words_all[pi+2]}"
                 if p3 in query_lower and sum(1 for w in p3.split() if w not in STOP_WORDS) >= 2:
                     query_phrases.add(p3)
-            # Add OR alternatives as high-priority phrases
+            # Add OR alternatives and detected roles as high-priority phrases
             query_phrases.update(or_alternatives)
+            query_phrases.update(detected_roles)
             if query_phrases:
                 logger.info(f"Phrase matching active: {query_phrases}")
+            
+            # Log the full query analysis
+            logger.info(
+                f"🧠 Query Analysis: roles={detected_roles}, skills={list(skill_keywords)[:6]}, "
+                f"industries={detected_industries}, generic={list(generic_keywords)[:4]}, "
+                f"or_alts={or_alternatives}, phrases={list(query_phrases)[:6]}"
+            )
             
             for idx, c in enumerate(candidates_data):
                 relevance = 0
@@ -1848,142 +2040,211 @@ Return JSON:
                             relevance -= 20  # Nationality mismatch when explicitly requested
                 
                 # ── Multi-word phrase matching (bonus on top of individual keyword scores) ──
-                # Phrases carry MUCH higher weight than individual keywords because
-                # they indicate structured intent (e.g. "account manager", "it services")
+                # Phrases and OR-alternatives carry MUCH higher weight than individual keywords
                 all_candidate_text = f"{skills_str} {wh_full_text} {summary} {category} {subcategory} {job_applied_for} {edu_text} {certs_text} {resume_text[:500]}"
                 or_alt_matched = False
+                role_phrase_matched = False
                 for phrase in query_phrases:
                     is_or_alt = phrase in or_alternatives
-                    phrase_boost = 30 if is_or_alt else 15  # OR alternatives get 2x boost
+                    is_role = phrase in detected_roles
+                    # Role phrases and OR alternatives get massive boost
+                    if is_or_alt:
+                        phrase_boost = 35
+                    elif is_role:
+                        phrase_boost = 30
+                    else:
+                        phrase_boost = 15
+                    
                     if phrase in skills_str:
                         relevance += phrase_boost
                         if is_or_alt: or_alt_matched = True
+                        if is_role: role_phrase_matched = True
                     if phrase in wh_full_text:
                         relevance += phrase_boost
                         if is_or_alt: or_alt_matched = True
+                        if is_role: role_phrase_matched = True
                     if phrase in summary:
                         relevance += int(phrase_boost * 0.7)
                         if is_or_alt: or_alt_matched = True
+                        if is_role: role_phrase_matched = True
                     if phrase in category or phrase in subcategory:
                         relevance += phrase_boost
                         if is_or_alt: or_alt_matched = True
+                        if is_role: role_phrase_matched = True
                     if phrase in job_applied_for:
                         relevance += phrase_boost
                         if is_or_alt: or_alt_matched = True
+                        if is_role: role_phrase_matched = True
                     if phrase in edu_text:
                         relevance += 8
                     if phrase in certs_text:
                         relevance += 10
-                # If user gave OR alternatives but NONE matched, penalize
+                    # Check resume text for phrase match too (weaker)
+                    if phrase in resume_text:
+                        relevance += 8
+                        if is_or_alt: or_alt_matched = True
+                        if is_role: role_phrase_matched = True
+                
+                # Penalties for missing critical signals
                 if or_alternatives and not or_alt_matched:
-                    relevance -= 20
+                    relevance -= 25  # User gave OR alternatives but NONE matched
+                if detected_roles and not role_phrase_matched:
+                    # Check single-word role matches as fallback
+                    any_role_word = False
+                    for role in detected_roles:
+                        for rw in role.split():
+                            if rw in all_candidate_text:
+                                any_role_word = True
+                                break
+                    if not any_role_word:
+                        relevance -= 30  # Completely wrong role — heavy penalty
                 
-                # ── Industry/company-type matching ──
-                # When query mentions industry context like "IT service company",
-                # check work history companies against that context
-                industry_terms = set()
-                for phrase in query_phrases:
-                    # Phrases containing "service", "services", "consulting", "technology" signal industry
-                    if any(ind in phrase for ind in ['service', 'consulting', 'technology', 'software', 'fintech', 'healthcare', 'manufacturing', 'banking', 'telecom', 'retail', 'media', 'pharma']):
-                        industry_terms.update(phrase.split())
-                if industry_terms:
-                    industry_terms -= STOP_WORDS
+                # ── Industry/domain matching ──
+                # When user mentions industry (IT service, banking, healthcare), check
+                # work history companies AND candidate category/summary
+                if detected_industries:
+                    industry_score = 0
                     comp_text = ' '.join(wh_companies)
-                    ind_match = sum(1 for t in industry_terms if t in comp_text or t in summary)
-                    relevance += ind_match * 10
+                    combined_text = f"{comp_text} {category} {subcategory} {summary}"
+                    for term in industry_match_terms:
+                        if len(term) >= 2 and term in combined_text:
+                            industry_score += 8
+                    # Cap industry bonus at 30
+                    relevance += min(industry_score, 30)
+                    # Penalty if industry specified but no match in company names
+                    if industry_score == 0 and comp_text:
+                        relevance -= 10  # Not in the right industry
                 
-                # ── Job title matching — high value signal for role-specific queries ──
-                # Check if any work history title closely matches the query role
+                # ── Job title matching — HIGHEST value signal ──
+                # Check if work history titles match detected roles or OR alternatives
                 role_title_bonus = 0
                 for title in wh_titles:
                     title_words = set(title.split())
+                    # Check against detected roles (multi-word match)
+                    for role in detected_roles:
+                        if role in title:
+                            role_title_bonus = max(role_title_bonus, 40)  # Exact role in title
+                    # Check OR alternatives against titles
+                    for alt in or_alternatives:
+                        if alt in title:
+                            role_title_bonus = max(role_title_bonus, 40)
+                    # Check expanded keyword overlap with title
                     title_kw_overlap = len(title_words & expanded_keywords)
-                    if title_kw_overlap >= 2:
+                    role_kw_overlap = len(title_words & role_keywords)
+                    if role_kw_overlap >= 2:
+                        role_title_bonus = max(role_title_bonus, 35)
+                    elif role_kw_overlap == 1:
+                        role_title_bonus = max(role_title_bonus, 20)
+                    elif title_kw_overlap >= 2:
                         role_title_bonus = max(role_title_bonus, 25)
                     elif title_kw_overlap == 1 and any(kw in title for kw in expanded_keywords if len(kw) >= 4):
                         role_title_bonus = max(role_title_bonus, 15)
-                    # Check OR alternatives against job titles specifically
-                    for alt in or_alternatives:
-                        if alt in title:
-                            role_title_bonus = max(role_title_bonus, 35)  # Very strong: title matches an OR alternative
                 relevance += role_title_bonus
                 
-                # Score based on keyword matches (word-boundary, not substring)
+                # ── WEIGHTED keyword scoring ──
+                # Role keywords (25 pts match / -8 pts miss)
+                # Skill keywords (20 pts match / -5 pts miss)  
+                # Generic keywords (10 pts match / -3 pts miss)
                 for kw in expanded_keywords:
                     if len(kw) < 2:
                         continue
-                    # Skip location keywords from normal scoring — handled above
+                    # Skip location keywords — handled separately
                     if has_location_requirement and kw in expanded_location_terms:
                         continue
-                    # Also check skill synonyms
+                    
+                    # Determine weight tier
+                    if kw in role_keywords:
+                        hit_weight = 25
+                        miss_penalty = -8
+                    elif kw in skill_keywords or kw in SKILL_SYNONYMS:
+                        hit_weight = 20
+                        miss_penalty = -5
+                    else:
+                        hit_weight = 10
+                        miss_penalty = -3
+                    
                     kw_synonyms = SKILL_SYNONYMS.get(kw, set())
-                    # Skills: check each skill individually with word matching + synonyms
-                    matched_skill = False
+                    matched_anywhere = False
+                    
+                    # Skills check (highest signal)
                     for s in skills:
                         s_words = set(re.sub(r'[^\w\s]', ' ', s).split())
                         if kw in s_words or kw == s:
-                            relevance += 20
-                            matched_skill = True
+                            relevance += hit_weight
+                            matched_anywhere = True
                             break
-                        # Check synonyms (e.g. 'ml' matches 'machine learning')
                         if kw_synonyms and (kw_synonyms & s_words or s in kw_synonyms):
-                            relevance += 18
-                            matched_skill = True
+                            relevance += int(hit_weight * 0.9)
+                            matched_anywhere = True
                             break
-                    # Category/subcategory: word match (using expanded cat_words)
-                    if kw in cat_words:
-                        relevance += 15
-                    # Also check category synonym match (e.g. query "finance" matches category "accounting")
-                    if kw_synonyms and (kw_synonyms & cat_words):
-                        relevance += 12
-                    # General location keyword match (only when no explicit requirement)
-                    if not has_location_requirement and kw in location:
-                        relevance += 15
-                    if kw in name.split():
-                        relevance += 25  # Direct name search
                     
-                    # ── Work history scoring (job titles + company names) ──
+                    # Category/subcategory
+                    if kw in cat_words:
+                        relevance += int(hit_weight * 0.75)
+                        matched_anywhere = True
+                    elif kw_synonyms and (kw_synonyms & cat_words):
+                        relevance += int(hit_weight * 0.6)
+                        matched_anywhere = True
+                    
+                    # Direct name search (always high)
+                    if kw in name.split():
+                        relevance += 25
+                        matched_anywhere = True
+                    
+                    # Work history (titles + companies)
                     wh_words = set(wh_full_text.split())
                     if kw in wh_words:
-                        relevance += 15  # Strong signal — keyword in actual job history
-                    elif kw_synonyms:
-                        if kw_synonyms & wh_words:
-                            relevance += 12
-                    # Also check if keyword appears as substring in titles (e.g. "sales" in "sales manager")
-                    if not (kw in wh_words):
+                        relevance += int(hit_weight * 0.75)
+                        matched_anywhere = True
+                    elif kw_synonyms and (kw_synonyms & wh_words):
+                        relevance += int(hit_weight * 0.6)
+                        matched_anywhere = True
+                    elif not matched_anywhere:
+                        # Substring check in titles (e.g. "sales" in "sales manager")
                         for title in wh_titles:
                             if kw in title:
-                                relevance += 10
+                                relevance += int(hit_weight * 0.5)
+                                matched_anywhere = True
                                 break
                     
-                    # ── Education scoring ──
+                    # Job applied for (strong signal)
+                    if job_applied_for and kw in set(job_applied_for.split()):
+                        relevance += int(hit_weight * 0.9)
+                        matched_anywhere = True
+                    
+                    # Summary
+                    if kw in set(summary.split()):
+                        relevance += int(hit_weight * 0.5)
+                        matched_anywhere = True
+                    
+                    # Location keyword (only when no explicit location requirement)
+                    if not has_location_requirement and kw in location:
+                        relevance += 15
+                        matched_anywhere = True
+                    
+                    # Education
                     if edu_text and kw in set(edu_text.split()):
                         relevance += 8
+                        matched_anywhere = True
                     
-                    # ── Certification scoring ──
+                    # Certifications
                     if certs_text and kw in set(certs_text.split()):
                         relevance += 10
+                        matched_anywhere = True
                     
-                    # Summary: word match — increased weight (summary is rich text)
-                    if kw in set(summary.split()):
-                        relevance += 12
+                    # Resume text (fallback)
+                    if not matched_anywhere and resume_text and kw in set(resume_text.split()):
+                        relevance += 6
+                        matched_anywhere = True
                     
-                    # ── Job applied for ── (strong signal — they applied for a matching role)
-                    if job_applied_for and kw in set(job_applied_for.split()):
-                        relevance += 18
-                    
-                    # ── Resume text deep search (fallback for info not yet in structured fields) ──
-                    if resume_text and kw in set(resume_text.split()):
-                        relevance += 6  # Lower weight — raw text is noisy but catches missing fields
-                    
-                    # ── Language match ── (when user asks for specific language speakers)
+                    # Language match
                     if langs_text and kw in set(langs_text.split()):
                         relevance += 15
+                        matched_anywhere = True
                     
-                    # ── If keyword matched nowhere at all, penalty to de-rank irrelevant candidates ──
-                    all_text_words = set(summary.split()) | cat_words | wh_words | set(skills_str.split()) | set(resume_text.split()[:200])
-                    if not matched_skill and kw not in all_text_words:
-                        relevance -= 5  # Stronger penalty per unmatched keyword (was -2)
+                    # Miss penalty — keyword found NOWHERE
+                    if not matched_anywhere:
+                        relevance += miss_penalty
                 
                 # Boost by match score
                 relevance += score * 0.15
@@ -2099,12 +2360,13 @@ Return JSON:
             top5_scores = [(c.get('name', '?'), s) for s, _, c in selected[:5]]
             logger.info(
                 f"Pre-filter: {total_scanned} candidates → {relevant_count} selected "
-                f"(MAX={MAX_CANDIDATES_TO_GEMINI}, keywords={list(keywords)[:8]}, "
+                f"(MAX={MAX_CANDIDATES_TO_GEMINI}, roles={detected_roles[:3]}, "
+                f"skills={list(skill_keywords)[:5]}, industries={detected_industries[:2]}, "
                 f"location={'yes' if has_location_requirement else 'no'}, "
                 f"exp={required_min_experience}-{required_max_experience}y, "
                 f"seniority={required_seniority or 'any'}, "
                 f"neg={list(negative_terms)[:3] if negative_terms else 'none'}, "
-                f"phrases={list(query_phrases)[:4]}) "
+                f"or_alts={or_alternatives[:3]}, phrases={list(query_phrases)[:4]}) "
                 f"Top5: {top5_scores}"
             )
             
@@ -2187,6 +2449,12 @@ Return JSON:
 
         # Build dynamic constraint sections
         constraints = []
+        if detected_roles:
+            constraints.append(f"TARGET ROLE(S) (HIGH PRIORITY): The user is looking for: {', '.join(detected_roles)}. Candidates whose job titles or categories match these roles MUST be ranked highest. Candidates with completely different roles should be ranked very low or excluded.")
+        if or_alternatives:
+            constraints.append(f"OR-ALTERNATIVE ROLES: The user accepts ANY of these: {', '.join(or_alternatives)}. A candidate matching ANY one of these alternatives is a valid match.")
+        if detected_industries:
+            constraints.append(f"INDUSTRY/DOMAIN FILTER: The user wants candidates from the {', '.join(detected_industries)} industry/sector. Prioritize candidates whose work history shows experience in these domains. Candidates from completely unrelated industries should be ranked lower.")
         if has_location_requirement:
             loc_str = ', '.join(required_location_terms)
             constraints.append(f"LOCATION FILTER (MANDATORY): Candidates in/near {loc_str} MUST be ranked first. Only include non-local candidates if fewer than {num_candidates} match locally. Flag non-local candidates clearly.")
@@ -2357,7 +2625,14 @@ Keep the same format and quality as the previous response. Use markdown formatti
 
 DATABASE: {total} candidates total | {strong} strong matches (70%+) | Categories: {cat_list}
 
-ACTIVE FILTERS: {constraints_text}
+ACTIVE FILTERS:
+{constraints_text}
+
+PRE-FILTER INTELLIGENCE:
+• Detected roles: {', '.join(detected_roles) if detected_roles else 'Not specified'}
+• OR alternatives: {', '.join(or_alternatives) if or_alternatives else 'None'}
+• Industries: {', '.join(detected_industries) if detected_industries else 'Not specified'}
+• Key phrases: {', '.join(list(query_phrases)[:8]) if query_phrases else 'None'}
 
 {candidates_context}
 
@@ -2368,14 +2643,14 @@ USER QUERY: {message}
 ═══════════════════════════════════════
 STEP 1 — QUERY DECOMPOSITION (do this internally before ranking)
 ═══════════════════════════════════════
-Break the user's query into:
-• ROLE/TITLE: What job role are they looking for?
+Parse the user's COMPLETE intent. Users write in natural language — interpret their full meaning:
+• ROLE/TITLE: What job role(s)? Handle OR alternatives ("sales or account manager" = either role is valid). Check the "Detected roles" and "OR alternatives" above.
 • MUST-HAVE SKILLS: Non-negotiable technical/professional skills
 • NICE-TO-HAVE SKILLS: Preferred but not mandatory
-• LOCATION: Required city/country/region (if specified)
-• EXPERIENCE: Exact range or minimum (if specified)
+• LOCATION: Required city/country/region (if specified). Handle OR locations ("uae or india" = either is valid).
+• EXPERIENCE: Exact range or minimum (if specified)  
 • SENIORITY: Junior/Mid/Senior/Lead/Director (if implied or stated)
-• INDUSTRY/DOMAIN: Industry vertical (if relevant)
+• INDUSTRY/DOMAIN: Industry vertical (e.g. "IT service company" = must have IT/software industry background). Check "Industries" above.
 • EXCLUSIONS: What to explicitly exclude
 • LANGUAGE/NATIONALITY: If mentioned
 • AVAILABILITY: Notice period / urgency (if mentioned)
@@ -2383,11 +2658,14 @@ Break the user's query into:
 ═══════════════════════════════════════
 STEP 2 — STRICT MATCHING RULES (MANDATORY)
 ═══════════════════════════════════════
-1. LOCATION: If the user specifies a location, ONLY return candidates from that exact location (city-level match). If you cannot find enough in that city, expand to the same country — but ALWAYS flag non-local candidates with "⚠️ Not in [city]". NEVER silently include candidates from wrong locations.
-2. EXPERIENCE: Enforce the exact range. "5+ years" means >= 5. "3-7 years" means >= 3 AND <= 7. Do NOT bend this rule.
-3. CORE SKILLS: The candidate MUST have the primary skill mentioned in the query (or a direct equivalent like React=ReactJS, Node=NodeJS, Python=Django/Flask). A Java developer does NOT qualify as a Python developer. Do NOT return skill mismatches.
-4. EXCLUSIONS: "exclude", "not", "no", "without", "ONLY" = absolute deal-breakers. Zero tolerance.
-5. VERIFICATION: Before including ANY candidate in your output, mentally verify they pass ALL filters. If they fail even ONE hard filter, DROP them.
+1. ROLE MATCH: If the user asks for a specific role (e.g. "account manager"), the candidate's ACTUAL job title or category MUST match. A "software developer" does NOT qualify as an "account manager". Check their Work History titles — this is the strongest signal.
+2. LOCATION: If the user specifies a location, ONLY return candidates from that exact location (city-level match). If user says "X or Y", candidates from EITHER location qualify. If you cannot find enough, expand to the same country but ALWAYS flag non-local candidates with "⚠️ Not in [city]".
+3. EXPERIENCE: Enforce the exact range. "5+ years" means >= 5. "1-5 years" means >= 1 AND <= 5. Do NOT bend this rule.
+4. INDUSTRY: If the user mentions an industry (e.g. "IT service company", "banking sector"), prioritize candidates whose work history shows companies in that industry.
+5. CORE SKILLS: The candidate MUST have the primary skill or role mentioned in the query. A Java developer does NOT qualify for a sales manager role. Do NOT return role/skill mismatches.
+6. EXCLUSIONS: "exclude", "not", "no", "without", "ONLY" = absolute deal-breakers. Zero tolerance.
+7. OR CONDITIONS: "X or Y" means the candidate can match EITHER X or Y — they don't need both.
+8. VERIFICATION: Before including ANY candidate, mentally verify they pass ALL hard filters. If they fail even ONE, DROP them. It is BETTER to return fewer but accurate results than to pad the list with mismatches.
 
 Skill equivalence map:
 React=ReactJS=React.js | Node=NodeJS=Node.js | Vue=VueJS=Vue.js | Angular=AngularJS
@@ -2397,19 +2675,27 @@ ML=Machine Learning | AI=Artificial Intelligence | NLP=Natural Language Processi
 SQL≈PostgreSQL/MySQL/Oracle | MongoDB=Mongo | NoSQL≈Redis/Cassandra/DynamoDB
 DevOps≈CI/CD+Docker+Kubernetes | Agile=Scrum | RPA=UiPath/BluePrism/Automation Anywhere
 
+Role equivalence map:
+Sales Manager≈Business Development Manager≈Revenue Manager
+Account Manager≈Key Account Manager≈Client Manager≈Relationship Manager
+Project Manager≈Program Manager≈Delivery Manager
+HR Manager≈People Manager≈Talent Manager
+Marketing Manager≈Brand Manager≈Growth Manager
+
 ═══════════════════════════════════════
 STEP 3 — SCORING MATRIX (for ranking qualified candidates)
 ═══════════════════════════════════════
 Weight each dimension:
-• Core Skill Match (35%): Does the candidate have the exact skills requested? Check skills list AND work history titles.
-• Experience Fit (25%): Do their years and seniority level match? Is their career trajectory aligned?
-• Location Match (20%): Exact city > same country > same region. Heavily penalize wrong locations when location is specified.
+• Role/Title Match (30%): Does the candidate's ACTUAL job title match the requested role? Check work history titles. This is the STRONGEST signal.
+• Core Skill Match (25%): Does the candidate have the exact skills requested? Check skills list AND work history.
+• Experience Fit (20%): Do their years and seniority level match? Is their career trajectory aligned?
+• Location Match (15%): Exact city > same country > same region. Heavily penalize wrong locations when location is specified. 
 • Domain/Industry Fit (10%): Same industry or transferable domain experience.
-• Education & Certs (10%): Relevant degree, certifications matching the role.
 
 ═══════════════════════════════════════
 OUTPUT FORMAT — Return up to {num_candidates} candidates (or fewer if not enough qualify)
 ═══════════════════════════════════════
+IMPORTANT: If fewer than {num_candidates} candidates genuinely match, return only those that match. Do NOT pad with irrelevant candidates just to fill the count. Quality > Quantity.
 
 **#N. Full Name** | Score: X% | Category | Exp: X yrs | Location
 - **Key Skills:** list relevant skills (BOLD the ones that match the query)
