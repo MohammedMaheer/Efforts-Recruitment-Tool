@@ -1960,8 +1960,8 @@ Return JSON:
                 # exclude candidates that exceed it — this is non-negotiable.
                 if required_max_experience < 999 and experience > required_max_experience:
                     continue  # Skip this candidate entirely
-                if required_max_experience < 999 and required_min_experience > 0 and experience < required_min_experience:
-                    continue  # Below minimum in a range query — skip
+                if required_min_experience > 0 and experience < required_min_experience:
+                    continue  # Below minimum experience — skip
                 
                 # ── HARD FILTER: Negative keywords ──
                 # If user says "exclude sales" or "not marketing", skip candidates matching those

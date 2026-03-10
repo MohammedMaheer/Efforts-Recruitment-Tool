@@ -5536,7 +5536,7 @@ async def stream_all_candidates(batch_size: int = 100, current_user: dict = Depe
     async def generate():
         yield "["
         first = True
-        all_batches = await asyncio.to_thread(lambda: list(db_service.get_candidates_stream(batch_size)))
+        all_batches = await asyncio.to_thread(lambda: list(db_service.get_candidates_stream(min(batch_size, 500))))
         for batch in all_batches:
             for candidate in batch:
                 if not first:
@@ -9475,8 +9475,9 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
         async def analyze_one(candidate):
             nonlocal analyzed_count, failed_count, fallback_used
             try:
-                # Try Local AI first (fast, concurrent-safe)
-                result = ai_service.analyze_candidate_match(
+                # Run CPU-bound Local AI analysis in thread pool to avoid blocking event loop
+                result = await asyncio.to_thread(
+                    ai_service.analyze_candidate_match,
                     candidate,
                     {"id": job_id, "title": "General Position", "required_skills": []}
                 )
