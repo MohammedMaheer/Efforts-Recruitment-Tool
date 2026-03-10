@@ -27,7 +27,7 @@ STOP_WORDS = frozenset({
     'who', 'show', 'list', 'get', 'all', 'best', 'top', 'candidates', 'candidate',
     'can', 'you', 'i', 'we', 'our', 'have', 'has', 'do', 'does', 'what', 'how',
     'need', 'want', 'looking', 'search', 'tell', 'about', 'give', 'please',
-    'any', 'some', 'good', 'from', 'to', 'of', 'that', 'this', 'it', 'be',
+    'any', 'some', 'good', 'from', 'to', 'of', 'that', 'this', 'be',
     'position', 'role', 'job', 'hiring', 'work', 'working', 'prefer', 'preferred',
     'should', 'must', 'minimum', 'experience', 'years', 'year', 'office',
 })
@@ -274,6 +274,11 @@ SKILL_SYNONYMS = {
     'insurance': {'underwriting', 'claims', 'risk management', 'actuarial'},
     # ── Real Estate ──
     'real estate': {'property', 'realty', 'property management', 'leasing'},
+    # ── IT / Technology Industry ──
+    'it': {'information technology', 'it services', 'technology', 'software', 'tech'},
+    'it services': {'it', 'information technology', 'technology services', 'managed services'},
+    'information technology': {'it', 'it services', 'tech'},
+    'ites': {'it enabled services', 'bpo', 'call center', 'outsourcing'},
 }
 
 # All known location names for direct detection (fallback when regex misses)
@@ -361,7 +366,8 @@ FRESHER_PATTERN = re.compile(
 EXPERIENCE_RANGE_PATTERN = re.compile(
     r'(?:'
     r'(\d+)\s*(?:to|-|–|\-)\s*(\d+)\s*(?:years?|yrs?|y)'
-    r'|between\s*(\d+)\s*(?:and|&|to)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|between\s*(\d+)\s*(?:years?|yrs?)?\s*(?:and|&|to)\s*(\d+)\s*(?:years?|yrs?|y)'
+    r'|(?:experience|exp)\s+(?:of\s+)?(?:from\s+)?(\d+)\s*(?:years?|yrs?)?\s*(?:to|-|–|and|&)\s*(\d+)\s*(?:years?|yrs?|y)'
     r'|(?:no\s+more\s+than|not\s+more\s+than|max(?:imum)?|under|below|less\s+than|at\s+most|upto|up\s+to|within)\s*(\d+)\s*(?:years?|yrs?|y)'
     r'|(?:do\s+not|don\'t|doesn\'t|should\s+not|must\s+not|cannot|can\'t)\s+(?:include|have|exceed|be|contain|show).*?(?:more\s+than|above|over|exceed(?:ing)?)\s*(\d+)\s*(?:years?|yrs?|y)'
     r'|(?:must\s+not|should\s+not|cannot|can\'t)\s+exceed\s*(\d+)\s*(?:years?|yrs?|y)'
@@ -402,36 +408,57 @@ def _expand_location_terms(raw_terms: list, stop_words: frozenset = STOP_WORDS) 
 def _extract_location_from_text(text: str) -> list:
     """Extract required location terms from a query or JD using regex + direct city detection.
     
-    Uses a two-pass approach:
-    1. Regex-based extraction (handles "based in Dubai", "from Chennai", etc.)
-    2. Direct known-city detection as fallback (handles "Dubai accountants", "Mumbai developers")
+    Uses a multi-pass approach:
+    1. Direct known-location detection with OR/AND splitting (most reliable)
+    2. Regex-based extraction as supplement (handles "based in Dubai", "from Chennai", etc.)
+    3. Validates all regex results against KNOWN_LOCATIONS to avoid false positives
     """
     terms = []
+    text_lower = text.lower()
     
-    # Pass 1: Regex-based extraction
+    # Pass 1: Direct known-location detection (highest priority — avoids regex false positives)
+    # Split text into words and multi-word tokens, check against KNOWN_LOCATIONS
+    # Also handle "uae or india", "dubai and abu dhabi", "chennai, mumbai"
+    
+    # Check multi-word locations first (e.g. "abu dhabi", "new york", "san francisco")
+    found_multi = set()
+    for loc in sorted(KNOWN_LOCATIONS, key=len, reverse=True):
+        if ' ' in loc and loc in text_lower:
+            found_multi.add(loc)
+    
+    # Check single-word locations
+    text_words = re.sub(r'[^\w\s]', ' ', text_lower).split()
+    found_single = set()
+    for loc in KNOWN_LOCATIONS:
+        if ' ' not in loc and loc in text_words:
+            # Avoid matching "it" as a location (it's not in KNOWN_LOCATIONS, but be safe)
+            if len(loc) >= 2:
+                found_single.add(loc)
+    
+    found_all = found_multi | found_single
+    
+    if found_all:
+        terms = list(found_all)
+        return terms
+    
+    # Pass 2: Regex-based extraction (fallback for unusual phrasings)
     match = LOCATION_PATTERN.search(text)
     if match:
         raw_loc = match.group(1).strip().strip(',').strip()
-        for part in raw_loc.split(','):
+        # Split on commas and or/and separators
+        parts = re.split(r'\s*[,]\s*|\s+(?:or|and|&)\s+', raw_loc)
+        for part in parts:
             part = part.strip().lower()
             if part and part not in STOP_WORDS and len(part) > 1:
-                terms.append(part)
-    
-    # Pass 2: Direct known-city/country detection (catches "Dubai accountants", etc.)
-    if not terms:
-        text_lower = text.lower()
-        # Check multi-word locations first (e.g. "abu dhabi", "new york", "san francisco")
-        for loc in sorted(KNOWN_LOCATIONS, key=len, reverse=True):
-            if ' ' in loc and loc in text_lower:
-                terms.append(loc)
-                break
-        # Then single-word locations
-        if not terms:
-            text_words = set(re.sub(r'[^\w\s]', ' ', text_lower).split())
-            for loc in KNOWN_LOCATIONS:
-                if ' ' not in loc and loc in text_words:
-                    terms.append(loc)
-                    break  # Take the first match to avoid over-detecting
+                # Validate against KNOWN_LOCATIONS to avoid false positives
+                if part in KNOWN_LOCATIONS:
+                    terms.append(part)
+                else:
+                    # Check if part contains a known location
+                    for loc in KNOWN_LOCATIONS:
+                        if loc in part or part in loc:
+                            terms.append(loc)
+                            break
     
     return terms
 
@@ -1474,23 +1501,26 @@ Return JSON:
             _range_match = EXPERIENCE_RANGE_PATTERN.search(message)
             if _range_match:
                 groups = _range_match.groups()
-                if groups[0] and groups[1]:       # "0 to 2 years"
+                if groups[0] and groups[1]:       # "0 to 2 years", "1-5 years"
                     required_min_experience = int(groups[0])
                     required_max_experience = int(groups[1])
-                elif groups[2] and groups[3]:     # "between 2 and 5 years"
+                elif groups[2] and groups[3]:     # "between 2 and 5 years", "between 1 year to 5 years"
                     required_min_experience = int(groups[2])
                     required_max_experience = int(groups[3])
-                elif groups[4]:                   # "max 2 years", "under 3 years", "up to 5 years"
-                    required_max_experience = int(groups[4])
-                elif groups[5]:                   # "do not include more than 2 years"
+                elif groups[4] and groups[5]:     # "experience of 1 to 5 years", "experience from 2 to 8 years"
+                    required_min_experience = int(groups[4])
                     required_max_experience = int(groups[5])
-                elif groups[6]:                   # "must not exceed 3 years"
+                elif groups[6]:                   # "max 2 years", "under 3 years", "up to 5 years"
                     required_max_experience = int(groups[6])
-                elif groups[7]:                   # "experience of less than 3 years"
+                elif groups[7]:                   # "do not include more than 2 years"
                     required_max_experience = int(groups[7])
-                elif groups[8] and groups[9]:     # "only 0-2 years", "strictly 1-3 years"
-                    required_min_experience = int(groups[8])
+                elif groups[8]:                   # "must not exceed 3 years"
+                    required_max_experience = int(groups[8])
+                elif groups[9]:                   # "experience of less than 3 years"
                     required_max_experience = int(groups[9])
+                elif groups[10] and groups[11]:   # "only 0-2 years", "strictly 1-3 years"
+                    required_min_experience = int(groups[10])
+                    required_max_experience = int(groups[11])
                 logger.info(f"Experience range detected: {required_min_experience}-{required_max_experience} years")
             else:
                 _exp_match = EXPERIENCE_PATTERN.search(message)

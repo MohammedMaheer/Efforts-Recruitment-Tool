@@ -875,7 +875,8 @@ export default function AIAssistant() {
       )
       if (lastAiWithCandidates?.candidates) {
         setResultsCandidates(lastAiWithCandidates.candidates)
-        setResultDetailCandidate(null)
+        // Pre-set first candidate to avoid auto-select useEffect triggering API calls
+        setResultDetailCandidate(lastAiWithCandidates.candidates[0])
         setResultDetailAnalysis(null)
         setSelectedResultIdx(0)
         setResultsView(true)
