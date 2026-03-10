@@ -393,20 +393,24 @@ class ResumeParser:
 
     def _extract_from_docx(self, content: bytes) -> str:
         """Extract text from DOCX including paragraphs and tables"""
-        doc_file = BytesIO(content)
-        doc = docx.Document(doc_file)
-        
-        # Extract paragraph text
-        parts = [paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip()]
-        
-        # Extract table text (many resumes use tables for layout)
-        for table in doc.tables:
-            for row in table.rows:
-                row_text = ' | '.join(cell.text.strip() for cell in row.cells if cell.text.strip())
-                if row_text:
-                    parts.append(row_text)
-        
-        return "\n".join(parts)
+        try:
+            doc_file = BytesIO(content)
+            doc = docx.Document(doc_file)
+            
+            # Extract paragraph text
+            parts = [paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip()]
+            
+            # Extract table text (many resumes use tables for layout)
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = ' | '.join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                    if row_text:
+                        parts.append(row_text)
+            
+            return "\n".join(parts)
+        except Exception as e:
+            logger.error(f"Failed to extract text from DOCX: {e}")
+            return ""
     
     async def parse_resume(self, content: bytes, filename: str) -> Dict[str, Any]:
         """
@@ -674,7 +678,7 @@ class ResumeParser:
         if digit_count > 3:
             return False
         # Contains date patterns
-        if re.search(r'\d{4}\s*[-â€“]\s*\d{4}', name.replace(' ', '')):
+        if re.search(r'\d{4}\s*[-\u2013\u2014]\s*\d{4}', name.replace(' ', '')):
             return False
         if re.search(r'[0-9]\s+[0-9]\s+[0-9]\s+[0-9]', name):
             return False
@@ -724,7 +728,7 @@ class ResumeParser:
     
     def _extract_email(self, text: str) -> str:
         """Extract email address"""
-        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b'
         matches = re.findall(email_pattern, text)
         return matches[0] if matches else ""
     
@@ -924,7 +928,7 @@ class ResumeParser:
         ]
         
         # Company indicator words
-        company_indicators = ['at', 'for', '@', '-', '|', 'Â·', ',']
+        company_indicators = ['at', 'for', '@', '-', '|', '\u00b7', ',']
         
         lines = text.split('\n')
         i = 0
@@ -937,13 +941,13 @@ class ResumeParser:
             
             if has_title and 5 < len(line) < 200:
                 # Extract year range from this line or the next
-                year_match = re.search(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|19\d{2})\s*[-â€“to]+\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|[Pp]resent|[Cc]urrent|[Oo]ngoing)', line, re.IGNORECASE)
+                year_match = re.search(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|19\d{2})\s*[-\u2013\u2014to]+\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|[Pp]resent|[Cc]urrent|[Oo]ngoing)', line, re.IGNORECASE)
                 period = year_match.group(0).strip() if year_match else ''
                 
                 # If no period found on this line, check next line
                 if not period and i + 1 < len(lines):
                     next_line = lines[i + 1].strip()
-                    year_match = re.search(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|19\d{2})\s*[-â€“to]+\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|[Pp]resent|[Cc]urrent|[Oo]ngoing)', next_line, re.IGNORECASE)
+                    year_match = re.search(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|19\d{2})\s*[-\u2013\u2014to]+\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|[Pp]resent|[Cc]urrent|[Oo]ngoing)', next_line, re.IGNORECASE)
                     if year_match:
                         period = year_match.group(0).strip()
                 
@@ -952,7 +956,7 @@ class ResumeParser:
                 company = ''
                 
                 # Pattern: "Title at/@ Company" or "Title - Company" or "Title | Company"
-                for sep in [' at ', ' @ ', ' - ', ' | ', ' Â· ']:
+                for sep in [' at ', ' @ ', ' - ', ' | ', ' \u00b7 ']:
                     if sep in line:
                         parts = line.split(sep, 1)
                         # The part with the job title keyword is the title
@@ -970,24 +974,24 @@ class ResumeParser:
                     # If next line is short and doesn't contain job title keywords, it might be company
                     if (5 < len(next_line) < 80 and
                         not any(t in next_line.lower() for t in job_titles) and
-                        not next_line.startswith(('â€¢', '-', '*', 'Â·'))):
+                        not next_line.startswith(('\u2022', '-', '*', '\u00b7'))):
                         # Check if it looks like a company name (starts with capital, no bullets)
                         if next_line[0].isupper() or next_line[0].isdigit():
                             company = next_line
                 
                 # Remove period/dates from title
                 if period and period in title_text:
-                    title_text = title_text.replace(period, '').strip().rstrip('-|Â·,')
+                    title_text = title_text.replace(period, '').strip().rstrip('-|\u00b7,')
                 if period and company and period in company:
-                    company = company.replace(period, '').strip().rstrip('-|Â·,')
+                    company = company.replace(period, '').strip().rstrip('-|\u00b7,')
                 
                 # Collect description from bullet points following this entry
                 description_lines = []
                 j = i + 1
                 while j < min(i + 10, len(lines)):
                     desc_line = lines[j].strip()
-                    if desc_line.startswith(('â€¢', '-', '*', 'Â·', 'â—‹')):
-                        clean_desc = desc_line.lstrip('â€¢-*Â·â—‹ ')
+                    if desc_line.startswith(('\u2022', '-', '*', '\u00b7', '\u25cb')):
+                        clean_desc = desc_line.lstrip('\u2022-*\u00b7\u25cb ')
                         if len(clean_desc) > 10:
                             description_lines.append(clean_desc)
                     elif len(desc_line) > 0 and any(t in desc_line.lower() for t in job_titles):
@@ -1041,10 +1045,10 @@ class ResumeParser:
         for para in paragraphs[1:]:  # Skip first block (likely name/contact)
             para = para.strip()
             # Must be substantive but not a list of skills
-            if len(para) > 80 and not para.startswith(('â€¢', '-', '*')):
+            if len(para) > 80 and not para.startswith(('\u2022', '-', '*')):
                 # Skip if it looks like a header + bullet list
                 lines_in_para = para.split('\n')
-                non_bullet = [l for l in lines_in_para if not l.strip().startswith(('â€¢', '-', '*'))]
+                non_bullet = [l for l in lines_in_para if not l.strip().startswith(('\u2022', '-', '*'))]
                 text_portion = ' '.join(non_bullet).strip()
                 if len(text_portion) > 60:
                     return text_portion[:600]
@@ -1101,8 +1105,8 @@ class ResumeParser:
                 in_responsibilities = True
                 continue
             
-            if in_responsibilities and line.startswith(('-', 'â€¢', '*')):
-                resp = line.lstrip('-â€¢* ').strip()
+            if in_responsibilities and line.startswith(('-', '\u2022', '*')):
+                resp = line.lstrip('-\u2022* ').strip()
                 if len(resp) > 20:
                     responsibilities.append(resp)
                     if len(responsibilities) >= 5:

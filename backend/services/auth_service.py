@@ -333,8 +333,11 @@ class AuthService:
         
         for field in allowed_fields:
             if field in profile_data:
+                value = profile_data[field]
+                if field == 'name' and (not value or len(str(value).strip()) < 2):
+                    raise ValueError("Name must be at least 2 characters")
                 update_fields.append(f"{field} = ?")
-                update_values.append(profile_data[field])
+                update_values.append(value)
         
         if not update_fields:
             raise ValueError("No valid fields to update")

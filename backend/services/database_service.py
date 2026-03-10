@@ -613,7 +613,7 @@ class DatabaseService:
                 # Candidate exists — use smart merge to preserve existing data
                 existing_id = existing[0]
                 conn.close()
-                existing_data = self.get_candidate(existing_id)
+                existing_data = self.get_candidate_by_id(existing_id)
                 if existing_data:
                     merged = self.smart_merge_candidate(existing_data, candidate)
                     merged['id'] = existing_id

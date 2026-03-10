@@ -2785,6 +2785,8 @@ async def get_candidates(
     # Validate pagination bounds
     page = max(1, page)
     limit = max(1, min(500, limit))
+    if search and len(search) > 500:
+        raise HTTPException(400, "Search term too long (max 500 characters)")
     is_light = fields == 'light'
     # Create cache key
     cache_key = f"candidates_p{page}_l{limit}_c{job_category}_s{min_score}_q{search}_st{status}_f{fields}"
@@ -4032,7 +4034,7 @@ async def download_resume(candidate_id: str, current_user: dict = Depends(requir
             content=resume['file_data'],
             media_type=resume['content_type'],
             headers={
-                'Content-Disposition': f'attachment; filename="{resume["filename"]}"'
+                'Content-Disposition': f'attachment; filename="{os.path.basename(resume.get("filename") or "resume.pdf")}"'
             }
         )
     except HTTPException:
@@ -4329,6 +4331,8 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
     Upload multiple resume files at once.
     Returns results for each file.
     """
+    if len(files) > 50:
+        raise HTTPException(400, "Too many files. Maximum 50 per upload.")
     results = []
     for file in files:
         try:
@@ -4747,6 +4751,8 @@ async def match_candidates_to_job_description(
     - min_experience: Minimum years of experience filter (optional)
     """
     try:
+        if len(job_description) > 50000:
+            raise HTTPException(400, "Job description too long (max 50,000 characters)")
         if not job_description or len(job_description.strip()) < 50:
             raise HTTPException(400, "Job description must be at least 50 characters")
         

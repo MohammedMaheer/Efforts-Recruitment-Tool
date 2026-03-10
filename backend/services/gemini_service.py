@@ -991,7 +991,7 @@ CRITICAL RULES:
             return None
 
         if result and isinstance(result, dict):
-            if result.get('is_candidate_email') is False:
+            if not result.get('is_candidate_email', True):
                 return None
             result['source'] = source
             # Validate category
@@ -1282,10 +1282,10 @@ Return JSON:
         pre_scored = []
         for idx, c in enumerate(candidates):
             skills = [s.lower().strip() for s in c.get('skills', [])]
-            category = str(c.get('jobCategory', c.get('job_category', ''))).lower()
-            subcategory = str(c.get('jobSubcategory', c.get('job_subcategory', ''))).lower()
-            location = str(c.get('location', '')).lower()
-            summary = str(c.get('summary', '')).lower()
+            category = (c.get('jobCategory') or c.get('job_category') or '').lower()
+            subcategory = (c.get('jobSubcategory') or c.get('job_subcategory') or '').lower()
+            location = (c.get('location') or '').lower()
+            summary = (c.get('summary') or '').lower()
 
             # Word-boundary matching for skills with synonym support
             skill_hits = 0
@@ -1909,12 +1909,12 @@ Return JSON:
                 name = str(c.get('name', '')).lower()
                 skills = [s.lower() for s in c.get('skills', [])]
                 skills_str = ' '.join(skills)
-                category = str(c.get('jobCategory', c.get('job_category', ''))).lower()
-                subcategory = str(c.get('jobSubcategory', c.get('job_subcategory', ''))).lower()
+                category = (c.get('jobCategory') or c.get('job_category') or '').lower()
+                subcategory = (c.get('jobSubcategory') or c.get('job_subcategory') or '').lower()
                 # Also match against normalized category words for broader matching
                 cat_words = set(re.sub(r'[^\w\s]', ' ', category).split()) | set(re.sub(r'[^\w\s]', ' ', subcategory).split())
-                location = str(c.get('location', '')).lower()
-                summary = str(c.get('summary', '')).lower()
+                location = (c.get('location') or '').lower()
+                summary = (c.get('summary') or '').lower()
                 experience = _safe_int_experience(c.get('experience', 0))
                 score = c.get('matchScore', c.get('match_score', 0)) or 0
                 
