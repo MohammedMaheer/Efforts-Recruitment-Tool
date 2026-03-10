@@ -338,6 +338,19 @@ ALL_PG_SCHEMAS = [
 ]
 
 
-logger.info(f"📦 Database backend: {'PostgreSQL' if IS_POSTGRES else 'SQLite'} ({_database_url[:40]}...)" 
-            if len(_database_url) > 40 else 
-            f"📦 Database backend: {'PostgreSQL' if IS_POSTGRES else 'SQLite'} ({_database_url})")
+def _safe_url_for_log(url: str) -> str:
+    """Redact credentials from database URL before logging."""
+    if '@' in url and '://' in url:
+        from urllib.parse import urlparse
+        try:
+            parsed = urlparse(url)
+            safe = f"{parsed.scheme}://***@{parsed.hostname}"
+            if parsed.port:
+                safe += f":{parsed.port}"
+            safe += parsed.path
+            return safe
+        except Exception:
+            return url.split('@')[-1]   # Just show host part
+    return url
+
+logger.info(f"📦 Database backend: {'PostgreSQL' if IS_POSTGRES else 'SQLite'} ({_safe_url_for_log(_database_url)})")

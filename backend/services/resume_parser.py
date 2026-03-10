@@ -663,7 +663,7 @@ class ResumeParser:
             if keyword in text_lower:
                 return country
         
-        return 'Not Specified'
+        return ''
     
     def _is_valid_name(self, name: str) -> bool:
         """Check if extracted name is valid (not garbage)"""

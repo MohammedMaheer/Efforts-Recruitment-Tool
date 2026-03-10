@@ -79,12 +79,10 @@ def is_garbage_summary(summary: str) -> bool:
 
 
 def generate_structured_summary(candidate_data: dict) -> str:
-    """Generate a clean structured summary from extracted candidate fields.
+    """Generate a rich, AI-searchable summary from extracted candidate fields.
     
-    Returns a professional-looking summary like:
-    'Professional with 3+ years of experience skilled in Python, React, SQL. Based in Dubai.'
-    
-    Returns empty string if insufficient data to generate anything meaningful.
+    Returns a detailed professional summary that captures domain context,
+    career trajectory, and key differentiators for better AI search matching.
     """
     name = candidate_data.get('name', '') or ''
     skills = candidate_data.get('skills', []) or []
@@ -93,60 +91,120 @@ def generate_structured_summary(candidate_data: dict) -> str:
     education = candidate_data.get('education', []) or []
     job_subcategory = candidate_data.get('job_subcategory', '') or ''
     job_category = candidate_data.get('job_category', '') or ''
+    work_history = candidate_data.get('work_history', candidate_data.get('workHistory', [])) or []
+    certifications = candidate_data.get('certifications', []) or []
+    languages = candidate_data.get('languages', []) or []
+    nationality = candidate_data.get('nationality', '') or ''
+    job_applied_for = candidate_data.get('job_applied_for', '') or ''
     
     # Need at least SOME data to generate a meaningful summary
-    if not skills and not experience and not education and not job_subcategory:
+    if not skills and not experience and not education and not job_subcategory and not work_history:
         return ''
     
     parts = []
     
-    # Role-based intro
+    # Role-based intro with career level
     role = job_subcategory or job_category or ''
     if role and role != 'General':
-        if experience and experience > 0:
-            parts.append(f"{role} professional with {experience}+ years of experience")
+        if experience and experience >= 10:
+            parts.append(f"Senior {role} professional with {experience}+ years of industry experience")
+        elif experience and experience >= 5:
+            parts.append(f"Experienced {role} professional with {experience}+ years of experience")
+        elif experience and experience > 0:
+            parts.append(f"{role} professional with {experience} year{'s' if experience != 1 else ''} of experience")
         else:
             parts.append(f"{role} professional")
     elif experience and experience > 0:
-        parts.append(f"Professional with {experience}+ years of experience")
+        level = "Senior" if experience >= 10 else "Experienced" if experience >= 5 else ""
+        parts.append(f"{level} professional with {experience}+ years of experience".strip())
     else:
         parts.append("Professional candidate")
     
-    # Skills
+    # Work history — company names and titles for industry/domain matching
+    if isinstance(work_history, list) and work_history:
+        titles = []
+        companies = []
+        for wh in work_history[:3]:
+            if isinstance(wh, dict):
+                t = wh.get('title', '')
+                c = wh.get('company', '')
+                if t and len(t) > 2:
+                    titles.append(t)
+                if c and len(c) > 2:
+                    companies.append(c)
+        if titles:
+            parts.append(f"with background as {', '.join(titles[:2])}")
+        if companies:
+            parts.append(f"having worked at {', '.join(companies[:3])}")
+    
+    # Job applied for
+    if job_applied_for and len(job_applied_for) > 2:
+        parts.append(f"applied for {job_applied_for}")
+    
+    # Skills — show more for richer search context
     if skills:
-        top_skills = skills[:6]
+        top_skills = skills[:10]
         parts.append(f"skilled in {', '.join(top_skills)}")
+    
+    # Certifications
+    if isinstance(certifications, list) and certifications:
+        cert_strs = [str(c) for c in certifications[:3] if c]
+        if cert_strs:
+            parts.append(f"certified in {', '.join(cert_strs)}")
     
     # Education
     if education:
         edu_text = education
         if isinstance(edu_text, list) and edu_text:
-            edu_item = edu_text[0] if isinstance(edu_text[0], str) else str(edu_text[0])
-            if edu_item and len(edu_item) > 3:
-                parts.append(f"with education in {edu_item}")
+            first = edu_text[0]
+            if isinstance(first, dict):
+                degree = first.get('degree', '')
+                field_of_study = first.get('field', '')
+                institution = first.get('institution', '')
+                edu_parts = [p for p in [degree, field_of_study, institution] if p]
+                if edu_parts:
+                    parts.append(f"education: {' - '.join(edu_parts)}")
+            elif isinstance(first, str) and len(first) > 3:
+                parts.append(f"with education in {first}")
         elif isinstance(edu_text, str) and len(edu_text) > 3:
             try:
                 edu_list = json.loads(edu_text)
                 if isinstance(edu_list, list) and edu_list:
-                    edu_item = edu_list[0] if isinstance(edu_list[0], str) else str(edu_list[0])
-                    if edu_item and len(edu_item) > 3:
-                        parts.append(f"with education in {edu_item}")
+                    first = edu_list[0]
+                    if isinstance(first, dict):
+                        degree = first.get('degree', '')
+                        field_of_study = first.get('field', '')
+                        edu_parts = [p for p in [degree, field_of_study] if p]
+                        if edu_parts:
+                            parts.append(f"education: {' - '.join(edu_parts)}")
+                    elif isinstance(first, str) and len(first) > 3:
+                        parts.append(f"with education in {first}")
             except (json.JSONDecodeError, TypeError):
                 if len(edu_text) < 100:
                     parts.append(f"with education in {edu_text}")
     
-    # Location
+    # Languages
+    if isinstance(languages, list) and len(languages) > 1:
+        parts.append(f"speaks {', '.join(str(l) for l in languages[:4])}")
+    
+    # Location and nationality
+    loc_parts = []
     if location:
-        parts.append(f"based in {location}")
+        loc_parts.append(f"based in {location}")
+    if nationality:
+        loc_parts.append(f"nationality: {nationality}")
+    if loc_parts:
+        parts.append(', '.join(loc_parts))
     
     if len(parts) <= 1 and not skills:
         return ''  # Not enough data
     
+    # Join with proper punctuation
     summary = '. '.join([parts[0] + (', ' + parts[1] if len(parts) > 1 else '')] + 
-                        [p for p in parts[2:]]) + '.'
+                        [p.capitalize() if not p[0].isupper() else p for p in parts[2:]]) + '.'
     
-    # Clean up double periods
-    summary = summary.replace('..', '.')
+    # Clean up double periods and extra spaces
+    summary = summary.replace('..', '.').replace('  ', ' ')
     
     return summary
 

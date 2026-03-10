@@ -498,15 +498,19 @@ def background_task(
 
 # Global task manager instance
 _task_manager: Optional[BackgroundTaskManager] = None
-_task_manager_lock: asyncio.Lock = asyncio.Lock()
+_task_manager_lock: Optional[asyncio.Lock] = None
 
 
 async def get_task_manager() -> BackgroundTaskManager:
     """Get or create the global task manager (thread-safe singleton)"""
-    global _task_manager
+    global _task_manager, _task_manager_lock
     
     if _task_manager is not None:
         return _task_manager
+    
+    # Lazy-init the lock inside the running event loop (avoids Python 3.10+ deprecation)
+    if _task_manager_lock is None:
+        _task_manager_lock = asyncio.Lock()
     
     async with _task_manager_lock:
         # Double-check after acquiring lock

@@ -209,7 +209,7 @@ class EmailParser:
         text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
         
         # Replace common block elements with newlines
-        text = re.sub(r'<br\\s*/?>', '\n', text, flags=re.IGNORECASE)
+        text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
         text = re.sub(r'</p>', '\n\n', text, flags=re.IGNORECASE)
         text = re.sub(r'</div>', '\n', text, flags=re.IGNORECASE)
         text = re.sub(r'</li>', '\n', text, flags=re.IGNORECASE)
@@ -433,7 +433,9 @@ class EmailParser:
         # Check keywords
         has_resume_keyword = any(keyword in filename_lower for keyword in resume_keywords)
         
-        return has_valid_extension and (has_resume_keyword or len(filename) < 50)
+        # Accept any file with valid extension: many resumes have long descriptive names
+        # without keywords like 'resume' or 'cv' (e.g. "Ahmed_Mohammad_Senior_Engineer_Profile_2024.pdf")
+        return has_valid_extension
     
     def _is_application_email(self, email_data: Dict[str, Any]) -> bool:
         """

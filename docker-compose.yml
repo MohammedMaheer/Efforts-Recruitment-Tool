@@ -52,6 +52,7 @@ services:
       PORT: 8000
       
       # Optional - AI
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       
       # Optional - Email OAuth2
@@ -74,6 +75,8 @@ services:
       postgres:
         condition: service_healthy
     volumes:
+      # NOTE: ./backend:/app mount overrides container files including baked-in AI models.
+      # For production-like testing, comment out the ./backend:/app line.
       - ./backend:/app
       - ai_models:/root/.cache/huggingface
       - ai_data:/app/data

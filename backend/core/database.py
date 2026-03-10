@@ -565,15 +565,19 @@ class AsyncDatabaseManager:
 
 # Singleton instance
 _db_manager: Optional[AsyncDatabaseManager] = None
-_db_manager_lock: asyncio.Lock = asyncio.Lock()
+_db_manager_lock: Optional[asyncio.Lock] = None
 
 
 async def get_db_manager(database_path: str = "recruitment.db") -> AsyncDatabaseManager:
     """Get or create the database manager singleton (thread-safe)"""
-    global _db_manager
+    global _db_manager, _db_manager_lock
     
     if _db_manager is not None:
         return _db_manager
+    
+    # Lazy-init the lock inside the running event loop (avoids Python 3.10+ deprecation)
+    if _db_manager_lock is None:
+        _db_manager_lock = asyncio.Lock()
     
     async with _db_manager_lock:
         # Double-check after acquiring lock

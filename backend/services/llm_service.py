@@ -485,9 +485,16 @@ class LLMService:
         for engine in tier_order:
             try:
                 if engine == "ollama" and self.available:
-                    result = await self._generate_json(prompt, model=model, system=system, temperature=temperature)
-                    if result:
-                        return result
+                    # Use _generate() directly to avoid infinite recursion
+                    # (_generate_json → _tier_generate_json → _generate_json)
+                    raw = await self._generate(
+                        prompt=prompt, model=model, system=system,
+                        temperature=temperature, json_mode=True
+                    )
+                    if raw:
+                        parsed = repair_json(raw)
+                        if parsed is not None:
+                            return parsed
                 
                 elif engine == "gemini":
                     from services.gemini_service import get_gemini_service

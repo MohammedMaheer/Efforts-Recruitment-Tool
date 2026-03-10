@@ -67,16 +67,45 @@ class DuplicateDetector:
         return normalized
     
     def normalize_phone(self, phone: str) -> str:
-        """Normalize phone number (keep only digits)"""
+        """Normalize phone number for comparison.
+        
+        Handles international formats including UAE (9 digits), India (10 digits),
+        US/UK (10-11 digits), and others. Strips country code prefixes.
+        """
         if not phone:
             return ""
         
         # Extract digits only
         digits = re.sub(r'\D', '', phone)
         
-        # Remove country codes for comparison (keep last 10 digits)
-        if len(digits) > 10:
-            digits = digits[-10:]
+        if not digits:
+            return ""
+        
+        # Strip known country codes to get the local number
+        # UAE: +971 (3 digits), India: +91 (2 digits), US/UK: +1/+44
+        country_prefixes = [
+            ('971', 9),   # UAE — local numbers are 9 digits
+            ('91', 10),   # India — local numbers are 10 digits
+            ('966', 9),   # Saudi Arabia
+            ('974', 8),   # Qatar
+            ('968', 8),   # Oman
+            ('973', 8),   # Bahrain
+            ('965', 8),   # Kuwait
+            ('44', 10),   # UK
+            ('1', 10),    # US/Canada
+            ('61', 9),    # Australia
+            ('63', 10),   # Philippines
+            ('92', 10),   # Pakistan
+        ]
+        
+        for prefix, local_len in country_prefixes:
+            if digits.startswith(prefix) and len(digits) == len(prefix) + local_len:
+                digits = digits[len(prefix):]
+                break
+        else:
+            # Unknown country code — keep last 10 digits as fallback
+            if len(digits) > 12:
+                digits = digits[-10:]
         
         return digits
     

@@ -482,6 +482,7 @@ def classify_job_title(title: str) -> Tuple[str, str]:
         # Sales
         "sales": "Sales",
         "account.?exec": "Sales",
+        "account.?manag": "Sales",
         "sdr": "Sales",
         "business.?dev": "Sales",
         "key.?account": "Sales",

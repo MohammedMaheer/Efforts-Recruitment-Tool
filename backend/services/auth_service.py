@@ -3,9 +3,10 @@ Authentication Service
 Handles user registration, login, and JWT token management
 """
 
-import sqlite3
 import os
 import logging
+import time
+from collections import defaultdict
 from core.db_wrapper import create_connection, IS_POSTGRES, init_pg_schema
 import secrets
 from datetime import datetime, timedelta, timezone
@@ -19,13 +20,18 @@ logger = logging.getLogger(__name__)
 # In production, ALWAYS set JWT_SECRET_KEY environment variable
 import logging as _log
 _DEFAULT_SECRET = "ai-recruiter-platform-default-secret-change-in-production"
-SECRET_KEY = os.getenv("JWT_SECRET_KEY", _DEFAULT_SECRET)
+SECRET_KEY = os.getenv("JWT_SECRET_KEY", os.getenv("SECRET_KEY", _DEFAULT_SECRET))
 if SECRET_KEY == _DEFAULT_SECRET:
     _log.getLogger(__name__).warning("⚠️  JWT_SECRET_KEY not set - using default. Set it in .env for production!")
     if os.getenv("ENVIRONMENT", "development") == "production" or os.getenv("K_SERVICE"):
         raise RuntimeError("JWT_SECRET_KEY must be set in production! Generate with: python -c 'import secrets; print(secrets.token_urlsafe(64))'")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 24  # 24 hours (use refresh tokens for longer sessions)
+
+# Brute-force protection: track failed login attempts per email/IP
+_failed_attempts: Dict[str, list] = defaultdict(list)  # key -> [timestamps]
+_MAX_FAILED_ATTEMPTS = 10  # max failures per 15-minute window
+_LOCKOUT_WINDOW_SECS = 900  # 15 minutes
 
 def _safe_truncate(password: str) -> str:
     """Truncate password to 72 bytes (bcrypt limit) without breaking UTF-8."""
@@ -215,6 +221,15 @@ class AuthService:
         """
         login_id = email.strip().lower()
         
+        # Brute-force protection: check failed attempt count
+        now = time.time()
+        attempts = _failed_attempts[login_id]
+        # Prune old attempts outside the window
+        _failed_attempts[login_id] = [t for t in attempts if now - t < _LOCKOUT_WINDOW_SECS]
+        if len(_failed_attempts[login_id]) >= _MAX_FAILED_ATTEMPTS:
+            logger.warning(f"🔒 Login locked out for {login_id} — too many failed attempts")
+            raise ValueError("Too many failed login attempts. Please try again in 15 minutes.")
+        
         with self._get_connection() as conn:
             cursor = conn.cursor()
             # Try email first, then username
@@ -225,9 +240,11 @@ class AuthService:
             row = cursor.fetchone()
         
         if not row:
+            _failed_attempts[login_id].append(time.time())
             raise ValueError("Invalid email/username or password")
         
         if not self._verify_password(password, row['password_hash']):
+            _failed_attempts[login_id].append(time.time())
             raise ValueError("Invalid email/username or password")
         
         # Update last login

@@ -4,6 +4,7 @@ Handles ML Ranking, Skill Extraction, Analytics, Calendar, SMS, Campaigns
 """
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Depends
 from typing import List, Dict, Any, Optional
+from datetime import datetime
 import logging
 import asyncio
 
@@ -374,7 +375,7 @@ async def predict_candidate_outcomes(request: PredictionRequest):
         response_rate = service.predict_response_rate(candidate)
         interview_success = service.predict_interview_success(candidate, job)
         offer_acceptance = service.predict_offer_acceptance(candidate, job)
-        retention = service.predict_retention_risk(candidate, job)
+        retention = service.predict_retention_risk(candidate)
         time_to_hire = service.estimate_time_to_hire(candidate, job)
         
         return PredictionResponse(
@@ -552,13 +553,14 @@ async def analyze_resume_quality(request: ResumeQualityRequest):
         service = get_quality_analyzer()
         
         if request.candidate_id:
-            # Get candidate from database (mock)
-            candidate = {'id': request.candidate_id, 'resume_text': ''}
-            resume_text = candidate.get('resume_text', '')
+            # Build candidate dict for the analyzer
+            candidate = {'id': request.candidate_id, 'summary': '', 'skills': [], 'workHistory': [], 'education': []}
+            resume_text = request.resume_text or ''
         else:
+            candidate = {'summary': request.resume_text or '', 'skills': [], 'workHistory': [], 'education': []}
             resume_text = request.resume_text or ''
         
-        result = service.analyze_resume(resume_text)
+        result = service.analyze_resume(candidate, resume_text)
         
         return ResumeQualityResponse(
             candidate_id=request.candidate_id,
@@ -610,10 +612,12 @@ async def create_email_template(request: EmailTemplateCreate):
         service = get_templates_service()
         template = service.create_template(
             template_id=request.template_id,
-            name=request.name,
-            subject=request.subject,
-            body=request.body,
-            category=request.category
+            template={
+                'name': request.name,
+                'subject': request.subject,
+                'body': request.body,
+                'category': request.category,
+            }
         )
         return template
     except Exception as e:
@@ -676,14 +680,13 @@ async def schedule_interview(request: ScheduleInterviewRequest):
                 'id': request.candidate_id,
                 'email': request.candidate_email,
                 'name': request.candidate_name,
+                'jobCategory': request.job_title or '',
             },
+            interview_type=request.interview_type or 'Interview',
+            datetime_slot=request.preferred_times[0] if request.preferred_times else datetime.now(),
+            duration_minutes=request.duration_minutes or 60,
             interviewer_email=request.interviewer_email,
-            job_title=request.job_title,
-            preferred_times=request.preferred_times,
-            duration_minutes=request.duration_minutes,
-            interview_type=request.interview_type,
-            notes=request.notes,
-            use_calendly=request.use_calendly
+            notes=request.notes or '',
         )
         
         return ScheduleInterviewResponse(**result)

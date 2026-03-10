@@ -14,7 +14,7 @@ import hashlib
 import time
 import uuid
 import logging
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional, Tuple, Any
@@ -53,7 +53,7 @@ class EndpointStats:
     total_response_time_ms: float = 0.0
     min_response_time_ms: float = float('inf')
     max_response_time_ms: float = 0.0
-    response_times: List[float] = field(default_factory=list)
+    response_times: deque = field(default_factory=lambda: deque(maxlen=1000))
     status_codes: Dict[int, int] = field(default_factory=lambda: defaultdict(int))
     
     @property
@@ -137,10 +137,8 @@ class MetricsCollector:
             if metrics.status_code >= 400:
                 stats.total_errors += 1
             
-            # Keep response times for percentile calculations (limit memory)
+            # Keep response times for percentile calculations (bounded by deque maxlen)
             stats.response_times.append(metrics.response_time_ms)
-            if len(stats.response_times) > 1000:
-                stats.response_times = stats.response_times[-500:]
             
             # Keep recent requests
             self._recent_requests.append(metrics)
@@ -410,10 +408,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         self._cleanup_counter: int = 0
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:
-        # Get client identifier — use X-Forwarded-For behind load balancers (Cloud Run)
+        # Get client identifier — use last X-Forwarded-For entry (set by Cloud Run)
         forwarded_for = request.headers.get("x-forwarded-for", "")
         if forwarded_for:
-            client_ip = forwarded_for.split(",")[0].strip()
+            # Use the LAST entry — Cloud Run appends the real client IP
+            client_ip = forwarded_for.split(",")[-1].strip()
         else:
             client_ip = request.client.host if request.client else "unknown"
         

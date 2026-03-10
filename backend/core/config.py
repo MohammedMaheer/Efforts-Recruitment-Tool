@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     
     # Google Gemini (primary for deployment)
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key")
-    gemini_model: str = Field(default="gemini-2.0-flash", description="Gemini model (2.0 Flash is fast & cheap)")
+    gemini_model: str = Field(default="gemini-2.5-flash", description="Gemini model (2.5 Flash is fast & capable)")
     
     # AI Tier Mode — controls which AI engine is tried first
     # "auto"   = smart detection: production → Gemini first; local → Ollama first
