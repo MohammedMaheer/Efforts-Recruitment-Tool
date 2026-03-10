@@ -92,7 +92,6 @@ class SetupVerificationService:
         await self._check_twilio()
         await self._check_google_calendar()
         await self._check_calendly()
-        await self._check_openai_fallback()
         await self._check_redis()
         
         # System checks
@@ -399,26 +398,6 @@ class SetupVerificationService:
                 message="Calendly not configured (optional)",
                 required=False,
                 instructions="Get API key from calendly.com/integrations/api"
-            ))
-    
-    async def _check_openai_fallback(self):
-        """Check OpenAI fallback configuration"""
-        api_key = os.getenv('OPENAI_API_KEY')
-        use_fallback = os.getenv('USE_OPENAI_FALLBACK', 'false').lower() == 'true'
-        
-        if api_key and use_fallback:
-            self.checks.append(SetupCheck(
-                name="AI - OpenAI Fallback",
-                status=SetupStatus.CONFIGURED,
-                message="OpenAI fallback enabled (costs money)",
-                required=False
-            ))
-        else:
-            self.checks.append(SetupCheck(
-                name="AI - OpenAI Fallback",
-                status=SetupStatus.OPTIONAL,
-                message="OpenAI fallback disabled (using FREE local AI)",
-                required=False
             ))
     
     async def _check_redis(self):

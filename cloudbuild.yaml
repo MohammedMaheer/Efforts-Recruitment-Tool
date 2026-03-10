@@ -8,7 +8,6 @@
 # Required secrets (create in Secret Manager BEFORE first build):
 #   GEMINI_API_KEY          - Google Gemini API key (primary AI)
 #   JWT_SECRET_KEY          - JWT signing secret (min 32 chars)
-#   OPENAI_API_KEY          - OpenAI fallback (optional but recommended)
 #   MICROSOFT_CLIENT_ID     - MS Graph OAuth client ID
 #   MICROSOFT_CLIENT_SECRET - MS Graph OAuth client secret
 #   MICROSOFT_TENANT_ID     - MS Graph tenant ID
@@ -68,7 +67,7 @@ steps:
       - '--set-env-vars'
       - 'ENVIRONMENT=production,DEBUG=false,HOST=0.0.0.0,PORT=8000,SYNC_INTERVAL_MINUTES=30,MAX_EMAILS_PER_SYNC=500,AI_TIMEOUT=60,AI_ANALYSIS_TIMEOUT=30,GEMINI_MODEL=gemini-2.5-flash,GCS_BUCKET_NAME=${_GCS_BUCKET}'
       - '--update-secrets'
-      - 'GEMINI_API_KEY=GEMINI_API_KEY:latest,JWT_SECRET_KEY=JWT_SECRET_KEY:latest,OPENAI_API_KEY=OPENAI_API_KEY:latest,MICROSOFT_CLIENT_ID=MICROSOFT_CLIENT_ID:latest,MICROSOFT_CLIENT_SECRET=MICROSOFT_CLIENT_SECRET:latest,MICROSOFT_TENANT_ID=MICROSOFT_TENANT_ID:latest'
+      - 'GEMINI_API_KEY=GEMINI_API_KEY:latest,JWT_SECRET_KEY=JWT_SECRET_KEY:latest,MICROSOFT_CLIENT_ID=MICROSOFT_CLIENT_ID:latest,MICROSOFT_CLIENT_SECRET=MICROSOFT_CLIENT_SECRET:latest,MICROSOFT_TENANT_ID=MICROSOFT_TENANT_ID:latest'
     id: 'deploy-backend'
     waitFor: ['push-backend']
 

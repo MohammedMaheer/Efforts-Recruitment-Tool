@@ -35,8 +35,6 @@ class Settings(BaseSettings):
     ai_timeout: float = Field(default=30.0, description="AI request timeout")
     ai_analysis_timeout: float = Field(default=30.0, description="AI analysis timeout for LLM inference")
     use_local_ai: bool = Field(default=True, description="Use local AI (free) as primary")
-    openai_api_key: Optional[str] = Field(default=None, description="OpenAI API key for fallback")
-    openai_model: str = Field(default="gpt-3.5-turbo", description="OpenAI model to use")
     
     # Google Gemini (primary for deployment)
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key")
@@ -46,8 +44,7 @@ class Settings(BaseSettings):
     # "auto"   = smart detection: production → Gemini first; local → Ollama first
     # "gemini" = always try Gemini first
     # "ollama" = always try Ollama first
-    # "openai" = always try OpenAI first
-    ai_tier_mode: str = Field(default="auto", description="AI tier selection: auto|gemini|ollama|openai")
+    ai_tier_mode: str = Field(default="auto", description="AI tier selection: auto|gemini|ollama")
     
     # Local LLM (Ollama)
     ollama_base_url: str = Field(default="http://localhost:11434", description="Ollama API URL")
@@ -84,10 +81,6 @@ class Settings(BaseSettings):
     calendly_api_key: Optional[str] = Field(default=None, description="Calendly API Key")
     calendly_user_uri: Optional[str] = Field(default=None, description="Calendly User URI")
     calendly_event_type: Optional[str] = Field(default=None, description="Calendly Event Type URI")
-    
-    # OpenAI (for GPT-4 skill extraction)
-    openai_org_id: Optional[str] = Field(default=None, description="OpenAI Organization ID")
-    gpt4_model: str = Field(default="gpt-4-turbo-preview", description="GPT-4 model for advanced analysis")
     
     # Performance
     max_concurrent_requests: int = Field(default=100, description="Max concurrent API requests")
@@ -140,24 +133,22 @@ class Settings(BaseSettings):
         Return the AI engine priority order based on ai_tier_mode and environment.
         
         In 'auto' mode:
-          - Production/Cloud Run → ["gemini", "openai", "ollama", "keyword"]
-          - Local development   → ["ollama", "gemini", "openai", "keyword"]
+          - Production/Cloud Run → ["gemini", "ollama", "keyword"]
+          - Local development   → ["ollama", "gemini", "keyword"]
         
-        Manual overrides: "gemini", "ollama", "openai" force that engine first.
+        Manual overrides: "gemini", "ollama" force that engine first.
         """
         mode = self.ai_tier_mode.lower().strip()
         
         if mode == "gemini":
-            return ["gemini", "openai", "ollama", "keyword"]
+            return ["gemini", "ollama", "keyword"]
         elif mode == "ollama":
-            return ["ollama", "gemini", "openai", "keyword"]
-        elif mode == "openai":
-            return ["openai", "gemini", "ollama", "keyword"]
+            return ["ollama", "gemini", "keyword"]
         else:  # "auto" — smart detection
             if self.is_production:
-                return ["gemini", "openai", "ollama", "keyword"]
+                return ["gemini", "ollama", "keyword"]
             else:
-                return ["ollama", "gemini", "openai", "keyword"]
+                return ["ollama", "gemini", "keyword"]
     
     class Config:
         env_file = ".env"

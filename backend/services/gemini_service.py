@@ -6,7 +6,7 @@ Uses Gemini 2.0 Flash for fast, cost-effective inference (~$0.10/1M input tokens
 
 Tier priority in production:
   1. Gemini (primary — fast, cheap, high quality)
-  2. OpenAI  (fallback — if Gemini quota/error)
+  2. Ollama  (fallback — local LLM)
   3. Keyword (emergency — zero API cost)
 
 For local development, Ollama remains primary (zero cost, full privacy).

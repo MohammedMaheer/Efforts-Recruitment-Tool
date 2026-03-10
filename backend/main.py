@@ -24,7 +24,6 @@ from services.matching_engine import MatchingEngine
 from services.email_parser import EmailParser
 from services.microsoft_graph import MicrosoftGraphService
 from services.token_storage import get_token_storage
-from services.openai_service import get_openai_service
 from services.local_ai_service import get_local_ai_service
 from services.gemini_service import get_gemini_service
 from services.email_scraper import get_scraper_service
@@ -74,7 +73,6 @@ DEBUG = _settings.debug if not _settings.is_production else False
 AI_TIMEOUT = float(os.getenv('AI_TIMEOUT', os.getenv('AI_TIMEOUT_SECONDS', str(_settings.ai_timeout))))
 AI_ANALYSIS_TIMEOUT = float(os.getenv('AI_ANALYSIS_TIMEOUT', str(_settings.ai_analysis_timeout)))  # Use centralized config
 MAX_CONCURRENT_REQUESTS = _settings.max_concurrent_requests
-USE_OPENAI_FALLBACK = os.getenv('USE_OPENAI_FALLBACK', 'false').lower() == 'true'  # Disabled by default
 
 # Configure logging with structured format
 logging.basicConfig(
@@ -1386,10 +1384,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"⚠️ LLM initialization skipped: {e}")
     
-    # OpenAI status
-    if fallback_service:
-        logger.info(f"💳 OpenAI: {openai_service.model} (fallback ready)")
-    
     logger.info(f"📧 Email Accounts: {len(scraper_service.email_accounts)} configured")
     logger.info(f"⚡ Max Concurrent Requests: {MAX_CONCURRENT_REQUESTS}")
     
@@ -1641,7 +1635,6 @@ email_parser = EmailParser()
 # AI Services - Smart Tier Selection
 # Priority: auto-detect based on environment (production → Gemini, local → Ollama)
 local_ai_service = get_local_ai_service()
-openai_service = get_openai_service() if USE_OPENAI_FALLBACK else None
 gemini_service = get_gemini_service()  # Initialized if GEMINI_API_KEY is set
 
 # PRIMARY AI service for candidate analysis: prefer Gemini in production (local_ai_service is regex-only in Cloud Run)
@@ -1652,7 +1645,6 @@ if gemini_service and gemini_service.available:
 else:
     ai_service = local_ai_service
     logger.warning("Gemini not available — falling back to local_ai_service (reduced quality)")
-fallback_service = openai_service if USE_OPENAI_FALLBACK else None  # Only if explicitly enabled
 
 # Log AI tier configuration
 _ai_tier = _settings.ai_tier_order
@@ -1661,10 +1653,6 @@ if gemini_service and gemini_service.available:
     logger.info(f"   ✅ Gemini: {gemini_service.model_name} (ready)")
 else:
     logger.info(f"   ⚠️ Gemini: not configured (set GEMINI_API_KEY)")
-if openai_service:
-    logger.info(f"   ✅ OpenAI: {openai_service.model} (ready)")
-else:
-    logger.info(f"   ⚠️ OpenAI: not configured")
 
 scraper_service = get_scraper_service()
 db_service = get_db_service()
@@ -1687,7 +1675,7 @@ async def root():
         "features": [
             "Automated email scraping (Gmail + MS365)",
             "AI-powered candidate extraction",
-            "Intelligent timeout-based OpenAI fallback",
+            "Smart AI tier fallback (Gemini → Ollama → Keyword)",
             "High-load optimized (100+ concurrent)",
             "Response caching (5min TTL)",
             "Connection pooling (50 max)",
@@ -1796,7 +1784,7 @@ async def get_setup_status(current_user: dict = Depends(require_auth)):
         "is_production": env == 'production',
         "debug": os.getenv('DEBUG', 'true').lower() == 'true',
         "database": "postgresql" if "postgresql" in os.getenv('DATABASE_URL', '') else "sqlite",
-        "ai_mode": "local (free)" if os.getenv('USE_LOCAL_AI', 'true').lower() == 'true' else "openai",
+        "ai_mode": "gemini" if gemini_service and gemini_service.available else "local (free)",
         "email_oauth": bool(os.getenv('MICROSOFT_CLIENT_ID')),
         "sms_enabled": bool(os.getenv('TWILIO_ACCOUNT_SID')),
         "calendar_enabled": bool(os.getenv('GOOGLE_CLIENT_ID') or os.getenv('CALENDLY_API_KEY')),
@@ -1857,12 +1845,12 @@ async def get_setup_instructions(current_user: dict = Depends(require_auth)):
                     "2. Install SpaCy: pip install spacy",
                     "3. Download SpaCy model: python -m spacy download en_core_web_sm",
                     "4. First run will download ~420MB AI model (one-time)",
-                    "5. Optional: Set USE_OPENAI_FALLBACK=true for emergency fallback"
+                    "5. Set GEMINI_API_KEY for cloud AI inference"
                 ],
                 "env_vars": [
                     "USE_LOCAL_AI=true",
                     "LOCAL_AI_MODEL=all-mpnet-base-v2",
-                    "USE_OPENAI_FALLBACK=false"
+                    "GEMINI_API_KEY=your-gemini-key"
                 ]
             },
             {
@@ -4548,24 +4536,7 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
         except Exception as llm_err:
             logger.warning(f"LLM deep analysis failed: {llm_err}")
         
-        # TIER 2: Try OpenAI — Emergency fallback (only if explicitly enabled)
-        if USE_OPENAI_FALLBACK:
-            from services.openai_service import get_openai_service
-            openai_svc = get_openai_service()
-            
-            if openai_svc:
-                analysis = openai_svc.analyze_candidate_deep(candidate)
-                result = {
-                    "candidate_id": candidate_id,
-                    "candidate_name": candidate['name'],
-                    **analysis,
-                    "ai_powered": True,
-                    "source": "openai_fallback"
-                }
-                response_cache[cache_key] = result
-                return result
-        
-        # TIER 3: Basic fallback — No AI
+        # TIER 2: Basic fallback — No AI
         return {
             "candidate_id": candidate_id,
             "candidate_name": candidate['name'],
@@ -4576,7 +4547,7 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
                 "Resume available in database"
             ],
             "cons": [
-                "AI analysis unavailable - configure Ollama or OPENAI_API_KEY"
+                "AI analysis unavailable - configure Gemini or Ollama"
             ],
             "hiring_recommendation": {
                 "verdict": "Review Needed",
@@ -4708,20 +4679,7 @@ async def match_candidates_to_job_file(
         except Exception as llm_err:
             logger.warning(f"LLM job file matching failed: {llm_err}")
 
-        # TIER 2: Try OpenAI (only if explicitly enabled)
-        if USE_OPENAI_FALLBACK:
-            from services.openai_service import get_openai_service
-            openai_svc = get_openai_service()
-
-            if openai_svc:
-                result = openai_svc.match_candidates_to_job(jd_text, candidates_list, top_n)
-                result['ai_powered'] = True
-                result['source'] = 'openai_fallback'
-                result['total_candidates_searched'] = total_searched
-                result['jd_text_length'] = len(jd_text)
-                return result
-
-        # TIER 3: Enhanced keyword matching fallback
+        # TIER 2: Enhanced keyword matching fallback
         jd_lower = jd_text.lower()
         for c in candidates_list:
             skill_matches = sum(1 for s in c.get('skills', []) if s.lower() in jd_lower)
@@ -4850,19 +4808,7 @@ async def match_candidates_to_job_description(
         except Exception as llm_err:
             logger.warning(f"LLM job matching failed: {llm_err}")
         
-        # TIER 2: Try OpenAI (only if explicitly enabled)
-        if USE_OPENAI_FALLBACK:
-            from services.openai_service import get_openai_service
-            openai_svc = get_openai_service()
-            
-            if openai_svc:
-                result = openai_svc.match_candidates_to_job(job_description, candidates, top_n)
-                result['ai_powered'] = True
-                result['source'] = 'openai_fallback'
-                result['total_candidates_searched'] = len(candidates)
-                return result
-        
-        # TIER 3: Basic keyword matching fallback
+        # TIER 2: Basic keyword matching fallback
         jd_lower = job_description.lower()
         for c in candidates:
             skill_matches = sum(1 for s in c.get('skills', []) if s.lower() in jd_lower)
@@ -4941,18 +4887,7 @@ async def compare_candidates(
         except Exception as llm_err:
             logger.warning(f"LLM comparison failed: {llm_err}")
         
-        # TIER 2: OpenAI fallback (only if explicitly enabled)
-        if USE_OPENAI_FALLBACK:
-            from services.openai_service import get_openai_service
-            openai_svc = get_openai_service()
-            
-            if openai_svc:
-                result = openai_svc.generate_candidate_comparison(candidates, job_description)
-                result['ai_powered'] = True
-                result['source'] = 'openai_fallback'
-                return result
-        
-        # TIER 3: Rule-based fallback
+        # TIER 2: Rule-based fallback
         candidates.sort(key=lambda x: x.get('matchScore', 0), reverse=True)
         return {
             "comparison_matrix": [
@@ -5116,24 +5051,10 @@ async def ai_chat(
         except Exception as llm_err:
             logger.warning(f"LLM chat error: {llm_err}")
         
-        # TIER 3: OpenAI fallback
-        if USE_OPENAI_FALLBACK:
-            from services.openai_service import get_openai_service
-            openai_svc = get_openai_service()
-            
-            if openai_svc:
-                response = openai_svc.chat_with_ai(message, context, candidates_data)
-                return {
-                    "response": response,
-                    "ai_powered": True,
-                    "context_included": include_candidates,
-                    "source": "openai_fallback"
-                }
-        
-        # TIER 4: Rule-based fallback
+        # TIER 3: Rule-based fallback
         return {
             "response": f"I understand you're asking about: '{message}'. Currently no AI services are available. "
-                        f"Please configure GEMINI_API_KEY, Ollama, or OPENAI_API_KEY for intelligent responses.",
+                        f"Please configure GEMINI_API_KEY or Ollama for intelligent responses.",
             "ai_powered": False,
             "context_included": include_candidates,
             "source": "rule_based"
@@ -5321,19 +5242,6 @@ Format as clean text with section headers. Be specific and compelling."""
                     source = "gemini"
         except Exception as e:
             logger.warning(f"Gemini JD generation failed: {e}")
-
-        # Try OpenAI fallback
-        if not result_text:
-            try:
-                from services.openai_service import get_openai_service
-                openai_svc = get_openai_service()
-                if openai_svc and openai_svc.available:
-                    result = openai_svc.chat_with_ai(prompt, None, None)
-                    if result:
-                        result_text = result
-                        source = "openai"
-            except Exception as e:
-                logger.warning(f"OpenAI JD generation failed: {e}")
 
         # Rule-based fallback
         if not result_text:
@@ -9270,18 +9178,7 @@ async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
         except Exception as llm_err:
             logger.warning(f"LLM deep analysis error: {llm_err}")
         
-        # TIER 2: Try OpenAI (only if explicitly enabled)
-        if not analysis and USE_OPENAI_FALLBACK:
-            try:
-                openai_svc = get_openai_service()
-                if openai_svc:
-                    analysis = openai_svc.deep_analyze_candidate(candidate_for_analysis)
-                    if analysis:
-                        analysis['source'] = 'openai'
-            except Exception as oai_err:
-                logger.warning(f"OpenAI deep analysis error: {oai_err}")
-        
-        # TIER 3: Fallback — use candidate data to build a meaningful report
+        # TIER 2: Fallback — use candidate data to build a meaningful report
         # Rating/recommendation derived from matchScore for consistency
         if not analysis:
             skills = candidate_for_analysis.get('skills', [])
@@ -9397,39 +9294,13 @@ async def analyze_match(request: AnalyzeMatchRequest, current_user: dict = Depen
             
         except asyncio.TimeoutError:
             logger.warning(f"⏱️ Local AI timeout (>{AI_ANALYSIS_TIMEOUT}s)")
-            # Try OpenAI before rule-based
-            if fallback_service:
-                try:
-                    result = fallback_service.analyze_candidate_match(
-                        request.candidate,
-                        request.job_description
-                    )
-                    result['source'] = 'openai_fallback'
-                    logger.info("✅ OpenAI fallback analysis completed")
-                except Exception:
-                    result = _quick_fallback_analysis(request.candidate, request.job_description)
-                    result['source'] = 'fallback_timeout'
-            else:
-                result = _quick_fallback_analysis(request.candidate, request.job_description)
-                result['source'] = 'fallback_timeout'
+            result = _quick_fallback_analysis(request.candidate, request.job_description)
+            result['source'] = 'fallback_timeout'
                 
         except Exception as local_error:
             logger.warning(f"⚠️ Local AI error: {local_error}")
-            # Try OpenAI before rule-based
-            if fallback_service:
-                try:
-                    result = fallback_service.analyze_candidate_match(
-                        request.candidate,
-                        request.job_description
-                    )
-                    result['source'] = 'openai_fallback'
-                    logger.info("✅ OpenAI fallback analysis completed")
-                except Exception:
-                    result = _quick_fallback_analysis(request.candidate, request.job_description)
-                    result['source'] = 'fallback_error'
-            else:
-                result = _quick_fallback_analysis(request.candidate, request.job_description)
-                result['source'] = 'fallback_error'
+            result = _quick_fallback_analysis(request.candidate, request.job_description)
+            result['source'] = 'fallback_error'
         
         # Cache result in background (non-blocking)
         result['from_cache'] = False
@@ -9488,7 +9359,7 @@ class InterviewQuestionsRequest(BaseModel):
 async def generate_interview_questions(request: InterviewQuestionsRequest, current_user: dict = Depends(require_auth)):
     """
     Generate AI-powered interview questions
-    3-TIER FALLBACK: Local AI → OpenAI → Rule-based
+    3-TIER FALLBACK: Local AI → Gemini → Rule-based
     """
     try:
         # TIER 1: Try Local AI first (FREE)
@@ -9503,20 +9374,7 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
         except Exception as local_error:
             logger.warning(f"⚠️ Local AI interview questions failed: {local_error}")
         
-        # TIER 2: OpenAI fallback
-        if fallback_service:
-            try:
-                questions = fallback_service.generate_interview_questions(
-                    request.candidate,
-                    request.job_description,
-                    request.num_questions
-                )
-                if questions:
-                    return {"questions": questions, "source": "openai_fallback"}
-            except Exception as openai_err:
-                logger.warning(f"⚠️ OpenAI interview questions failed: {openai_err}")
-        
-        # TIER 3: Rule-based fallback
+        # TIER 2: Rule-based fallback
         candidate_skills = request.candidate.get('skills', [])
         job_title = request.job_description.get('title', 'the position')
         default_questions = [
@@ -9533,7 +9391,7 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
         return {
             "questions": default_questions[:request.num_questions],
             "source": "rule_based",
-            "note": "Configure Ollama or OpenAI for AI-generated interview questions"
+            "note": "Configure Gemini or Ollama for AI-generated interview questions"
         }
     except Exception as e:
         raise HTTPException(500, "Error generating questions")
@@ -9545,7 +9403,7 @@ class SummarizeResumeRequest(BaseModel):
 async def summarize_resume(request: SummarizeResumeRequest, current_user: dict = Depends(require_auth)):
     """
     Generate AI summary of resume
-    3-TIER FALLBACK: Local AI → OpenAI → Rule-based
+    3-TIER FALLBACK: Local AI → Gemini → Rule-based
     """
     try:
         # TIER 1: Try Local AI first (FREE)
@@ -9556,21 +9414,12 @@ async def summarize_resume(request: SummarizeResumeRequest, current_user: dict =
         except Exception as local_error:
             logger.warning(f"⚠️ Local AI summarize failed: {local_error}")
         
-        # TIER 2: OpenAI fallback
-        if fallback_service:
-            try:
-                summary = fallback_service.summarize_resume(request.resume_text)
-                if summary:
-                    return {"summary": summary, "source": "openai_fallback"}
-            except Exception as openai_err:
-                logger.warning(f"⚠️ OpenAI summarize failed: {openai_err}")
-        
-        # TIER 3: Rule-based fallback
+        # TIER 2: Rule-based fallback
         text = request.resume_text[:500]
         return {
             "summary": f"Resume summary (basic extraction): {text}...",
             "source": "rule_based",
-            "note": "Configure Ollama or OpenAI for AI-powered summaries"
+            "note": "Configure Gemini or Ollama for AI-powered summaries"
         }
     except Exception as e:
         raise HTTPException(500, "Error summarizing resume")
@@ -9580,7 +9429,7 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
     """
     Batch analyze ONLY NEW candidates with CONCURRENT processing
     PRIMARY: Local AI (FREE, handles 100+ concurrent requests)
-    FALLBACK: OpenAI (emergency only per candidate)
+    FALLBACK: Rule-based (keyword matching)
     Optimized for high-load scenarios with 10,000+ candidates
     """
     try:
@@ -9613,24 +9462,8 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
                 await asyncio.to_thread(db_service.cache_ai_score, candidate['id'], job_id, result)
                 analyzed_count += 1
             except Exception as local_error:
-                # Emergency fallback to OpenAI for this candidate
-                if fallback_service:
-                    try:
-                        logger.warning(f"Local AI failed for {candidate['id']}, using OpenAI fallback")
-                        result = fallback_service.analyze_candidate_match(
-                            candidate,
-                            {"id": job_id, "title": "General Position", "required_skills": []}
-                        )
-                        result['source'] = 'openai_fallback'
-                        await asyncio.to_thread(db_service.cache_ai_score, candidate['id'], job_id, result)
-                        analyzed_count += 1
-                        fallback_used += 1
-                    except Exception as fallback_error:
-                        logger.error(f"Both AI services failed for {candidate['id']}")
-                        failed_count += 1
-                else:
-                    logger.error(f"Local AI failed for {candidate['id']}, no fallback available")
-                    failed_count += 1
+                logger.error(f"AI analysis failed for {candidate['id']}: {local_error}")
+                failed_count += 1
         
         # Execute all analyses concurrently (Local AI can handle 100+ parallel)
         await asyncio.gather(*[analyze_one(c) for c in batch], return_exceptions=True)
@@ -9642,7 +9475,7 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
             "analyzed_count": analyzed_count,
             "failed_count": failed_count,
             "fallback_used": fallback_used,
-            "ai_engine": "local_primary_openai_fallback",
+            "ai_engine": "gemini_primary_ollama_fallback",
             "concurrent_processing": True
         }
     except Exception as e:
@@ -9676,7 +9509,7 @@ async def ai_status(current_user: dict = Depends(require_auth)):
         "ai_tier_order": _settings.ai_tier_order,
         "environment": "production" if _settings.is_production else "development",
         "primary_engine": _determine_primary_engine(llm_status),
-        "fallback_engine": "openai" if fallback_service else "keyword",
+        "fallback_engine": "keyword",
         "gemini": {
             "available": gemini_service.available if gemini_service else False,
             "model": gemini_service.model_name if gemini_service else None,
@@ -9706,13 +9539,12 @@ async def ai_status(current_user: dict = Depends(require_auth)):
             "gemini": len(gemini_service._cache) if gemini_service else 0,
         },
         "model": _determine_model_description(llm_status),
-        "fallback_model": openai_service.model if fallback_service else None,
+        "fallback_model": None,
         "message": _determine_ai_message(llm_status),
         "caching_enabled": True,
         "concurrent_processing": True,
         "max_concurrent": "100+ requests",
         "cost": _determine_cost_info(llm_status),
-        "fallback_available": fallback_service is not None,
         "gemini_available": gemini_service.available if gemini_service else False,
         "setup_instructions": {
             "gemini": "Set GEMINI_API_KEY env var. Get key from https://aistudio.google.com/apikey",
@@ -9730,8 +9562,6 @@ def _determine_primary_engine(llm_status: Dict) -> str:
             return "gemini"
         if engine == "ollama" and llm_status.get('available'):
             return "ollama_llm"
-        if engine == "openai" and fallback_service:
-            return "openai"
     return "local_ai"
 
 
@@ -9742,8 +9572,6 @@ def _determine_model_description(llm_status: Dict) -> str:
         parts.append(f"Gemini ({gemini_service.model_name})")
     if llm_status.get('available'):
         parts.append(f"Ollama ({llm_status.get('primary_model', 'local')})")
-    if fallback_service:
-        parts.append(f"OpenAI ({openai_service.model})")
     parts.extend(["Sentence-Transformers", "SpaCy NER", "Keyword"])
     return "Multi-Tier AI: " + " → ".join(parts)
 
@@ -9754,9 +9582,7 @@ def _determine_ai_message(llm_status: Dict) -> str:
     if primary == "gemini":
         return f"🌟 AI Stack: Gemini {gemini_service.model_name} (primary) + Local Embeddings + NER"
     elif primary == "ollama_llm":
-        return "🤖 AI Stack: Local LLM + Embeddings + NER (FREE) with Gemini/OpenAI fallback"
-    elif primary == "openai":
-        return f"💳 AI Stack: OpenAI {openai_service.model} (primary) — costs apply"
+        return "🤖 AI Stack: Local LLM + Embeddings + NER (FREE) with Gemini fallback"
     return "⚡ AI Stack: Sentence-Transformers + SpaCy NER + Keyword (FREE, no LLM)"
 
 
@@ -9764,11 +9590,9 @@ def _determine_cost_info(llm_status: Dict) -> str:
     """Generate cost information string."""
     primary = _determine_primary_engine(llm_status)
     if primary == "gemini":
-        return "~$0.01-0.05/day (Gemini 2.0 Flash is very low cost)"
+        return "~$0.01-0.05/day (Gemini 2.5 Flash is very low cost)"
     elif primary == "ollama_llm":
-        return "$0 (all local, Gemini/OpenAI fallback charges only if local AI fails)"
-    elif primary == "openai":
-        return "~$0.01-0.10/request (OpenAI pricing applies)"
+        return "$0 (all local, Gemini fallback charges only if local AI fails)"
     return "$0 (all local, no API costs)"
 
 @app.get("/api/llm/status")
@@ -9944,21 +9768,7 @@ async def ai_smart_search(
         except Exception as sem_err:
             logger.warning(f"Semantic search failed: {sem_err}")
 
-        # 5. OpenAI fallback
-        openai_svc = get_openai_service()
-        if openai_svc:
-            result = openai_svc.match_candidates_to_job(query, candidates, top_n)
-            raw = result.get("rankings", [])
-            formatted = _format_search_results(raw, candidates)
-            return {
-                "results": formatted,
-                "total_searched": len(candidates),
-                "query": query,
-                "source": "openai",
-                "message": "Used OpenAI for search"
-            }
-
-        # 6. Basic keyword fallback
+        # 5. Basic keyword fallback
         q_lower = query.lower()
         scored = []
         for c in candidates:

@@ -6,8 +6,8 @@ with GPU acceleration, retry logic, confidence scoring, and advanced
 JSON repair.
 
 Smart AI Tier System (auto-detected by environment):
-  LOCAL DEV:  Ollama → Gemini → OpenAI → Keyword
-  PRODUCTION: Gemini → OpenAI → Ollama → Keyword
+  LOCAL DEV:  Ollama → Gemini → Keyword
+  PRODUCTION: Gemini → Ollama → Keyword
 
 When a request fails on the primary tier, it automatically falls through
 to the next available engine — no manual intervention needed.
@@ -475,8 +475,8 @@ class LLMService:
         Generate JSON using the smart AI tier chain.
         Tries engines in priority order based on config (auto-detected by environment).
         
-        LOCAL DEV:  Ollama → Gemini → OpenAI → None
-        PRODUCTION: Gemini → OpenAI → Ollama → None
+        LOCAL DEV:  Ollama → Gemini → None
+        PRODUCTION: Gemini → Ollama → None
         """
         from core.config import get_settings
         settings = get_settings()
@@ -505,39 +505,6 @@ class LLMService:
                         result = await gemini_svc._agenerate_json(full_prompt, temperature=temperature)
                         if result:
                             logger.info(f"🌟 Tier fallback: Gemini handled request")
-                            return result
-                
-                elif engine == "openai":
-                    from services.openai_service import get_openai_service
-                    openai_svc = get_openai_service()
-                    if openai_svc:
-                        # OpenAI is synchronous — run in executor
-                        import asyncio
-                        loop = asyncio.get_event_loop()
-                        # Build messages for OpenAI chat
-                        messages = []
-                        if system:
-                            messages.append({"role": "system", "content": system})
-                        messages.append({"role": "user", "content": prompt})
-                        
-                        def _openai_call():
-                            try:
-                                response = openai_svc.client.chat.completions.create(
-                                    model=openai_svc.model,
-                                    messages=messages,
-                                    max_tokens=2000,
-                                    temperature=temperature,
-                                    response_format={"type": "json_object"}
-                                )
-                                import json
-                                return json.loads(response.choices[0].message.content)
-                            except Exception as ex:
-                                logger.warning(f"OpenAI tier call failed: {ex}")
-                                return None
-                        
-                        result = await loop.run_in_executor(None, _openai_call)
-                        if result:
-                            logger.info(f"💳 Tier fallback: OpenAI handled request")
                             return result
                 
                 elif engine == "keyword":
@@ -577,33 +544,6 @@ class LLMService:
                     if gemini_svc and gemini_svc.available:
                         full_prompt = f"{system}\n\n{prompt}" if system else prompt
                         result = await gemini_svc._agenerate(full_prompt, temperature=temperature, max_tokens=max_tokens)
-                        if result:
-                            return result
-                
-                elif engine == "openai":
-                    from services.openai_service import get_openai_service
-                    openai_svc = get_openai_service()
-                    if openai_svc:
-                        import asyncio
-                        loop = asyncio.get_event_loop()
-                        messages = []
-                        if system:
-                            messages.append({"role": "system", "content": system})
-                        messages.append({"role": "user", "content": prompt})
-                        
-                        def _openai_text():
-                            try:
-                                response = openai_svc.client.chat.completions.create(
-                                    model=openai_svc.model,
-                                    messages=messages,
-                                    max_tokens=max_tokens,
-                                    temperature=temperature,
-                                )
-                                return response.choices[0].message.content.strip()
-                            except Exception:
-                                return ""
-                        
-                        result = await loop.run_in_executor(None, _openai_text)
                         if result:
                             return result
                 

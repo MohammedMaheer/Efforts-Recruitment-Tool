@@ -10,7 +10,6 @@ from fastapi import Depends, HTTPException, Header, status
 
 from services.database_service import DatabaseService, get_db_service
 from services.local_ai_service import LocalAIService, get_local_ai_service
-from services.openai_service import OpenAIService, get_openai_service
 from services.email_scraper import EmailScraperService, get_scraper_service
 from services.resume_parser import ResumeParser
 from services.matching_engine import MatchingEngine
@@ -108,7 +107,6 @@ class ServiceContainer:
         
         self._db_service = None
         self._local_ai_service = None
-        self._openai_service = None
         self._scraper_service = None
         self._resume_parser = None
         self._matching_engine = None
@@ -128,20 +126,9 @@ class ServiceContainer:
         return self._local_ai_service
     
     @property
-    def openai(self) -> OpenAIService:
-        if self._openai_service is None:
-            self._openai_service = get_openai_service()
-        return self._openai_service
-    
-    @property
     def ai(self) -> LocalAIService:
         """Primary AI service (local, free)"""
         return self.local_ai
-    
-    @property
-    def ai_fallback(self) -> OpenAIService:
-        """Fallback AI service (OpenAI)"""
-        return self.openai
     
     @property
     def scraper(self) -> EmailScraperService:
