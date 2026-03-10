@@ -80,7 +80,9 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
     c = dict(candidate)  # Don't mutate the original
     
     # Clean text fields
-    for field in ('name', 'summary', 'resume_text', 'raw_email_subject', 'linkedin'):
+    for field in ('name', 'summary', 'resume_text', 'raw_email_subject', 'linkedin',
+                  'nationality', 'notice_period', 'current_salary', 'expected_salary',
+                  'source_portal', 'job_applied_for'):
         val = c.get(field, '')
         if val and isinstance(val, str):
             c[field] = _sanitize_text_field(val)
@@ -260,6 +262,22 @@ class DatabaseService:
                 logger.info("Added shortlisted_at column to candidates table")
             except Exception:
                 pass  # Column already exists
+            
+            # --- NEW ENRICHED FIELDS (v2.1 migration) ---
+            new_columns = [
+                ("nationality", "TEXT"),
+                ("notice_period", "TEXT"),
+                ("current_salary", "TEXT"),
+                ("expected_salary", "TEXT"),
+                ("source_portal", "TEXT"),
+                ("job_applied_for", "TEXT"),
+            ]
+            for col_name, col_type in new_columns:
+                try:
+                    cursor.execute(f"ALTER TABLE candidates ADD COLUMN {col_name} {col_type}")
+                    logger.info(f"Added {col_name} column to candidates table")
+                except Exception:
+                    pass  # Column already exists
             
             # Resume storage table
             cursor.execute("""
@@ -591,8 +609,10 @@ class DatabaseService:
                     skills, experience, education, summary, work_history,
                     linkedin, status, match_score, job_category, job_subcategory,
                     applied_date, last_updated, raw_email_subject,
-                    certifications, languages, resume_text
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    certifications, languages, resume_text,
+                    nationality, notice_period, current_salary, expected_salary,
+                    source_portal, job_applied_for
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 candidate['id'],
                 candidate['email'],
@@ -616,6 +636,12 @@ class DatabaseService:
                 json.dumps(candidate.get('certifications', [])),
                 json.dumps(candidate.get('languages', [])),
                 candidate.get('resume_text', ''),
+                candidate.get('nationality', ''),
+                candidate.get('notice_period', ''),
+                candidate.get('current_salary', ''),
+                candidate.get('expected_salary', ''),
+                candidate.get('source_portal', 'Direct'),
+                candidate.get('job_applied_for', ''),
             ))
             
             conn.commit()
@@ -694,6 +720,12 @@ class DatabaseService:
                     raw_email_subject = ?,
                     certifications = ?,
                     languages = ?,
+                    nationality = ?,
+                    notice_period = ?,
+                    current_salary = ?,
+                    expected_salary = ?,
+                    source_portal = ?,
+                    job_applied_for = ?,
                     resume_text = COALESCE(?, resume_text)
                 WHERE id = ?
             """, (
@@ -714,6 +746,12 @@ class DatabaseService:
                 candidate.get('raw_email_subject', ''),
                 json.dumps(candidate.get('certifications', [])),
                 json.dumps(candidate.get('languages', [])),
+                candidate.get('nationality', ''),
+                candidate.get('notice_period', ''),
+                candidate.get('current_salary', ''),
+                candidate.get('expected_salary', ''),
+                candidate.get('source_portal', 'Direct'),
+                candidate.get('job_applied_for', ''),
                 candidate.get('resume_text', None),
                 candidate['id']
             ))
@@ -1877,6 +1915,39 @@ class DatabaseService:
             if ai_recommendation:
                 ai_recommendation = ai_recommendation.replace('_', ' ')
         candidate['recommendation'] = ai_recommendation or candidate.get('job_category', 'General')
+        
+        # shortlisted_at (added via ALTER TABLE, after gaps)
+        try:
+            shortlisted_idx = ai_analysis_idx + 6
+            if num_cols > shortlisted_idx and row[shortlisted_idx]:
+                candidate['shortlisted_at'] = row[shortlisted_idx]
+        except Exception:
+            pass
+        
+        # --- NEW ENRICHED FIELDS (v2.1) ---
+        try:
+            nationality_idx = ai_analysis_idx + 7
+            if num_cols > nationality_idx:
+                candidate['nationality'] = row[nationality_idx] or ''
+                candidate['notice_period'] = row[nationality_idx + 1] or '' if num_cols > nationality_idx + 1 else ''
+                candidate['current_salary'] = row[nationality_idx + 2] or '' if num_cols > nationality_idx + 2 else ''
+                candidate['expected_salary'] = row[nationality_idx + 3] or '' if num_cols > nationality_idx + 3 else ''
+                candidate['source_portal'] = row[nationality_idx + 4] or 'Direct' if num_cols > nationality_idx + 4 else 'Direct'
+                candidate['job_applied_for'] = row[nationality_idx + 5] or '' if num_cols > nationality_idx + 5 else ''
+            else:
+                candidate['nationality'] = ''
+                candidate['notice_period'] = ''
+                candidate['current_salary'] = ''
+                candidate['expected_salary'] = ''
+                candidate['source_portal'] = 'Direct'
+                candidate['job_applied_for'] = ''
+        except Exception:
+            candidate['nationality'] = ''
+            candidate['notice_period'] = ''
+            candidate['current_salary'] = ''
+            candidate['expected_salary'] = ''
+            candidate['source_portal'] = 'Direct'
+            candidate['job_applied_for'] = ''
         
         # Check if resume exists (optional to avoid N+1 queries)
         if check_resume:

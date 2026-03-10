@@ -1,4 +1,4 @@
-﻿from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 import email
 from email import policy
 from email.parser import BytesParser
@@ -99,15 +99,49 @@ class EmailParser:
                     result['phone'] = phone_candidate
                     break
         
-        # Extract skills (common tech keywords)
+        # Extract skills (comprehensive tech + business keywords)
         skill_keywords = [
-            'python', 'java', 'javascript', 'react', 'node.js', 'nodejs', 'sql', 'aws', 'docker',
-            'kubernetes', 'machine learning', 'data science', 'artificial intelligence', 'frontend', 'backend',
-            'devops', 'agile', 'scrum', 'git', 'ci/cd', 'rest api', 'restful', 'graphql',
-            'typescript', 'vue', 'angular', 'django', 'flask', 'spring', 'microservices',
-            'mongodb', 'postgresql', 'redis', 'kafka', 'jenkins', 'terraform',
-            'marketing', 'seo', 'social media', 'analytics', 'sales',
-            'excel', 'powerpoint', 'ms word', 'photoshop', 'figma', 'sketch'
+            # Programming & frameworks
+            'python', 'java', 'javascript', 'typescript', 'react', 'angular', 'vue', 'svelte',
+            'node.js', 'nodejs', 'express', 'django', 'flask', 'fastapi', 'spring', 'spring boot',
+            'ruby', 'rails', 'php', 'laravel', 'golang', 'rust', 'swift', 'kotlin', 'scala',
+            'c++', 'c#', '.net', 'asp.net', 'blazor', 'flutter', 'dart', 'react native',
+            # Data & AI
+            'sql', 'nosql', 'mongodb', 'postgresql', 'mysql', 'oracle', 'redis', 'elasticsearch',
+            'machine learning', 'deep learning', 'data science', 'artificial intelligence', 'nlp',
+            'tensorflow', 'pytorch', 'pandas', 'numpy', 'scikit-learn', 'spark', 'hadoop',
+            'power bi', 'tableau', 'data engineering', 'etl', 'data warehouse', 'snowflake',
+            # Cloud & DevOps
+            'aws', 'azure', 'gcp', 'google cloud', 'docker', 'kubernetes', 'terraform',
+            'jenkins', 'ci/cd', 'github actions', 'gitlab', 'ansible', 'chef', 'puppet',
+            'devops', 'sre', 'linux', 'microservices', 'serverless', 'lambda',
+            # Web & API
+            'rest api', 'restful', 'graphql', 'soap', 'html', 'css', 'sass', 'tailwind',
+            'webpack', 'vite', 'frontend', 'backend', 'full stack', 'fullstack',
+            # Business & management
+            'project management', 'agile', 'scrum', 'kanban', 'jira', 'confluence',
+            'marketing', 'digital marketing', 'seo', 'sem', 'social media', 'content marketing',
+            'sales', 'crm', 'salesforce', 'hubspot', 'business development', 'account management',
+            'analytics', 'google analytics', 'data analysis', 'business intelligence',
+            'human resources', 'recruitment', 'talent acquisition', 'payroll', 'hris',
+            'accounting', 'finance', 'bookkeeping', 'quickbooks', 'sap', 'erp', 'oracle erp',
+            'supply chain', 'logistics', 'procurement', 'inventory management',
+            # Design & creative
+            'figma', 'sketch', 'adobe xd', 'photoshop', 'illustrator', 'indesign',
+            'ui/ux', 'ux design', 'ui design', 'graphic design', 'video editing',
+            # Productivity
+            'excel', 'powerpoint', 'ms office', 'ms word', 'google workspace',
+            # Security & networking
+            'cybersecurity', 'network security', 'penetration testing', 'cissp', 'cism',
+            'firewalls', 'vpn', 'siem', 'soc',
+            # Mobile
+            'android', 'ios', 'mobile development', 'xamarin',
+            # Testing
+            'selenium', 'cypress', 'jest', 'pytest', 'qa', 'quality assurance', 'automation testing',
+            # Blockchain & emerging
+            'blockchain', 'solidity', 'web3', 'smart contracts',
+            # Communication
+            'kafka', 'rabbitmq', 'grpc', 'websockets',
         ]
         found_skills = []
         for skill in skill_keywords:
@@ -126,9 +160,29 @@ class EmailParser:
                 result['experience'] = int(match.group(1))
                 break
         
-        # Extract location
-        location_keywords = ['dubai', 'abu dhabi', 'uae', 'sharjah', 'ajman', 'remote', 
-                           'india', 'pakistan', 'philippines', 'uk', 'us', 'usa']
+        # Extract location (comprehensive global list)
+        location_keywords = [
+            # UAE
+            'dubai', 'abu dhabi', 'sharjah', 'ajman', 'ras al khaimah', 'fujairah', 'umm al quwain', 'uae',
+            # GCC / Middle East  
+            'riyadh', 'jeddah', 'dammam', 'saudi arabia', 'ksa', 'doha', 'qatar', 'kuwait',
+            'bahrain', 'muscat', 'oman', 'amman', 'jordan', 'beirut', 'lebanon', 'cairo', 'egypt',
+            # South Asia
+            'india', 'mumbai', 'delhi', 'bangalore', 'bengaluru', 'hyderabad', 'chennai', 'pune', 'kolkata',
+            'pakistan', 'karachi', 'lahore', 'islamabad', 'sri lanka', 'colombo', 'nepal', 'bangladesh', 'dhaka',
+            # Southeast Asia
+            'philippines', 'manila', 'singapore', 'malaysia', 'kuala lumpur', 'indonesia', 'jakarta',
+            'vietnam', 'thailand', 'bangkok',
+            # Europe
+            'uk', 'london', 'manchester', 'germany', 'berlin', 'france', 'paris', 'netherlands',
+            'amsterdam', 'spain', 'italy', 'switzerland', 'ireland', 'dublin',
+            # Americas
+            'usa', 'us', 'new york', 'california', 'texas', 'canada', 'toronto', 'vancouver',
+            # Africa
+            'nigeria', 'lagos', 'kenya', 'nairobi', 'south africa', 'johannesburg', 'ghana',
+            # Other
+            'remote', 'hybrid', 'onsite', 'on-site', 'work from home',
+        ]
         for loc in location_keywords:
             if loc in body_lower:
                 result['location'] = loc.title()
@@ -460,13 +514,19 @@ class EmailParser:
                 info['years_experience'] = int(match.group(1))
                 break
         
-        # Extract skills (common tech skills)
+        # Extract skills (common tech skills — word-boundary matching)
         skill_keywords = [
             'python', 'javascript', 'typescript', 'react', 'node.js', 'vue', 'angular',
-            'java', 'c++', 'c#', 'go', 'rust', 'ruby', 'php', 'swift', 'kotlin',
-            'sql', 'postgresql', 'mongodb', 'mysql', 'redis',
-            'docker', 'kubernetes', 'aws', 'azure', 'gcp',
-            'machine learning', 'ai', 'data science', 'tensorflow', 'pytorch'
+            'java', 'c++', 'c#', 'golang', 'rust', 'ruby', 'php', 'swift', 'kotlin', 'scala',
+            'sql', 'postgresql', 'mongodb', 'mysql', 'redis', 'elasticsearch', 'oracle',
+            'docker', 'kubernetes', 'aws', 'azure', 'gcp', 'terraform', 'jenkins',
+            'machine learning', 'deep learning', 'data science', 'tensorflow', 'pytorch',
+            'django', 'flask', 'fastapi', 'spring boot', 'express', 'next.js',
+            'html', 'css', 'tailwind', 'figma', 'photoshop',
+            'agile', 'scrum', 'jira', 'git', 'ci/cd', 'devops',
+            'salesforce', 'sap', 'erp', 'crm', 'power bi', 'tableau',
+            'excel', 'marketing', 'seo', 'sales', 'accounting', 'finance',
+            'project management', 'business development', 'recruitment',
         ]
         
         text_lower = text.lower()

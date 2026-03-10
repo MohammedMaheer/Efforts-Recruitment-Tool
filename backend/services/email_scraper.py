@@ -1,4 +1,4 @@
-﻿"""
+"""
 Multi-Email Account Scraper Service
 Supports multiple email services simultaneously with full history processing
 Now with Indeed, LinkedIn, and other job portal email parsing
@@ -1229,6 +1229,46 @@ class EmailScraperService:
                 logger.warning(f"System notification email skipped: {subject[:80]} from {sender_email}")
                 return None
             
+            # Parse resume if attached — do this BEFORE AI parsing so we can
+            # send resume_text to Gemini for richer extraction
+            resume_data = None
+            resume_file_data = None
+            resume_filename = None
+            _raw_resume_text = ""  # Raw text from resume attachment for AI enrichment
+            
+            if email_data.get('attachments'):
+                for attachment in email_data['attachments']:
+                    try:
+                        filename = attachment.get('filename', '')
+                        file_data = attachment.get('data')
+                        
+                        if not file_data:
+                            continue
+                            
+                        # Check if it's a resume file
+                        if filename.lower().endswith(('.pdf', '.docx', '.doc')):
+                            resume_data = await self.resume_parser.parse_resume(
+                                file_data,
+                                filename
+                            )
+                            # Store the raw file for download
+                            resume_file_data = file_data
+                            resume_filename = filename
+                            # Capture raw text for AI enrichment
+                            _raw_resume_text = resume_data.get('raw_text', '') if resume_data else ''
+                            logger.info(f"Parsed resume: {filename}")
+                            break
+                    except Exception as parse_err:
+                        logger.warning(f"Error parsing attachment {attachment.get('filename', 'unknown')}: {str(parse_err)[:50]}")
+                        continue
+            
+            # If no resume attachment, parse email body as fallback
+            if not resume_data:
+                resume_data = self.email_parser.parse_email_application(
+                    clean_body,
+                    sender_email
+                )
+            
             # FIRST: Try LLM-powered email parsing (100% accurate)
             llm_portal_data = None
             try:
@@ -1254,7 +1294,8 @@ class EmailScraperService:
                         llm_portal_data = await gemini_svc.parse_candidate_email(
                             subject=subject,
                             body=clean_body[:4000],
-                            sender=sender_email
+                            sender=sender_email,
+                            resume_text=_raw_resume_text
                         )
                         if llm_portal_data:
                             logger.info(f"Gemini parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
@@ -1297,60 +1338,107 @@ class EmailScraperService:
                             logger.info(f"Parsed {portal_name}: {portal_result.get('name', 'Unknown')}")
                             break
             
-            # Parse resume if attached
-            resume_data = None
-            resume_file_data = None
-            resume_filename = None
-            
-            if email_data.get('attachments'):
-                for attachment in email_data['attachments']:
-                    try:
-                        filename = attachment.get('filename', '')
-                        file_data = attachment.get('data')
-                        
-                        if not file_data:
-                            continue
-                            
-                        # Check if it's a resume file
-                        if filename.lower().endswith(('.pdf', '.docx', '.doc')):
-                            resume_data = await self.resume_parser.parse_resume(
-                                file_data,
-                                filename
-                            )
-                            # Store the raw file for download
-                            resume_file_data = file_data
-                            resume_filename = filename
-                            logger.info(f"ðŸ“„ Parsed resume: {filename}")
-                            break
-                    except Exception as parse_err:
-                        logger.warning(f"Error parsing attachment {attachment.get('filename', 'unknown')}: {str(parse_err)[:50]}")
-                        continue
-            
-            # If no resume, parse email body (use cleaned body)
-            if not resume_data:
-                resume_data = self.email_parser.parse_email_application(
-                    clean_body,
-                    sender_email
-                )
-            
-            # Merge job portal data with resume data (job portal takes priority for contact info)
+            # --- COMPREHENSIVE MERGE: Combine all data sources ---
+            # Priority: job_portal_data > resume_data (attachment) > email body
+            # For arrays: merge and deduplicate across sources
             if job_portal_data:
-                # Use job portal name/email if available, otherwise fall back to resume
+                # Contact info - portal data is most reliable
                 if job_portal_data.get('name') and is_valid_name(job_portal_data['name']):
                     resume_data['name'] = job_portal_data['name']
                 if job_portal_data.get('email'):
-                    # Use candidate's actual email from job portal, not the portal's noreply
                     if '@indeed.com' not in job_portal_data['email'].lower():
                         sender_email = job_portal_data['email']
-                if job_portal_data.get('phone'):
+                if job_portal_data.get('phone') and not resume_data.get('phone'):
                     resume_data['phone'] = job_portal_data['phone']
-                if job_portal_data.get('location'):
+                if job_portal_data.get('location') and (not resume_data.get('location') or resume_data.get('location') == 'Not Specified'):
                     resume_data['location'] = job_portal_data['location']
-                if job_portal_data.get('skills'):
-                    resume_data['skills'] = list(set(resume_data.get('skills', []) + job_portal_data['skills']))
-                if job_portal_data.get('experience'):
-                    resume_data['experience'] = job_portal_data['experience']
+                
+                # Skills - merge and deduplicate
+                portal_skills = job_portal_data.get('skills', [])
+                resume_skills = resume_data.get('skills', [])
+                if portal_skills:
+                    existing_lower = {s.lower() for s in resume_skills}
+                    for s in portal_skills:
+                        if s.lower() not in existing_lower:
+                            resume_skills.append(s)
+                            existing_lower.add(s.lower())
+                    resume_data['skills'] = resume_skills
+                
+                # Experience - take higher non-zero value
+                portal_exp = job_portal_data.get('experience', 0) or job_portal_data.get('experience_years', 0) or 0
+                resume_exp = resume_data.get('experience', 0) or 0
+                if portal_exp > 0:
+                    resume_data['experience'] = max(portal_exp, resume_exp)
+                
+                # Work history - merge from portal if resume is empty
+                portal_wh = job_portal_data.get('work_history', [])
+                resume_wh = resume_data.get('work_history', [])
+                if portal_wh and not resume_wh:
+                    resume_data['work_history'] = portal_wh
+                elif portal_wh and resume_wh:
+                    existing_titles = {str(w.get('title', '')).lower() for w in resume_wh if isinstance(w, dict)}
+                    for pw in portal_wh:
+                        if isinstance(pw, dict) and str(pw.get('title', '')).lower() not in existing_titles:
+                            resume_wh.append(pw)
+                    resume_data['work_history'] = resume_wh
+                
+                # Education - merge
+                portal_edu = job_portal_data.get('education', [])
+                resume_edu = resume_data.get('education', [])
+                if portal_edu and not resume_edu:
+                    resume_data['education'] = portal_edu
+                elif portal_edu and resume_edu:
+                    existing_degrees = {str(e.get('degree', '')).lower() + str(e.get('institution', '')).lower() for e in resume_edu if isinstance(e, dict)}
+                    for pe in portal_edu:
+                        if isinstance(pe, dict):
+                            key = str(pe.get('degree', '')).lower() + str(pe.get('institution', '')).lower()
+                            if key not in existing_degrees:
+                                resume_edu.append(pe)
+                    resume_data['education'] = resume_edu
+                
+                # Summary - prefer longer, more detailed
+                portal_summary = job_portal_data.get('summary', '') or ''
+                resume_summary = resume_data.get('summary', '') or ''
+                if len(portal_summary) > len(resume_summary) + 20:
+                    resume_data['summary'] = portal_summary
+                
+                # Certifications - merge
+                portal_certs = job_portal_data.get('certifications', [])
+                resume_certs = resume_data.get('certifications', [])
+                if portal_certs:
+                    if not resume_certs:
+                        resume_data['certifications'] = portal_certs
+                    else:
+                        existing_certs = {str(c).lower() for c in resume_certs}
+                        for pc in portal_certs:
+                            if str(pc).lower() not in existing_certs:
+                                resume_certs.append(pc)
+                        resume_data['certifications'] = resume_certs
+                
+                # Languages - merge
+                portal_langs = job_portal_data.get('languages', [])
+                resume_langs = resume_data.get('languages', [])
+                if portal_langs:
+                    if not resume_langs:
+                        resume_data['languages'] = portal_langs
+                    else:
+                        existing_langs = {str(l).lower() for l in resume_langs}
+                        for pl in portal_langs:
+                            if str(pl).lower() not in existing_langs:
+                                resume_langs.append(pl)
+                        resume_data['languages'] = resume_langs
+                
+                # LinkedIn
+                if job_portal_data.get('linkedin') and not resume_data.get('linkedin'):
+                    resume_data['linkedin'] = job_portal_data['linkedin']
+                
+                # New enriched fields
+                for field in ('nationality', 'notice_period', 'current_salary', 'expected_salary', 'job_applied_for'):
+                    if job_portal_data.get(field) and not resume_data.get(field):
+                        resume_data[field] = job_portal_data[field]
             
+
+
             # Determine actual candidate email early (needed for ID generation)
             actual_candidate_email = sender_email
             if job_portal_data and job_portal_data.get('email'):
@@ -1485,7 +1573,16 @@ class EmailScraperService:
                 'last_updated': datetime.now().isoformat(),
                 # Resume file for download
                 'resume_file_data': resume_file_data,
-                'resume_filename': resume_filename
+                'resume_filename': resume_filename,
+                # Enriched fields from comprehensive extraction
+                'certifications': resume_data.get('certifications', []),
+                'languages': resume_data.get('languages', []),
+                'nationality': resume_data.get('nationality', ''),
+                'notice_period': resume_data.get('notice_period', ''),
+                'current_salary': resume_data.get('current_salary', ''),
+                'expected_salary': resume_data.get('expected_salary', ''),
+                'source_portal': portal_source or resume_data.get('source', 'Direct'),
+                'job_applied_for': resume_data.get('job_applied_for', ''),
             }
             
             # Compute data quality score — useful for prioritising review

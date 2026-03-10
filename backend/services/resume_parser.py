@@ -392,11 +392,21 @@ class ResumeParser:
         return ""
 
     def _extract_from_docx(self, content: bytes) -> str:
-        """Extract text from DOCX"""
+        """Extract text from DOCX including paragraphs and tables"""
         doc_file = BytesIO(content)
         doc = docx.Document(doc_file)
-        text = "\n".join([paragraph.text for paragraph in doc.paragraphs])
-        return text
+        
+        # Extract paragraph text
+        parts = [paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip()]
+        
+        # Extract table text (many resumes use tables for layout)
+        for table in doc.tables:
+            for row in table.rows:
+                row_text = ' | '.join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                if row_text:
+                    parts.append(row_text)
+        
+        return "\n".join(parts)
     
     async def parse_resume(self, content: bytes, filename: str) -> Dict[str, Any]:
         """
@@ -423,8 +433,15 @@ class ResumeParser:
             llm_result['raw_text'] = text[:5000]
             return llm_result
         
-        # Strategy 2: Fallback to regex-based extraction
-        logger.info("âš ï¸ LLM unavailable, using regex-based extraction")
+        # Strategy 2: Try Gemini-powered extraction (production fallback)
+        gemini_result = await self._parse_with_gemini(text)
+        if gemini_result:
+            logger.info(f"Resume parsed with Gemini: {gemini_result.get('name', 'Unknown')}")
+            gemini_result['raw_text'] = text[:5000]
+            return gemini_result
+        
+        # Strategy 3: Fallback to regex-based extraction
+        logger.info("LLM+Gemini unavailable, using regex-based extraction")
         name = self._extract_name(text)
         email = self._extract_email(text)
         phone = self._extract_phone(text)
@@ -489,6 +506,71 @@ class ResumeParser:
             
         except Exception as e:
             logger.warning(f"LLM resume parsing failed: {e}")
+            return None
+    
+    async def _parse_with_gemini(self, text: str) -> Optional[Dict[str, Any]]:
+        """Parse resume using Gemini AI service as production fallback.
+        
+        This is critical for Cloud Run where Ollama isn't available.
+        Uses the same comprehensive extraction as analyze_candidate but
+        returns data in resume parser format.
+        """
+        try:
+            from services.gemini_service import get_gemini_service
+            gemini = get_gemini_service()
+            if not gemini or not gemini.available:
+                logger.info("Gemini service not available for resume parsing")
+                return None
+            
+            # Use analyze_candidate which has a comprehensive prompt
+            result = await gemini.analyze_candidate(text)
+            
+            if result and (result.get('name') or result.get('email') or result.get('skills')):
+                # Normalize work_history format
+                work_history = result.get('work_history', [])
+                if isinstance(work_history, list):
+                    normalized_wh = []
+                    for w in work_history:
+                        if isinstance(w, dict):
+                            normalized_wh.append(w)
+                        elif isinstance(w, str):
+                            normalized_wh.append({"title": w, "company": "", "period": "", "description": ""})
+                    work_history = normalized_wh
+                
+                # Normalize education format
+                education = result.get('education', [])
+                if isinstance(education, list):
+                    normalized_edu = []
+                    for e in education:
+                        if isinstance(e, dict):
+                            normalized_edu.append(e)
+                        elif isinstance(e, str):
+                            normalized_edu.append({"degree": e, "field": "", "institution": "", "year": ""})
+                    education = normalized_edu
+                
+                return {
+                    "name": result.get('name', 'Unknown'),
+                    "email": result.get('email', ''),
+                    "phone": result.get('phone', ''),
+                    "skills": result.get('skills', []),
+                    "experience": result.get('experience', result.get('experience_years', 0)),
+                    "education": education,
+                    "work_history": work_history,
+                    "summary": result.get('summary', ''),
+                    "location": result.get('location', ''),
+                    "linkedin": result.get('linkedin', ''),
+                    "certifications": result.get('certifications', []),
+                    "languages": result.get('languages', []),
+                    "job_category": result.get('job_category', 'General'),
+                    "job_subcategory": result.get('job_subcategory', ''),
+                    "nationality": result.get('nationality', ''),
+                    "parsed_by": "gemini"
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Gemini resume parsing failed: {e}")
             return None
     
     def _empty_result(self, text: str = "") -> Dict[str, Any]:
@@ -707,12 +789,14 @@ class ResumeParser:
         return ""
     
     def _extract_skills(self, text: str) -> List[str]:
-        """Extract technical skills"""
+        """Extract technical skills using word-boundary matching"""
         text_lower = text.lower()
         found_skills = []
         
         for skill in self.skill_keywords:
-            if skill in text_lower:
+            # Use word boundaries to prevent false positives
+            # e.g., 'go' shouldn't match 'going', 'r' shouldn't match 'required'
+            if re.search(r'\b' + re.escape(skill) + r'\b', text_lower):
                 found_skills.append(skill.title())
         
         return list(set(found_skills))[:15]  # Return up to 15 unique skills

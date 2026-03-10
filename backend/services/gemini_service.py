@@ -784,12 +784,19 @@ Only extract explicitly stated data. Never fabricate."""
     # EMAIL CANDIDATE EXTRACTION
     # ==================================================================
 
-    async def parse_candidate_email(self, subject: str, body: str, sender: str = "") -> Optional[Dict]:
-        """Parse candidate email using Gemini."""
+    async def parse_candidate_email(self, subject: str, body: str, sender: str = "", resume_text: str = "") -> Optional[Dict]:
+        """Parse candidate email using Gemini with comprehensive extraction.
+        
+        Args:
+            subject: Email subject line
+            body: Email body text
+            sender: Sender email address
+            resume_text: Optional raw resume text (from PDF/DOCX attachment) for richer extraction
+        """
         if not body or len(body.strip()) < 20:
             return None
 
-        cache_key = self._cache_key("email", f"{subject}:{body[:500]}")
+        cache_key = self._cache_key("email", f"{subject}:{body[:500]}:{resume_text[:200] if resume_text else ''}")
         cached = self._get_cached(cache_key)
         if cached:
             return cached
@@ -802,35 +809,74 @@ Only extract explicitly stated data. Never fabricate."""
             source = "LinkedIn"
         elif "naukri" in body_lower:
             source = "Naukri"
+        elif "bayt" in body_lower:
+            source = "Bayt"
+        elif "gulftalent" in body_lower:
+            source = "GulfTalent"
+        elif "glassdoor" in body_lower:
+            source = "Glassdoor"
 
-        from services.job_taxonomy import classify_job_title
+        from services.job_taxonomy import classify_job_title, get_taxonomy_prompt_text
 
-        # COST OPTIMIZED: Removed taxonomy, reduced body to 2.5K
-        prompt = f"""Parse this job application email. Extract candidate info. Return ONLY valid JSON.
+        # Build combined text — email body + resume if available
+        # Increased budget from 2.5K to 5K for richer extraction
+        body_section = body[:3500]
+        resume_section = ""
+        if resume_text and len(resume_text.strip()) > 50:
+            resume_section = f"\n\nRESUME TEXT (from attached file):\n{resume_text[:5000]}"
+
+        taxonomy_text = get_taxonomy_prompt_text()
+
+        prompt = f"""You are an expert recruitment data extraction AI. Parse this job application email and extract ALL candidate information with maximum accuracy. Return ONLY valid JSON.
 
 SUBJECT: {subject}
 SENDER: {sender}
 SOURCE: {source}
 
-BODY:
-{body[:2500]}
+EMAIL BODY:
+{body_section}
+{resume_section}
 
-Return JSON:
+JOB TAXONOMY (use these EXACT category/subcategory names):
+{taxonomy_text}
+
+Return ONLY valid JSON with this EXACT structure:
 {{
-    "name": "Candidate name",
-    "email": "email",
-    "phone": "phone or empty",
-    "location": "location or empty",
-    "skills": ["skills"],
+    "name": "Full name of the candidate",
+    "email": "Candidate email (NOT the portal noreply address)",
+    "phone": "Phone with country code or empty",
+    "location": "City, Country or empty",
+    "skills": ["Extract ALL technical and professional skills mentioned — be thorough"],
     "experience_years": 0,
-    "summary": "Brief summary",
+    "summary": "2-4 sentence professional summary based on actual content",
     "linkedin": "LinkedIn URL or empty",
-    "job_applied_for": "Position applied for",
+    "job_applied_for": "Position title the candidate applied for",
     "source": "{source}",
+    "nationality": "Nationality if mentioned or empty",
+    "notice_period": "Notice period if mentioned or empty",
+    "current_salary": "Current salary if mentioned or empty",
+    "expected_salary": "Expected salary if mentioned or empty",
+    "work_history": [
+        {{"title": "Job title", "company": "Company name", "period": "Date range", "description": "Key responsibilities/achievements"}}
+    ],
+    "education": [
+        {{"degree": "Degree type", "field": "Field of study", "institution": "University/College", "year": "Graduation year"}}
+    ],
+    "certifications": ["List any certifications mentioned"],
+    "languages": ["Languages spoken if mentioned"],
+    "job_category": "Best matching category from taxonomy",
+    "job_subcategory": "Specific role subcategory from taxonomy",
     "is_candidate_email": true
 }}
 
-Set is_candidate_email to false if NOT a job application."""
+CRITICAL RULES:
+- Set is_candidate_email to false if this is NOT a job application (e.g., newsletter, invoice, internal email)
+- Extract the candidate's ACTUAL email, not system/noreply addresses
+- For skills: include ALL technical skills, tools, frameworks, methodologies, and relevant soft skills
+- For work_history: extract EVERY position with title, company, dates, and description
+- For education: extract ALL degrees with institution name and field
+- NEVER fabricate data — use empty strings/arrays for missing fields
+- For experience_years: calculate from work history or use explicitly stated number"""
 
         try:
             result = await self._agenerate_json(prompt, temperature=0.05)
@@ -1680,6 +1726,21 @@ Return JSON:
                     else:
                         relevance -= 40  # Penalty for being in wrong location
                 
+                # ── Nationality scoring ──
+                _nat_match = NATIONALITY_PATTERN.search(message)
+                if _nat_match:
+                    required_nationality = _nat_match.group(1).strip().lower()
+                    candidate_nationality = str(c.get('nationality', '')).lower()
+                    if candidate_nationality and required_nationality:
+                        # Check if any word in required nationality matches candidate's nationality
+                        nat_words = set(required_nationality.split())
+                        if any(nw in candidate_nationality for nw in nat_words if len(nw) > 2):
+                            relevance += 50  # Strong nationality match
+                        elif required_nationality in candidate_nationality or candidate_nationality in required_nationality:
+                            relevance += 50
+                        else:
+                            relevance -= 20  # Nationality mismatch when explicitly requested
+                
                 # ── Multi-word phrase matching (bonus on top of individual keyword scores) ──
                 for phrase in query_phrases:
                     if phrase in skills_str:
@@ -1917,6 +1978,24 @@ Return JSON:
                     f"   Edu: {edu_str}\n"
                     f"   Contact: {c.get('email', 'N/A')} | {c.get('phone', 'N/A')}\n"
                 )
+                # Append enriched fields only when they have meaningful values
+                _extra_lines = []
+                _nat = c.get('nationality', '')
+                _notice = c.get('notice_period', '')
+                _salary = c.get('current_salary', '') or c.get('expected_salary', '')
+                _portal = c.get('source_portal', '')
+                _job_app = c.get('job_applied_for', '')
+                _certs = c.get('certifications', [])
+                _langs = c.get('languages', [])
+                if _nat: _extra_lines.append(f"Nationality: {_nat}")
+                if _notice: _extra_lines.append(f"Notice: {_notice}")
+                if _salary: _extra_lines.append(f"Salary: {c.get('current_salary', '')} → {c.get('expected_salary', '')}")
+                if _portal and _portal != 'Direct': _extra_lines.append(f"Source: {_portal}")
+                if _job_app: _extra_lines.append(f"Applied for: {_job_app}")
+                if isinstance(_certs, list) and _certs: _extra_lines.append(f"Certs: {', '.join(str(x) for x in _certs[:5])}")
+                if isinstance(_langs, list) and _langs: _extra_lines.append(f"Languages: {', '.join(str(x) for x in _langs[:5])}")
+                if _extra_lines:
+                    candidates_context += f"   {' | '.join(_extra_lines)}\n"
 
         # Build conversation context
         history_text = ""

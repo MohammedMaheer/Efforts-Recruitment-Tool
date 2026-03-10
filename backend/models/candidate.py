@@ -36,6 +36,17 @@ class Candidate(BaseModel):
     applied_date: datetime
     match_score: Optional[float] = None
     status: Optional[str] = None
+    job_category: Optional[str] = None
+    job_subcategory: Optional[str] = None
+    certifications: Optional[List[str]] = []
+    languages: Optional[List[str]] = []
+    nationality: Optional[str] = None
+    notice_period: Optional[str] = None
+    current_salary: Optional[str] = None
+    expected_salary: Optional[str] = None
+    source_portal: Optional[str] = 'Direct'
+    job_applied_for: Optional[str] = None
+    linkedin: Optional[str] = None
 
 class JobDescription(BaseModel):
     id: str
