@@ -926,7 +926,7 @@ async def auto_sync_emails():
 # =====================================================
 # GCS Database Persistence (prevents data loss on redeploy)
 # =====================================================
-GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "efforts-recruitment-data")
+GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "efforts-recruitment-ai-data")
 GCS_DB_BLOB_PATH = "db/recruitment.db"
 LOCAL_DB_PATH = "./recruitment.db"
 _db_backup_task = None
@@ -3294,7 +3294,7 @@ async def fix_garbage_summaries(current_user: dict = Depends(require_auth)):
             try:
                 from google.cloud import storage
                 gcs_client = storage.Client()
-                bucket = gcs_client.bucket('efforts-recruitment-data')
+                bucket = gcs_client.bucket(GCS_BUCKET_NAME)
                 blob = bucket.blob('db/recruitment.db')
                 blob.upload_from_filename('/app/data/recruitment.db')
                 logger.info("☁️ Database backed up to GCS after summary fix")

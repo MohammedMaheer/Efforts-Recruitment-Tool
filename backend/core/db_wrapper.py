@@ -26,7 +26,10 @@ from typing import Optional, List, Any, Tuple, Dict
 
 logger = logging.getLogger(__name__)
 
-DATABASE_URL = os.getenv("DATABASE_URL", "./recruitment.db")
+# On Cloud Run (K_SERVICE set), default SQLite to /tmp which is a writable tmpfs.
+# The overlay filesystem at /app/ causes "disk I/O error" with SQLite.
+_default_db = "/tmp/recruitment.db" if os.getenv("K_SERVICE") else "./recruitment.db"
+DATABASE_URL = os.getenv("DATABASE_URL", _default_db)
 IS_POSTGRES = DATABASE_URL.startswith("postgres")
 
 
@@ -333,7 +336,12 @@ def create_connection(db_url: str = None) -> Any:
         raise last_err
     else:
         import sqlite3
-        url = db_url or DATABASE_URL
+        # On Cloud Run, always use DATABASE_URL (/tmp/) regardless of caller-supplied path
+        # to avoid "disk I/O error" on the read-only overlay filesystem.
+        if os.getenv("K_SERVICE"):
+            url = DATABASE_URL
+        else:
+            url = db_url or DATABASE_URL
         conn = sqlite3.connect(url, check_same_thread=False, timeout=30.0)
         conn.row_factory = sqlite3.Row
         return conn
