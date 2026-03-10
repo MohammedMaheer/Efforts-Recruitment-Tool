@@ -1428,13 +1428,21 @@ Return JSON:
             'engineer', 'manager', 'designer', 'analyst', 'consultant', 'accountant',
             'administrator', 'coordinator', 'specialist', 'architect', 'director',
             'nurse', 'doctor', 'teacher', 'driver', 'technician', 'executive',
+            'available', 'immediate joiner', 'with skills', 'proficient in',
+            'who knows', 'who has', 'who can', 'working in', 'worked in',
+            'having', 'holding', 'certified in', 'speaks', 'speaking',
+            'nationality', 'passport', 'visa', 'notice period',
         ]
         has_search_signal = any(w in msg for w in search_overrides)
         
+        # Check if any known SKILL is mentioned — strong search signal even without verbs
+        msg_word_set = set(re.sub(r'[^\w\s]', ' ', msg).split())
+        skill_keywords_in_msg = msg_word_set & set(SKILL_SYNONYMS.keys())
+        has_skill_signal = len(skill_keywords_in_msg) >= 1
+        
         # Also check if any known location is mentioned — strong search signal
-        msg_words = set(re.sub(r'[^\w\s]', ' ', msg).split())
         has_location_signal = any(loc in msg for loc in KNOWN_LOCATIONS if ' ' in loc) or \
-                             bool(msg_words & {loc for loc in KNOWN_LOCATIONS if ' ' not in loc})
+                             bool(msg_word_set & {loc for loc in KNOWN_LOCATIONS if ' ' not in loc})
         
         # Also check for seniority level mentions — search signal
         has_seniority = bool(SENIORITY_PATTERN.search(msg))
@@ -1456,7 +1464,7 @@ Return JSON:
             'how to assess', 'screening tips', 'evaluation criteria',
             'what to look for', 'hiring tips', 'recruitment tips',
         ]
-        if any(sig in msg for sig in advice_signals) and not (has_search_signal or has_location_signal):
+        if any(sig in msg for sig in advice_signals) and not (has_search_signal or has_location_signal or has_skill_signal):
             return 'advice'
 
         # Complex multi-criteria prompts → always 'search' (these are job spec prompts)
@@ -1468,8 +1476,8 @@ Return JSON:
         if criteria_count >= 2:
             return 'search'
         
-        # If any strong search signal (location, seniority, experience), route to search
-        if has_location_signal or has_seniority or has_experience:
+        # If any strong search signal (location, seniority, experience, specific skill), route to search
+        if has_location_signal or has_seniority or has_experience or has_skill_signal:
             return 'search'
 
         # Default: candidate search
@@ -1617,6 +1625,18 @@ Return JSON:
             for alias, expansions in LOCATION_ALIASES.items():
                 if alias in keywords:
                     expanded_keywords.update(expansions)
+            
+            # Expand keywords with skill synonyms for broader pre-filter recall
+            # e.g. if user says "react", also score candidates with "reactjs", "react.js"
+            synonym_expanded = set()
+            for kw in list(expanded_keywords):
+                syns = SKILL_SYNONYMS.get(kw, set())
+                if syns:
+                    # Only add close synonyms (same tool/tech), not broad generalizations
+                    for syn in syns:
+                        if len(syn) >= 2:
+                            synonym_expanded.add(syn)
+            expanded_keywords.update(synonym_expanded)
                     
             # ── Build multi-word phrases from query for phrase matching ──
             # e.g. "data science" should match as a phrase, not just "data" + "science"
@@ -1669,6 +1689,16 @@ Return JSON:
                 # ── Build searchable text from certifications ──
                 certs = c.get('certifications', [])
                 certs_text = ' '.join([str(x).lower() for x in certs[:10]]) if isinstance(certs, list) else ''
+                
+                # ── Build searchable text from resume_text (truncated for speed) ──
+                resume_text = str(c.get('resume_text', '') or '')[:2000].lower()
+                
+                # ── Job applied for ──
+                job_applied_for = str(c.get('job_applied_for', c.get('jobAppliedFor', '')) or '').lower()
+                
+                # ── Languages ──
+                langs = c.get('languages', [])
+                langs_text = ' '.join([str(x).lower() for x in langs[:10]]) if isinstance(langs, list) else ''
                 
                 # ── HARD FILTER: Experience cap ──
                 # When user specifies an explicit max (e.g. "0-2 years"), completely
@@ -1730,18 +1760,29 @@ Return JSON:
                             seniority_fit = -15
                     relevance += seniority_fit
                 
-                # ── Location-aware scoring ──
+                # ── Location-aware scoring (tiered: exact city > same country > region) ──
                 location_matched = False
+                location_exact_city = False
                 if has_location_requirement:
                     loc_words = set(re.sub(r'[^\w\s]', ' ', location).split())
-                    for lt in expanded_location_terms:
+                    # Check for exact city/term match first (highest priority)
+                    for lt in required_location_terms:
                         if lt in location or lt in loc_words:
                             location_matched = True
+                            location_exact_city = True
                             break
-                    if location_matched:
-                        relevance += 60  # Strong boost for matching the required location
+                    # If not exact, check expanded aliases (same country/region)
+                    if not location_matched:
+                        for lt in expanded_location_terms:
+                            if lt in location or lt in loc_words:
+                                location_matched = True
+                                break
+                    if location_exact_city:
+                        relevance += 80  # Exact city/term match — strongest boost
+                    elif location_matched:
+                        relevance += 45  # Same country/region match — good but not perfect
                     else:
-                        relevance -= 40  # Penalty for being in wrong location
+                        relevance -= 50  # Wrong location — strong penalty when location is required
                 
                 # ── Nationality scoring ──
                 _nat_match = NATIONALITY_PATTERN.search(message)
@@ -1845,9 +1886,22 @@ Return JSON:
                     if kw in set(summary.split()):
                         relevance += 12
                     
-                    # ── If keyword matched nowhere at all, slight penalty to de-rank irrelevant candidates ──
-                    if not matched_skill and kw not in cat_words and kw not in wh_words and kw not in set(summary.split()):
-                        relevance -= 2  # Small penalty per unmatched keyword
+                    # ── Job applied for ── (strong signal — they applied for a matching role)
+                    if job_applied_for and kw in set(job_applied_for.split()):
+                        relevance += 18
+                    
+                    # ── Resume text deep search (fallback for info not yet in structured fields) ──
+                    if resume_text and kw in set(resume_text.split()):
+                        relevance += 6  # Lower weight — raw text is noisy but catches missing fields
+                    
+                    # ── Language match ── (when user asks for specific language speakers)
+                    if langs_text and kw in set(langs_text.split()):
+                        relevance += 15
+                    
+                    # ── If keyword matched nowhere at all, penalty to de-rank irrelevant candidates ──
+                    all_text_words = set(summary.split()) | cat_words | wh_words | set(skills_str.split()) | set(resume_text.split()[:200])
+                    if not matched_skill and kw not in all_text_words:
+                        relevance -= 5  # Stronger penalty per unmatched keyword (was -2)
                 
                 # Boost by match score
                 relevance += score * 0.15
@@ -1907,6 +1961,22 @@ Return JSON:
                             relevance += 5
                         else:
                             relevance -= 10
+                
+                # ── Notice period / availability scoring ──
+                # When user mentions "immediate", "available now", "urgent"
+                if any(w in query_lower for w in ['immediate', 'immediately', 'urgent', 'asap', 'available now', 'available immediately', 'quick joiner', 'immediate joiner']):
+                    notice = str(c.get('notice_period', '') or '').lower()
+                    if notice:
+                        if any(term in notice for term in ['immediate', '0 days', 'available', 'ready', 'now', 'serving']):
+                            relevance += 25
+                        elif any(term in notice for term in ['15 days', '1 week', '2 weeks', 'short']):
+                            relevance += 15
+                        elif any(term in notice for term in ['30 days', '1 month', 'one month']):
+                            relevance += 5
+                
+                # ── Has resume boost — candidates with resumes have richer data ──
+                if c.get('hasResume', c.get('has_resume', False)):
+                    relevance += 3  # Small quality boost
                 
                 scored_candidates.append((relevance, idx, c))
             
@@ -1968,22 +2038,26 @@ Return JSON:
                 work = c.get('workHistory', c.get('work_history', []))
                 if isinstance(work, list):
                     work_entries = []
-                    for w in work[:3]:
+                    for w in work[:4]:  # Show up to 4 positions for better context
                         if isinstance(w, dict):
                             entry = f"{w.get('title', 'N/A')} @ {w.get('company', 'N/A')}"
-                            dur = w.get('duration', '')
+                            dur = w.get('duration', w.get('period', ''))
                             if dur:
                                 entry += f" ({dur})"
+                            desc = w.get('description', '')
+                            if desc and len(str(desc)) > 10:
+                                entry += f" — {str(desc)[:120]}"
                             work_entries.append(entry)
                     work_str = '; '.join(work_entries) or 'N/A'
                 else:
-                    work_str = str(work)[:150] if work else 'N/A'
+                    work_str = str(work)[:200] if work else 'N/A'
                 edu = c.get('education', [])
-                if isinstance(edu, list) and edu:
-                    e = edu[0] if isinstance(edu[0], dict) else {}
-                    edu_str = ' - '.join(p for p in [e.get('degree', ''), e.get('field', ''), e.get('institution', '')] if p) or 'N/A'
-                else:
-                    edu_str = str(edu)[:100] if edu else 'N/A'
+                edu_parts = []
+                if isinstance(edu, list):
+                    for ed in edu[:3]:
+                        if isinstance(ed, dict):
+                            edu_parts.append(' - '.join(p for p in [ed.get('degree', ''), ed.get('field', ''), ed.get('institution', ''), ed.get('year', '')] if p))
+                edu_str = '; '.join(edu_parts) if edu_parts else 'N/A'
                 
                 candidates_context += (
                     f"[{i+1}] {c.get('name', 'Unknown')} | {c.get('matchScore', 0)}% | "
@@ -2197,57 +2271,87 @@ Keep the same format and quality as the previous response. Use markdown formatti
             # CANDIDATE SEARCH — Optimized prompt for speed + quality
             # ══════════════════════════════════════════════════════════
 
-            prompt = f"""You are an expert AI Recruitment Specialist for Efforts Solutions with deep knowledge of the global talent market. Analyze the candidate pool thoroughly and rank the best matches.
+            prompt = f"""You are an expert AI Recruitment Specialist for Efforts Solutions. Your task is to analyze the candidate pool and return the BEST matches for the user's query with surgical precision.
 
 DATABASE: {total} candidates total | {strong} strong matches (70%+) | Categories: {cat_list}
 
-FILTERS: {constraints_text}
+ACTIVE FILTERS: {constraints_text}
 
 {candidates_context}
 
-HISTORY:{history_text}
+CONVERSATION:{history_text}
 
-QUERY: {message}
+USER QUERY: {message}
 
-CRITICAL — EXACT MATCHING RULES:
-- When the user specifies a LOCATION (city, country, region), ONLY return candidates whose location field matches that location. Do NOT include candidates from other locations unless you have exhausted all local matches and need to fill spots — in that case, explicitly flag them as "Non-local".
-- When the user specifies EXPERIENCE (e.g., "5+ years", "3-7 years"), strictly enforce the range. A candidate with 2 years does NOT qualify for "5+ years". A candidate with 12 years does NOT qualify for "3-7 years".
-- When the user specifies SKILLS (e.g., "React developer", "SAP FICO"), the candidate MUST have that exact skill or a direct equivalent listed. Do not return candidates who lack the core required skill.
-- When the user says "ONLY", "must have", "strictly", "exclude", "no" — treat these as absolute deal-breakers with ZERO flexibility.
-- When the user specifies a JOB TITLE or ROLE, match it to the candidate's work history, job category, and skills — not just keywords.
+═══════════════════════════════════════
+STEP 1 — QUERY DECOMPOSITION (do this internally before ranking)
+═══════════════════════════════════════
+Break the user's query into:
+• ROLE/TITLE: What job role are they looking for?
+• MUST-HAVE SKILLS: Non-negotiable technical/professional skills
+• NICE-TO-HAVE SKILLS: Preferred but not mandatory
+• LOCATION: Required city/country/region (if specified)
+• EXPERIENCE: Exact range or minimum (if specified)
+• SENIORITY: Junior/Mid/Senior/Lead/Director (if implied or stated)
+• INDUSTRY/DOMAIN: Industry vertical (if relevant)
+• EXCLUSIONS: What to explicitly exclude
+• LANGUAGE/NATIONALITY: If mentioned
+• AVAILABILITY: Notice period / urgency (if mentioned)
 
-ANALYSIS FRAMEWORK:
-1. Parse query deeply: extract role, seniority level, must-have skills, nice-to-have skills, location preference, experience range, industry/domain, exclusions, and implicit requirements
-2. Evaluate candidates on a weighted multi-dimensional scoring matrix:
-   - Skills Match (30%): exact matches, close equivalents, transferable skills
-   - Experience Fit (25%): years, seniority level, industry relevance, career trajectory
-   - Location (20%): exact match, same country/region, willingness to relocate (infer from work history)
-   - Industry/Domain Alignment (15%): same sector, adjacent sector, transferable domain knowledge
-   - Education & Certifications (10%): degree relevance, prestigious institutions, professional certifications
-3. Recognize skill synonyms and ecosystems:
-   - Frontend: React=ReactJS, Vue=VueJS, Angular, Next.js≈React+SSR, TypeScript≈JavaScript advanced
-   - Backend: Node=NodeJS, Python≈Django/Flask/FastAPI, Java≈Spring Boot, C#=.NET, Go=Golang
-   - Cloud: AWS=Amazon Web Services, GCP=Google Cloud, Azure=Microsoft Cloud, K8s=Kubernetes
-   - Data: ML=Machine Learning=AI, Data Science≈Analytics, SQL≈PostgreSQL/MySQL/SQLite
-   - Methodologies: Agile=Scrum, CI/CD=DevOps pipelines, TDD=Test-Driven Development
-4. Apply hard filters ("ONLY", "must", "exclude", "no more than") as deal-breakers — auto-disqualify violators
-5. NEVER fabricate candidates. Use ONLY candidates from the pool above.
-6. If few match, say so honestly and suggest specific ways to broaden criteria.
-7. Double-check each candidate against ALL query criteria before including them. If a candidate fails ANY hard filter, EXCLUDE them regardless of other strengths.
+═══════════════════════════════════════
+STEP 2 — STRICT MATCHING RULES (MANDATORY)
+═══════════════════════════════════════
+1. LOCATION: If the user specifies a location, ONLY return candidates from that exact location (city-level match). If you cannot find enough in that city, expand to the same country — but ALWAYS flag non-local candidates with "⚠️ Not in [city]". NEVER silently include candidates from wrong locations.
+2. EXPERIENCE: Enforce the exact range. "5+ years" means >= 5. "3-7 years" means >= 3 AND <= 7. Do NOT bend this rule.
+3. CORE SKILLS: The candidate MUST have the primary skill mentioned in the query (or a direct equivalent like React=ReactJS, Node=NodeJS, Python=Django/Flask). A Java developer does NOT qualify as a Python developer. Do NOT return skill mismatches.
+4. EXCLUSIONS: "exclude", "not", "no", "without", "ONLY" = absolute deal-breakers. Zero tolerance.
+5. VERIFICATION: Before including ANY candidate in your output, mentally verify they pass ALL filters. If they fail even ONE hard filter, DROP them.
 
-Return exactly {num_candidates} candidates (or fewer if not enough qualify):
+Skill equivalence map:
+React=ReactJS=React.js | Node=NodeJS=Node.js | Vue=VueJS=Vue.js | Angular=AngularJS
+Python≈Django/Flask/FastAPI | Java≈Spring Boot | C#=.NET=ASP.NET | Go=Golang
+AWS=Amazon Web Services | GCP=Google Cloud | Azure=Microsoft Cloud | K8s=Kubernetes
+ML=Machine Learning | AI=Artificial Intelligence | NLP=Natural Language Processing
+SQL≈PostgreSQL/MySQL/Oracle | MongoDB=Mongo | NoSQL≈Redis/Cassandra/DynamoDB
+DevOps≈CI/CD+Docker+Kubernetes | Agile=Scrum | RPA=UiPath/BluePrism/Automation Anywhere
+
+═══════════════════════════════════════
+STEP 3 — SCORING MATRIX (for ranking qualified candidates)
+═══════════════════════════════════════
+Weight each dimension:
+• Core Skill Match (35%): Does the candidate have the exact skills requested? Check skills list AND work history titles.
+• Experience Fit (25%): Do their years and seniority level match? Is their career trajectory aligned?
+• Location Match (20%): Exact city > same country > same region. Heavily penalize wrong locations when location is specified.
+• Domain/Industry Fit (10%): Same industry or transferable domain experience.
+• Education & Certs (10%): Relevant degree, certifications matching the role.
+
+═══════════════════════════════════════
+OUTPUT FORMAT — Return up to {num_candidates} candidates (or fewer if not enough qualify)
+═══════════════════════════════════════
 
 **#N. Full Name** | Score: X% | Category | Exp: X yrs | Location
-- **Key Skills:** relevant skills (bold top matches, note skill gaps)
-- **Work History:** recent roles, companies, notable achievements or projects
-- **Match Analysis:** 3-4 sentences explaining why they're a strong fit. Reference specific skills from their profile that match the query. Be honest about any gaps or risks. Note transferable experience from adjacent domains.
-- **Hiring Risk Assessment:** Low/Medium/High — briefly explain (e.g., "Low — exact skill match, right seniority, same city" or "Medium — strong skills but may be overqualified at 12 years for a mid-level role")
-- **Fit Rating:** ⭐⭐⭐⭐⭐ Excellent / ⭐⭐⭐⭐ Strong / ⭐⭐⭐ Good / ⭐⭐ Partial
+- **Key Skills:** list relevant skills (BOLD the ones that match the query)
+- **Work History:** most recent 2-3 roles with company names and key achievements
+- **Why This Candidate:** 3-4 sentences — reference SPECIFIC skills and experience from their profile that match the query. Be honest about any gaps. Mention transferable experience.
+- **Risk Level:** Low/Medium/High — explain briefly (e.g., "Low — exact stack match, right seniority, same city")
+- **Fit:** ⭐⭐⭐⭐⭐ Excellent / ⭐⭐⭐⭐ Strong / ⭐⭐⭐ Good / ⭐⭐ Partial
 - **Contact:** email, phone
+{f"- **Notice Period:** notice period if available" if any(w in query_lower for w in ['immediate', 'urgent', 'asap', 'available', 'notice']) else ""}
 
-End with:
-**📊 Search Intelligence** — How you interpreted the query, what filters were applied, how many candidates were evaluated ({relevant_count} pre-filtered from {total}), how many qualified, and overall pool strength for this role
-**💡 Recruitment Recommendations** — Actionable next steps: interview order priority, additional screening questions to ask top candidates, criteria to relax if pool is thin, alternative job titles to search for"""
+═══════════════════════════════════════
+FOOTER (ALWAYS include)
+═══════════════════════════════════════
+**📊 Search Intelligence**
+- Query interpretation: [what you understood from the query]
+- Filters applied: [location, experience, skills, exclusions]
+- Pool: {relevant_count} pre-filtered → X qualified → {num_candidates} returned
+- Pool quality: [Strong/Moderate/Weak] for this role
+
+**💡 Recommendations**
+- Interview priority order (top 3 by rank)
+- Key screening questions for the top candidates  
+- If pool is thin: suggest criteria to relax or alternative job titles
+- If pool is strong: suggest additional differentiators to narrow down"""
 
             result = await self._agenerate(prompt, temperature=0.15, max_tokens=6000, thinking_budget=8192)
             text_response = result or f"I'm here to help! We have **{total} candidates** in the database. What would you like to know?"
