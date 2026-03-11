@@ -1663,7 +1663,10 @@ setup_middleware(app)
 # CORS configuration - MUST be registered LAST so it's the outermost middleware
 # (Starlette executes middleware in reverse registration order)
 if _settings.is_production:
-    _cors_origin = os.getenv('CORS_ORIGINS', 'https://efforts-recruitment.web.app,https://efforts-recruitment.firebaseapp.com')
+    _cors_origin = os.getenv(
+        'CORS_ORIGINS',
+        'https://efforts-recruitment-ai.web.app,https://efforts-recruitment-ai.firebaseapp.com'
+    )
     allowed_origins = [o.strip() for o in _cors_origin.split(',') if o.strip()]
 else:
     allowed_origins = ['http://localhost:3000', 'http://localhost:3001', 'http://localhost:5173', 'http://localhost:5174']
@@ -1802,6 +1805,41 @@ async def health_check():
             "response_cache_size": len(response_cache),
             "ai_embedding_cache": len(ai_service.embedding_cache) if hasattr(ai_service, 'embedding_cache') else 0
         }
+    }
+
+@app.post("/api/admin/reset-database")
+async def reset_database(auth=Depends(require_admin)):
+    """Nuclear reset: wipe all candidates, resumes, caches, logs. Keeps users."""
+    def _reset():
+        with db_service.get_connection() as conn:
+            cursor = conn.cursor()
+            tables_to_wipe = [
+                'ai_score_cache',
+                'resumes',
+                'email_processing_log',
+                'search_history',
+                'candidates',
+                'sync_metadata',
+            ]
+            for table in tables_to_wipe:
+                try:
+                    cursor.execute(f"DELETE FROM {table}")
+                    logger.info(f"🗑️ Wiped table: {table}")
+                except Exception as e:
+                    logger.warning(f"Could not wipe {table}: {e}")
+            conn.commit()
+            cursor.execute("SELECT COUNT(*) FROM candidates")
+            remaining = cursor.fetchone()[0]
+            return remaining
+    remaining = await asyncio.to_thread(_reset)
+    # Clear in-memory caches
+    response_cache.clear()
+    if hasattr(ai_service, 'embedding_cache'):
+        ai_service.embedding_cache.clear()
+    return {
+        "status": "success",
+        "message": "Database reset complete — all candidates, resumes, caches, and logs wiped",
+        "remaining_candidates": remaining
     }
 
 @app.post("/api/admin/backup-db")
