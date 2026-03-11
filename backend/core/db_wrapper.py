@@ -415,6 +415,15 @@ def init_pg_schema(conn):
             logger.warning(f"Migration {table}.{col}: {e}")
     raw_cursor.close()
     raw_conn.autocommit = old_autocommit
+    
+    # Ensure hr@effortz.com is admin
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE users SET role = 'admin' WHERE email = 'hr@effortz.com' AND role != 'admin'")
+        conn.commit()
+    except Exception as e:
+        logger.debug(f"Admin promotion migration: {e}")
+    
     logger.info("✅ PostgreSQL schema initialized")
 
 
