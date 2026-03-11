@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Location cleanup (inline, avoids circular import from db_repair) ─────────
 _GARBLED_PARENS_RE = re.compile(r'\s*\([^)]*[\u00c0-\u024f\u0600-\u06ff\u0400-\u04ff\u00d8\u00b1\u00a7\u00a9][^)]*\)')
-_NOISE_LOCATIONS = frozenset({'you', 'sir', 'dear', 'n/a', 'na', 'null', 'none', '-', '.', '..', '...', 'unknown', 'soon', 'hello', 'hi', 'hey', 'thanks', 'thank', 'regards', 'resume', 'cv'})
+_NOISE_LOCATIONS = frozenset({'you', 'sir', 'dear', 'n/a', 'na', 'null', 'none', '-', '.', '..', '...', 'unknown', 'soon', 'hello', 'hi', 'hey', 'thanks', 'thank', 'regards', 'resume', 'cv', 'the', 'office', 'our'})
 
 def _clean_loc(loc: str) -> str:
     """Strip garbled Arabic/Unicode from location strings (fast inline version)."""
@@ -32,7 +32,7 @@ def _clean_loc(loc: str) -> str:
     words = [w for w in c.split() if w.lower() not in _NOISE_LOCATIONS]
     c = ' '.join(words).strip(' ,;-.()')
     # Truncate at common non-location tokens (e.g. "Dubai, UAE Valid Driving License")
-    _loc_stop = re.search(r'\b(valid|visa|licence|license|driving|permit|passport|available|immediate|willing|remote|hybrid)\b', c, re.IGNORECASE)
+    _loc_stop = re.search(r'\b(valid|visa|licence|license|driving|permit|passport|available|immediate|willing|remote|hybrid|operational|management|sql|server|linkedin|github|portfolio|website|http|www|com\b)\b', c, re.IGNORECASE)
     if _loc_stop:
         c = c[:_loc_stop.start()].strip(' ,;-.()')
     # Cap at 80 chars (real locations are short)
@@ -102,10 +102,20 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
         name = re.sub(r'\s+', ' ', name).strip()
         # Remove trailing single characters (e.g. "Gowtham s" → "Gowtham")
         name = re.sub(r'\s+[a-zA-Z]$', '', name).strip()
+        # Remove leading single characters (e.g. "V Gopal" is OK but standalone "V" isn't)
+        name = re.sub(r'^[a-zA-Z]\s+', '', name).strip() if len(name.split()) == 1 and len(name) <= 2 else name
         # Remove leading/trailing numbers and special chars
         name = re.sub(r'^[\d\W]+|[\d\W]+$', '', name).strip()
+        # Detect job title used as name — if name contains common job words, discard
+        _job_words = {'developer', 'engineer', 'manager', 'analyst', 'designer', 'consultant',
+                      'director', 'coordinator', 'specialist', 'intern', 'associate', 'executive',
+                      'officer', 'lead', 'architect', 'administrator', 'accountant', 'technician'}
+        name_words_lower = set(name.lower().split())
+        if len(name_words_lower & _job_words) >= 1 and len(name_words_lower) <= 4:
+            # Likely a job title, not a real name
+            name = ''
         # Title case if all-upper or all-lower
-        if name == name.upper() or name == name.lower():
+        if name and (name == name.upper() or name == name.lower()):
             name = name.title()
         c['name'] = name
     
