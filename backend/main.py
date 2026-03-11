@@ -2364,7 +2364,8 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                             uc.commit()
                     await asyncio.to_thread(_update_rescore, cid, new_score, new_category)
                     rescore_count += 1
-                except Exception:
+                except Exception as rescore_err:
+                    logger.warning(f"Re-score error for {name}: {type(rescore_err).__name__}: {str(rescore_err)[:200]}")
                     rescore_errors += 1
         except Exception as se:
             logger.warning(f"Re-score phase error: {se}")
