@@ -122,6 +122,22 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
             name = ''
         # Truncate at obvious non-name tokens (slash, comma followed by opening paren, etc.)
         name = re.sub(r'[/,;(].*$', '', name).strip()
+        # Truncate at dash followed by digits (e.g. "BI DEVELOPER - 5 YEARS Chennai" → "BI")
+        name = re.sub(r'\s*-\s*\d.*$', '', name).strip()
+        # Block explicitly bad names
+        _blocked_names = frozenset({
+            'unknown', 'messages', 'notification', 'noreply', 'no reply',
+            'system', 'admin', 'administrator', 'postmaster', 'mailer-daemon',
+            'indeed', 'linkedin', 'glassdoor', 'monster', 'info', 'support',
+            'test', 'null', 'none', 'n/a', 'na', '',
+            'lusha', 'maestrorecruiter', 'maestro recruiter', 'recruiter',
+            'hiring manager', 'hiring team', 'dear sir', 'dear madam',
+            'candidate', 'applicant', 'resume', 'cv', 'cover letter',
+            'naukri', 'bayt', 'gulftalent', 'ziprecruiter', 'careerbuilder',
+            'user', 'guest', 'subscriber', 'member',
+        })
+        if name.lower() in _blocked_names:
+            name = ''
         # Detect job title used as name — if name contains common job words, discard
         _job_words = {'developer', 'engineer', 'manager', 'analyst', 'designer', 'consultant',
                       'director', 'coordinator', 'specialist', 'intern', 'associate', 'executive',
@@ -185,6 +201,11 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
     if loc and isinstance(loc, str):
         loc = _sanitize_text_field(loc)
         loc = _clean_loc(loc)
+        # Remove candidate name from location (e.g. "Suaida Tp Abu Dhabi" with name "Suaida Tp" → "Abu Dhabi")
+        cand_name = c.get('name', '')
+        if cand_name and loc and cand_name.lower() in loc.lower():
+            loc = re.sub(re.escape(cand_name), '', loc, flags=re.IGNORECASE).strip(' ,;-.()')
+            loc = _clean_loc(loc)  # re-clean after removal
         c['location'] = loc
     
     # Clean skills list
