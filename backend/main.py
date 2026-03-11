@@ -417,6 +417,12 @@ async def auto_sync_emails():
                                     'system', 'admin', 'administrator', 'postmaster', 'mailer-daemon',
                                     'indeed', 'linkedin', 'glassdoor', 'monster', 'info', 'support',
                                     'test', 'null', 'none', 'n/a', 'na', '',
+                                    'lusha', 'maestrorecruiter', 'maestro recruiter', 'recruiter',
+                                    'hiring manager', 'hiring team', 'dear sir', 'dear madam',
+                                    'candidate', 'applicant', 'resume', 'cv',
+                                    'naukri', 'bayt', 'gulftalent', 'ziprecruiter', 'careerbuilder',
+                                    'jobstreet', 'seek', 'reed', 'totaljobs', 'cwjobs',
+                                    'user', 'guest', 'subscriber', 'member',
                                 ]
                                 if any(pat in _email_lower for pat in _BLOCKED_EMAIL_PATTERNS):
                                     logger.debug(f"🚫 Blocked system/noreply email: {candidate['email'][:50]}")

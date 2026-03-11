@@ -31,6 +31,13 @@ def _clean_loc(loc: str) -> str:
     # Remove individual noise words (e.g. "you soon" → "soon" → empty)
     words = [w for w in c.split() if w.lower() not in _NOISE_LOCATIONS]
     c = ' '.join(words).strip(' ,;-.()')
+    # Truncate at common non-location tokens (e.g. "Dubai, UAE Valid Driving License")
+    _loc_stop = re.search(r'\b(valid|visa|licence|license|driving|permit|passport|available|immediate|willing|remote|hybrid)\b', c, re.IGNORECASE)
+    if _loc_stop:
+        c = c[:_loc_stop.start()].strip(' ,;-.()')
+    # Cap at 80 chars (real locations are short)
+    if len(c) > 80:
+        c = c[:80].rsplit(',', 1)[0].strip()
     return '' if (c.lower() in _NOISE_LOCATIONS or len(c) <= 1) else c
 
 # ─── CID artifact pattern (PDF font garbage) ─────────────────────────────────
@@ -87,6 +94,20 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
         val = c.get(field, '')
         if val and isinstance(val, str):
             c[field] = _sanitize_text_field(val)
+    
+    # Extra name cleanup: collapse spaces, strip trailing single-char "initials",
+    # remove numbers/special chars, and proper-case
+    name = c.get('name', '')
+    if name and isinstance(name, str):
+        name = re.sub(r'\s+', ' ', name).strip()
+        # Remove trailing single characters (e.g. "Gowtham s" → "Gowtham")
+        name = re.sub(r'\s+[a-zA-Z]$', '', name).strip()
+        # Remove leading/trailing numbers and special chars
+        name = re.sub(r'^[\d\W]+|[\d\W]+$', '', name).strip()
+        # Title case if all-upper or all-lower
+        if name == name.upper() or name == name.lower():
+            name = name.title()
+        c['name'] = name
     
     # Clean phone
     c['phone'] = _sanitize_phone(c.get('phone', ''))
