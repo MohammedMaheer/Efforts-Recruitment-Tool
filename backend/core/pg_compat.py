@@ -311,6 +311,18 @@ CREATE TABLE IF NOT EXISTS users (
 )
 """
 
+PG_SCHEMA_SEARCH_HISTORY = """
+CREATE TABLE IF NOT EXISTS search_history (
+    id TEXT PRIMARY KEY,
+    query TEXT NOT NULL,
+    description TEXT,
+    result_count INTEGER DEFAULT 0,
+    top_results TEXT,
+    searched_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    user_id TEXT
+)
+"""
+
 # Indexes (same syntax works for both SQLite and PostgreSQL)
 PG_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_candidates_email ON candidates(email)",
@@ -325,6 +337,7 @@ PG_INDEXES = [
     "CREATE INDEX IF NOT EXISTS idx_job_descriptions_category ON job_descriptions(category)",
     "CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)",
     "CREATE INDEX IF NOT EXISTS idx_users_username ON users(username)",
+    "CREATE INDEX IF NOT EXISTS idx_search_date ON search_history(searched_at DESC)",
 ]
 
 ALL_PG_SCHEMAS = [
@@ -335,6 +348,7 @@ ALL_PG_SCHEMAS = [
     PG_SCHEMA_SYNC_METADATA,
     PG_SCHEMA_JOB_DESCRIPTIONS,
     PG_SCHEMA_USERS,
+    PG_SCHEMA_SEARCH_HISTORY,
 ]
 
 

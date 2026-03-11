@@ -1552,7 +1552,7 @@ class DatabaseService:
             # Recent (last 24 hours)
             cursor.execute("""
                 SELECT COUNT(*) FROM candidates 
-                WHERE is_active = 1 AND last_updated > datetime('now', '-1 day')
+                WHERE is_active = 1 AND datetime(last_updated) > datetime('now', '-1 day')
             """)
             recent = cursor.fetchone()[0]
             

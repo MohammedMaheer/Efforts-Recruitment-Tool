@@ -149,6 +149,7 @@ def _convert_insert_or_replace(sql: str) -> str:
         'sync_metadata': 'key',
         'job_descriptions': 'id',
         'users': 'id',
+        'search_history': 'id',
     }
     conflict_col = conflict_map.get(table, columns[0])
     conflict_cols_list = [c.strip() for c in conflict_col.split(',')]
