@@ -2321,7 +2321,7 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                     text_parts = []
                     if summary: text_parts.append(summary)
                     if resume_text: text_parts.append(resume_text[:2000])
-                    if skills: text_parts.append(' '.join(skills))
+                    if skills: text_parts.append(' '.join(str(s) for s in skills))
                     if education:
                         try:
                             ed = json.loads(education) if isinstance(education, str) else education
@@ -2340,6 +2340,10 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                             logger.debug(f"Non-critical: failed to parse work_history JSON: {e}")
                     
                     combined_text = ' '.join(text_parts)
+                    try:
+                        exp_years = int(float(experience)) if experience else 0
+                    except (ValueError, TypeError):
+                        exp_years = 0
                     
                     if len(combined_text.strip()) < 10:
                         new_score = 40
@@ -2352,10 +2356,10 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                             )
                             new_score = analysis_result.get('quality_score') or analysis_result.get('match_score')
                             if new_score is None:
-                                new_score = min(95, max(25, len(skills) * 5 + (experience or 0) * 3 + 20))
+                                new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
                             new_category = analysis_result.get('job_category', 'General')
                         except Exception:
-                            new_score = min(95, max(25, len(skills) * 5 + (experience or 0) * 3 + 20))
+                            new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
                             new_category = 'General'
                     
                     def _update_rescore(cid, new_score, new_category):
@@ -3138,7 +3142,7 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_admi
                         text_parts = []
                         if summary: text_parts.append(summary)
                         if resume_text: text_parts.append(resume_text[:2000])
-                        if skills: text_parts.append(' '.join(skills))
+                        if skills: text_parts.append(' '.join(str(s) for s in skills))
                         if education:
                             try:
                                 ed = json.loads(education) if isinstance(education, str) else education
@@ -3157,6 +3161,10 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_admi
                                 logger.debug(f"Non-critical: failed to parse work_history JSON: {e}")
                         
                         combined_text = ' '.join(text_parts)
+                        try:
+                            exp_years = int(float(experience)) if experience else 0
+                        except (ValueError, TypeError):
+                            exp_years = 0
                         
                         if len(combined_text.strip()) < 10:
                             new_score = 15
@@ -3182,11 +3190,11 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_admi
                                     logger.debug(f"Non-critical: failed to parse rescore value: {e}")
                                     new_score = 0
                                 if new_score <= 0:
-                                    new_score = min(95, max(25, len(skills) * 5 + (experience or 0) * 3 + 20))
+                                    new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
                                 new_category = analysis_result.get('job_category', 'General')
                             except Exception:
                                 # Rule-based scoring
-                                new_score = min(95, max(25, len(skills) * 5 + (experience or 0) * 3 + 20))
+                                new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
                                 new_category = 'General'
                         
                         def _update_garbled_rescore(cid_val, score_val, cat_val):
@@ -3388,12 +3396,15 @@ async def reprocess_candidate_scores(current_user: dict = Depends(require_auth))
                     analysis_text = resume_text[:3000]
                 else:
                     # Build text for AI analysis from available fields
-                    skills = json.loads(skills_json) if skills_json else []
+                    try:
+                        skills = json.loads(skills_json) if skills_json else []
+                    except (json.JSONDecodeError, TypeError):
+                        skills = []
                     text_parts = []
                     if summary:
                         text_parts.append(summary)
                     if skills and skills != ['R']:
-                        text_parts.append(' '.join(skills))
+                        text_parts.append(' '.join(str(s) for s in skills))
                     if education:
                         text_parts.append(education)
                     if work_history:
