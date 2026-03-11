@@ -711,7 +711,7 @@ def audit_database(conn) -> Dict[str, Any]:
     cursor.execute("""
         SELECT email, COUNT(*) as cnt FROM candidates 
         WHERE (is_active = 1 OR is_active IS NULL) 
-        GROUP BY email HAVING cnt > 1
+        GROUP BY email HAVING COUNT(*) > 1
     """)
     for row in cursor.fetchall():
         issues['duplicate_emails'].append({'email': row[0], 'count': row[1]})
@@ -1052,7 +1052,7 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
         SELECT email, GROUP_CONCAT(id) as ids, COUNT(*) as cnt
         FROM candidates
         WHERE (is_active = 1 OR is_active IS NULL) AND email != '' AND email IS NOT NULL
-        GROUP BY email HAVING cnt > 1
+        GROUP BY email HAVING COUNT(*) > 1
     """)
     for dup_row in cursor.fetchall():
         dup_email = dup_row[0]

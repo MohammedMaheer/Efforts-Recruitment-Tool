@@ -816,7 +816,7 @@ class DatabaseService:
                     SELECT LOWER(TRIM(email)) as norm_email, GROUP_CONCAT(id) as ids, COUNT(*) as cnt
                     FROM candidates WHERE is_active = 1
                     GROUP BY LOWER(TRIM(email))
-                    HAVING cnt > 1
+                    HAVING COUNT(*) > 1
                 """)
                 dupes = cursor.fetchall()
                 merged_count = 0
