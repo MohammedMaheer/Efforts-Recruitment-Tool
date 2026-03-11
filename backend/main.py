@@ -2355,12 +2355,16 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                                 _g = get_gemini_service()
                                 if _g and _g.available:
                                     _rescore_ai = _g
-                            except Exception:
-                                pass
+                                    logger.warning(f"Re-score using Gemini for {name}")
+                                else:
+                                    logger.warning(f"Re-score using local AI for {name} (Gemini not available: {_g is not None}, {getattr(_g, 'available', 'N/A')})")
+                            except Exception as ge:
+                                logger.warning(f"Re-score Gemini init failed: {ge}")
                             analysis_result = await asyncio.wait_for(
                                 _rescore_ai.analyze_candidate(combined_text),
                                 timeout=AI_ANALYSIS_TIMEOUT
                             )
+                            logger.warning(f"Re-score AI result for {name}: score={analysis_result.get('quality_score')}/{analysis_result.get('match_score')}, cat={analysis_result.get('job_category')}")
                             new_score = analysis_result.get('quality_score') or analysis_result.get('match_score')
                             try:
                                 new_score = int(float(new_score)) if new_score else 0
@@ -2369,7 +2373,8 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                             if new_score <= 0:
                                 new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
                             new_category = analysis_result.get('job_category', 'General')
-                        except Exception:
+                        except Exception as ae:
+                            logger.warning(f"Re-score AI exception for {name}: {type(ae).__name__}: {str(ae)[:200]}")
                             new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
                             new_category = 'General'
                     
