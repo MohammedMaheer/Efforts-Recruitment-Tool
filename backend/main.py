@@ -2313,7 +2313,10 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
             for row in rows:
                 try:
                     cid, email, name, skills_json, summary, education, work_history, resume_text, experience = row
-                    skills = json.loads(skills_json) if skills_json else []
+                    try:
+                        skills = json.loads(skills_json) if skills_json else []
+                    except (json.JSONDecodeError, TypeError):
+                        skills = []
                     
                     text_parts = []
                     if summary: text_parts.append(summary)
@@ -3127,7 +3130,10 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_admi
                 for row in rows:
                     try:
                         cid, email, name, skills_json, summary, education, work_history, resume_text, experience = row
-                        skills = json.loads(skills_json) if skills_json else []
+                        try:
+                            skills = json.loads(skills_json) if skills_json else []
+                        except (json.JSONDecodeError, TypeError):
+                            skills = []
                         
                         text_parts = []
                         if summary: text_parts.append(summary)
