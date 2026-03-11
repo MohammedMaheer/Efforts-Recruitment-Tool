@@ -738,13 +738,26 @@ class GeminiService:
         start = time.time()
         try:
             # Build config — disable thinking for extraction tasks to save ~70% cost
-            gen_config = genai_types.GenerateContentConfig(
+            config_kwargs = dict(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
-                thinking_config=genai_types.ThinkingConfig(
-                    thinking_budget=thinking_budget,
-                ),
             )
+            # ThinkingConfig.thinking_budget requires google-genai>=1.5; older versions
+            # only support thinking_mode. Gracefully degrade if the parameter is rejected.
+            try:
+                config_kwargs['thinking_config'] = genai_types.ThinkingConfig(
+                    thinking_budget=thinking_budget,
+                )
+            except Exception:
+                # Fallback for older SDK: use thinking_mode instead
+                try:
+                    mode = "DISABLED" if thinking_budget == 0 else "ENABLED"
+                    config_kwargs['thinking_config'] = genai_types.ThinkingConfig(
+                        thinking_mode=mode,
+                    )
+                except Exception:
+                    pass  # Skip thinking config entirely
+            gen_config = genai_types.GenerateContentConfig(**config_kwargs)
             response = self._client.models.generate_content(
                 model=self.model_name,
                 contents=prompt,

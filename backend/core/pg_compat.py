@@ -229,7 +229,14 @@ CREATE TABLE IF NOT EXISTS candidates (
     languages TEXT,
     resume_text TEXT,
     strengths TEXT,
-    gaps TEXT
+    gaps TEXT,
+    shortlisted_at TEXT,
+    nationality TEXT,
+    notice_period TEXT,
+    current_salary TEXT,
+    expected_salary TEXT,
+    source_portal TEXT,
+    job_applied_for TEXT
 )
 """
 

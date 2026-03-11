@@ -384,6 +384,23 @@ def init_pg_schema(conn):
         cursor.execute(ddl)
     for idx_sql in PG_INDEXES:
         cursor.execute(idx_sql)
+    
+    # Migration: add columns that may be missing from older schema versions
+    _migration_columns = [
+        ("candidates", "shortlisted_at", "TEXT"),
+        ("candidates", "nationality", "TEXT"),
+        ("candidates", "notice_period", "TEXT"),
+        ("candidates", "current_salary", "TEXT"),
+        ("candidates", "expected_salary", "TEXT"),
+        ("candidates", "source_portal", "TEXT"),
+        ("candidates", "job_applied_for", "TEXT"),
+    ]
+    for table, col, coltype in _migration_columns:
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {coltype}")
+        except Exception:
+            pass
+    
     conn.commit()
     logger.info("✅ PostgreSQL schema initialized")
 
