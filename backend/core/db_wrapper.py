@@ -122,6 +122,12 @@ def _convert_sqlite_functions(sql: str) -> str:
     # GROUP_CONCAT(col) → string_agg(col::text, ',')
     sql = re.sub(r'\bGROUP_CONCAT\((\w+)\)', r"string_agg(\1::text, ',')", sql, flags=re.IGNORECASE)
     
+    # SQLite scalar MAX(a, b) → GREATEST(a, b)  (2-arg MAX is not an aggregate)
+    sql = re.sub(r'\bMAX\(([^,]+),\s*([^)]+)\)', r'GREATEST(\1, \2)', sql, flags=re.IGNORECASE)
+    
+    # SQLite scalar MIN(a, b) → LEAST(a, b)
+    sql = re.sub(r'\bMIN\(([^,]+),\s*([^)]+)\)', r'LEAST(\1, \2)', sql, flags=re.IGNORECASE)
+    
     return sql
 
 
