@@ -2357,12 +2357,10 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                                     _rescore_ai = _g
                             except Exception:
                                 pass
-                            logger.warning(f"Re-score [{name}]: text_len={len(combined_text)}, text={combined_text[:100]}")
                             analysis_result = await asyncio.wait_for(
                                 _rescore_ai.analyze_candidate(combined_text),
                                 timeout=AI_ANALYSIS_TIMEOUT
                             )
-                            logger.warning(f"Re-score [{name}]: AI returned keys={list(analysis_result.keys())[:5]}, score={analysis_result.get('quality_score')}/{analysis_result.get('match_score')}")
                             new_score = analysis_result.get('quality_score') or analysis_result.get('match_score')
                             try:
                                 new_score = int(float(new_score)) if new_score else 0
@@ -2372,7 +2370,7 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                                 new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
                             new_category = analysis_result.get('job_category', 'General')
                         except Exception as ae:
-                            logger.warning(f"Re-score AI exception for {name}: {type(ae).__name__}: {str(ae)[:200]}")
+                            logger.warning(f"Re-score error for {name}: {type(ae).__name__}: {str(ae)[:200]}")
                             new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
                             new_category = 'General'
                     
