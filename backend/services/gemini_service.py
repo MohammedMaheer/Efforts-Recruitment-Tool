@@ -884,6 +884,17 @@ CRITICAL: Only extract data that is EXPLICITLY present in the resume. Never fabr
                     logger.warning(f"🚫 Rejected garbage phone: {phone[:50]}")
                     result['phone'] = ''
             
+            # ── Normalize field names: job_title_applied → job_applied_for ──
+            # Gemini prompt asks for both; unify to what the DB expects
+            if result.get('job_title_applied') and not result.get('job_applied_for'):
+                result['job_applied_for'] = result.pop('job_title_applied')
+            elif result.get('job_title_applied'):
+                result.pop('job_title_applied', None)
+            
+            # ── Normalize experience_years → experience ──
+            if 'experience_years' in result and 'experience' not in result:
+                result['experience'] = result.get('experience_years', 0)
+            
             # Validate category
             if not result.get('job_subcategory') or result.get('job_category') == 'General':
                 titles = [w.get('title', '') for w in result.get('work_history', []) if isinstance(w, dict)]
@@ -1009,6 +1020,13 @@ CRITICAL RULES:
             if not result.get('is_candidate_email', True):
                 return None
             result['source'] = source
+            # Normalize field names to match what the pipeline expects
+            if 'experience_years' in result and 'experience' not in result:
+                result['experience'] = result.get('experience_years', 0)
+            if result.get('job_title_applied') and not result.get('job_applied_for'):
+                result['job_applied_for'] = result.pop('job_title_applied')
+            elif result.get('job_title_applied'):
+                result.pop('job_title_applied', None)
             # Validate category
             if not result.get('job_subcategory'):
                 title = result.get('job_applied_for', '')

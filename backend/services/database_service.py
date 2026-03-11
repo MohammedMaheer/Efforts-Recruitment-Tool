@@ -48,16 +48,17 @@ def _sanitize_phone(phone: str) -> str:
     # Strip CID patterns that may be mixed in
     phone = _CID_PATTERN.sub('', phone).strip()
     phone = _CID_PARTIAL_PATTERN.sub('', phone).strip()
-    # Must have 7-15 digits
+    # Must have 7-15 digits (relaxed to allow country codes and extensions)
     digits = re.sub(r'\D', '', phone)
-    if len(digits) < 7 or len(digits) > 15:
+    if len(digits) < 7 or len(digits) > 18:
         return ''
-    # Reject if it's a year (4 digits 19xx/20xx)
+    # Reject if it's a year (4 digits 19xx/20xx) — only if input is JUST the year
     if re.match(r'^(19|20)\d{2}$', phone.strip()):
         return ''
-    # Reject if mostly non-phone chars
-    allowed = set('0123456789+()-. ')
-    if sum(1 for c in phone if c not in allowed) > len(phone) * 0.3:
+    # Reject if mostly non-phone chars (allow +, -, ., (, ), space, and digits)
+    allowed = set('0123456789+()-. ext#')
+    non_phone = sum(1 for c in phone.lower() if c not in allowed)
+    if non_phone > len(phone) * 0.2:
         return ''
     return phone
 
@@ -95,6 +96,18 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
     if email and isinstance(email, str):
         if 'cid:' in email:
             email = _CID_PATTERN.sub('', email).strip()
+        # Normalize email for deduplication: strip +tags, lowercase
+        email = email.lower().strip()
+        if '+' in email.split('@')[0] and '@' in email:
+            local, domain = email.rsplit('@', 1)
+            local = local.split('+')[0]
+            email = f"{local}@{domain}"
+        # Normalize Gmail dots (dots are ignored by Gmail)
+        if '@' in email:
+            local, domain = email.rsplit('@', 1)
+            if domain in ('gmail.com', 'googlemail.com'):
+                local = local.replace('.', '')
+                email = f"{local}@{domain}"
         # Validate basic email format
         if not re.match(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$', email):
             logger.warning(f"Invalid email format in sanitize: {email[:60]}")
@@ -666,7 +679,7 @@ class DatabaseService:
                 candidate.get('experience', 0),
                 education_data,
                 candidate.get('summary', ''),
-                json.dumps(candidate.get('workHistory', [])),
+                json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
                 candidate.get('linkedin', ''),
                 candidate.get('status', 'New'),
                 candidate.get('matchScore') or 0,  # 0 = unscored, never assign fake score
@@ -778,7 +791,7 @@ class DatabaseService:
                 candidate.get('experience', 0),
                 education_data,
                 candidate.get('summary', ''),
-                json.dumps(candidate.get('workHistory', [])),
+                json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
                 candidate.get('linkedin', ''),
                 candidate.get('status', 'New'),
                 candidate.get('matchScore') or 0,
@@ -910,10 +923,10 @@ class DatabaseService:
             candidate.get('experience', 0),
             education_data,
             candidate.get('summary', ''),
-            json.dumps(candidate.get('workHistory', [])),
+            json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
             candidate.get('linkedin', ''),
             candidate.get('status', 'New'),
-            candidate.get('matchScore', 45),
+            candidate.get('matchScore', 0),
             candidate.get('job_category', candidate.get('jobCategory', 'General')),
             candidate.get('job_subcategory', candidate.get('jobSubcategory', '')),
             candidate.get('appliedDate', ''),
@@ -998,9 +1011,15 @@ class DatabaseService:
             merged[key] = old_list
 
         # education & work_history – union by stringified comparison
-        for key, src_key in [('education', 'education'), ('workHistory', 'workHistory')]:
-            old_list = self._parse_json_safe(existing.get(key))
-            new_list = new_data.get(src_key, [])
+        # Handle both 'workHistory' (frontend/API) and 'work_history' (DB) field names
+        for key, src_keys in [('education', ['education']), ('workHistory', ['workHistory', 'work_history'])]:
+            old_list = self._parse_json_safe(existing.get(key) or existing.get(key.replace('H', '_h').replace('istory', '_history') if 'History' in key else key))
+            new_list = []
+            for sk in src_keys:
+                nl = new_data.get(sk, [])
+                if nl:
+                    new_list = nl
+                    break
             if isinstance(new_list, str):
                 new_list = self._parse_json_safe(new_list)
             if new_list:
@@ -1098,7 +1117,8 @@ class DatabaseService:
                        c.match_score, c.job_category, c.job_subcategory, c.status, c.location, c.summary,
                        c.work_history, c.certifications, c.languages, c.phone, c.linkedin,
                        c.created_at, c.applied_date,
-                       CASE WHEN r.candidate_id IS NOT NULL THEN 1 ELSE 0 END AS has_resume_flag
+                       CASE WHEN r.candidate_id IS NOT NULL THEN 1 ELSE 0 END AS has_resume_flag,
+                       c.nationality, c.notice_period, c.job_applied_for, c.resume_text
                 FROM candidates c
                 LEFT JOIN resumes r ON c.id = r.candidate_id
                 WHERE c.is_active = 1
@@ -1131,8 +1151,8 @@ class DatabaseService:
                     'skills': json.loads(skills_raw) if skills_raw and isinstance(skills_raw, str) else (skills_raw or []),
                     'experience': row[4] or 0,
                     'education': json.loads(edu_raw) if edu_raw and isinstance(edu_raw, str) and edu_raw.startswith('[') else [],
-                    'matchScore': row[6] or 50,
-                    'match_score': row[6] or 50,
+                    'matchScore': row[6] or 0,
+                    'match_score': row[6] or 0,
                     'job_category': row[7] or 'General',
                     'job_subcategory': row[8] or '',
                     'status': row[9] or 'New',
@@ -1146,6 +1166,10 @@ class DatabaseService:
                     'created_at': row[17] or '',
                     'applied_date': row[18] or '',
                     'hasResume': bool(row[19]) if len(row) > 19 else False,
+                    'nationality': row[20] if len(row) > 20 else '',
+                    'notice_period': row[21] if len(row) > 21 else '',
+                    'job_applied_for': row[22] if len(row) > 22 else '',
+                    'resume_text': (row[23] or '')[:2000] if len(row) > 23 else '',  # Truncate for memory
                 })
             return results
         finally:
@@ -1189,8 +1213,8 @@ class DatabaseService:
                     'skills': json.loads(skills_raw) if skills_raw and isinstance(skills_raw, str) else (skills_raw or []),
                     'experience': row[4] or 0,
                     'education': json.loads(edu_raw) if edu_raw and isinstance(edu_raw, str) and edu_raw.startswith('[') else [],
-                    'matchScore': row[6] or 50,
-                    'match_score': row[6] or 50,
+                    'matchScore': row[6] or 0,
+                    'match_score': row[6] or 0,
                     'job_category': row[7] or 'General',
                     'job_subcategory': row[8] or '',
                     'status': row[9] or 'New',
@@ -1206,7 +1230,8 @@ class DatabaseService:
         import re
         # Columns that appear in WHERE filters — prefix with c. if not already qualified
         cols = ['is_active', 'job_subcategory', 'job_category', 'match_score',
-                'experience', 'name', 'email', 'skills', 'last_updated']
+                'experience', 'name', 'email', 'skills', 'last_updated',
+                'summary', 'location', 'work_history', 'job_applied_for', 'status']
         result = where_clause
         for col in cols:
             # Use word boundaries to avoid partial replacements (e.g. job_category inside job_subcategory)
@@ -1247,9 +1272,9 @@ class DatabaseService:
                     params.append(filters['min_experience'])
                 
                 if filters.get('search'):
-                    where_clause += " AND (name LIKE ? OR email LIKE ? OR skills LIKE ? OR job_subcategory LIKE ?)"
+                    where_clause += " AND (name LIKE ? OR email LIKE ? OR skills LIKE ? OR job_subcategory LIKE ? OR summary LIKE ? OR location LIKE ? OR work_history LIKE ? OR job_applied_for LIKE ?)"
                     search_term = f"%{filters['search']}%"
-                    params.extend([search_term, search_term, search_term, search_term])
+                    params.extend([search_term] * 8)
             
             # Get total count (same filters, no LIMIT/OFFSET)
             cursor.execute(f"SELECT COUNT(*) FROM candidates {where_clause}", params)
@@ -1301,9 +1326,9 @@ class DatabaseService:
                     where_clause += " AND experience >= ?"
                     params.append(filters['min_experience'])
                 if filters.get('search'):
-                    where_clause += " AND (name LIKE ? OR email LIKE ? OR skills LIKE ? OR job_subcategory LIKE ?)"
+                    where_clause += " AND (name LIKE ? OR email LIKE ? OR skills LIKE ? OR job_subcategory LIKE ? OR summary LIKE ? OR location LIKE ? OR work_history LIKE ? OR job_applied_for LIKE ?)"
                     search_term = f"%{filters['search']}%"
-                    params.extend([search_term, search_term, search_term, search_term])
+                    params.extend([search_term] * 8)
 
             cursor.execute(f"SELECT COUNT(*) FROM candidates {where_clause}", params)
             total_count = cursor.fetchone()[0]
@@ -1333,7 +1358,7 @@ class DatabaseService:
                         'location': _clean_loc(row[4] or ''),
                         'skills': skills,
                         'experience': row[6] or 0,
-                        'matchScore': row[7] if row[7] else 50,
+                        'matchScore': row[7] if row[7] else 0,
                         'status': row[8] or 'New',
                         'job_category': row[9] or 'General',
                         'jobCategory': row[9] or 'General',

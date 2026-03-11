@@ -722,10 +722,15 @@ def _extract_skills_from_text(text_lower: str) -> List[str]:
 
 
 def extract_education_from_text(text: str) -> List[Dict]:
-    """Extract structured education information from text - IMPROVED"""
+    """Extract structured education information from text - IMPROVED
+    
+    Extracts ALL education levels found (PhD, Masters, Bachelors) — not just the first match.
+    """
     education = []
+    _found_degrees = set()  # Track degree types already found to avoid duplicates
     
     # Better education patterns - require minimum field length
+    # Ordered by specificity: full patterns with institution first, then without
     edu_patterns = [
         # Full patterns with institution
         (r'(?:ph\.?d\.?|doctorate?)\s+(?:in\s+)?([A-Za-z\s]{4,40})\s+(?:from\s+)?([A-Za-z\s]+(?:University|College|Institute))', 'PhD'),
@@ -738,6 +743,8 @@ def extract_education_from_text(text: str) -> List[Dict]:
     ]
     
     for pattern, degree_type in edu_patterns:
+        if degree_type in _found_degrees:
+            continue  # Already found this degree level — skip duplicates
         match = re.search(pattern, text, re.IGNORECASE)
         if match:
             field = match.group(1).strip() if match.group(1) else ''
@@ -752,7 +759,8 @@ def extract_education_from_text(text: str) -> List[Dict]:
                     'institution': institution.title() if institution else '',
                     'year': ''
                 })
-                break
+                _found_degrees.add(degree_type)
+                # Continue to find other degree levels (don't break)
     
     # Also try to find university names directly
     if not education:
@@ -828,6 +836,13 @@ def is_valid_name(name: str) -> bool:
         'salesiq', 'zoho', 'freshdesk', 'zendesk', 'intercom', 'hubspot',
         'salesforce', 'tawk', 'crisp', 'bot', 'chatbot', 'auto-reply',
         'systemgenerated', 'noreply-hr', 'website', 'contact', 'enquiry',
+        # Job portals / platforms that get misidentified as names
+        'naukri', 'bayt', 'gulftalent', 'monster', 'ziprecruiter', 'dice',
+        'careerbuilder', 'jobstreet', 'seek', 'workday', 'greenhouse',
+        'lever', 'bamboohr', 'workable', 'taleo', 'icims',
+        # Generic words that aren't names
+        'candidate', 'applicant', 'resume', 'unknown', 'test', 'user',
+        'dear sir', 'dear madam', 'dear team', 'hr team', 'hiring team',
     ]
     if name.lower().strip() in invalid_names:
         return False

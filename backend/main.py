@@ -501,13 +501,18 @@ async def auto_sync_emails():
                                     except Exception as ai_err:
                                         logger.warning(f"AI analysis failed ({type(ai_err).__name__}): {str(ai_err)[:100]}")
                                         skills = candidate.get('skills', [])
-                                        exp = candidate.get('experience', 0)
+                                        exp = candidate.get('experience', 0) or 0
+                                        has_edu = bool(candidate.get('education'))
+                                        has_certs = bool(candidate.get('certifications'))
+                                        has_summary = bool(candidate.get('summary', '').strip())
                                         if skills or exp:
-                                            fallback_score = 15.0
-                                            fallback_score += min(30, len(skills) * 2.5 + (10 if skills else 0))
-                                            if exp:
-                                                fallback_score += min(20, 6 + exp * 2)
-                                            candidate['matchScore'] = min(90, round(fallback_score, 1))
+                                            fallback_score = 25.0
+                                            fallback_score += min(30, len(skills) * 3)
+                                            fallback_score += min(25, exp * 3)
+                                            fallback_score += 10 if has_edu else 0
+                                            fallback_score += 5 if has_certs else 0
+                                            fallback_score += 3 if has_summary else 0
+                                            candidate['matchScore'] = min(90, max(15, round(fallback_score, 1)))
                                             logger.info(f"📊 Fallback score for {candidate.get('name')}: {candidate['matchScore']}% (from {len(skills)} skills, {exp}yr exp)")
                                         else:
                                             candidate['matchScore'] = 20  # Clearly indicates needs AI reprocessing
@@ -2367,11 +2372,11 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                             except (ValueError, TypeError):
                                 new_score = 0
                             if new_score <= 0:
-                                new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
+                                new_score = min(90, max(15, 25 + min(30, len(skills) * 3) + min(25, exp_years * 3)))
                             new_category = analysis_result.get('job_category', 'General')
                         except Exception as ae:
                             logger.warning(f"Re-score error for {name}: {type(ae).__name__}: {str(ae)[:200]}")
-                            new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
+                            new_score = min(90, max(15, 25 + min(30, len(skills) * 3) + min(25, exp_years * 3)))
                             new_category = 'General'
                     
                     def _update_rescore(cid, new_score, new_category):
@@ -9120,6 +9125,19 @@ async def rescore_single_candidate(candidate_id: str, current_user: dict = Depen
                     parsed_score = 0
                 if parsed_score > 0:
                     new_score = parsed_score
+                else:
+                    # AI returned 0 — calculate fallback from AI-extracted data
+                    ai_skills_fb = ai_result.get("skills", [])
+                    ai_exp_fb = 0
+                    try:
+                        ai_exp_fb = int(float(ai_result.get("experience", 0) or 0))
+                    except (TypeError, ValueError):
+                        pass
+                    has_edu = bool(ai_result.get("education"))
+                    has_certs = bool(ai_result.get("certifications"))
+                    has_summary = bool(ai_result.get("summary", "").strip())
+                    fb = 25 + min(30, len(ai_skills_fb) * 3) + min(25, ai_exp_fb * 3) + (10 if has_edu else 0) + (5 if has_certs else 0) + (3 if has_summary else 0)
+                    new_score = min(90, max(15, fb))
                 new_category = ai_result.get("job_category", old_category) or old_category
                 ai_skills = ai_result.get("skills", [])
                 if isinstance(ai_skills, list) and len(ai_skills) > 0:
