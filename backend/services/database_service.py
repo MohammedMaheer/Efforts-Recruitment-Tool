@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 # ─── Location cleanup (inline, avoids circular import from db_repair) ─────────
 _GARBLED_PARENS_RE = re.compile(r'\s*\([^)]*[\u00c0-\u024f\u0600-\u06ff\u0400-\u04ff\u00d8\u00b1\u00a7\u00a9][^)]*\)')
-_NOISE_LOCATIONS = frozenset({'you', 'sir', 'dear', 'n/a', 'na', 'null', 'none', '-', '.', '..', '...', 'unknown', 'soon', 'hello', 'hi', 'hey', 'thanks', 'thank', 'regards', 'resume', 'cv', 'the', 'office', 'our', 'not found', 'not', 'found'})
+_NOISE_LOCATIONS = frozenset({'you', 'sir', 'dear', 'n/a', 'na', 'null', 'none', '-', '.', '..', '...', 'unknown', 'soon', 'hello', 'hi', 'hey', 'thanks', 'thank', 'regards', 'resume', 'cv', 'the', 'office', 'our', 'not found', 'not', 'found', 'content provided', 'content', 'provided'})
 
 def _clean_loc(loc: str) -> str:
     """Strip garbled Arabic/Unicode from location strings (fast inline version)."""
@@ -41,7 +41,10 @@ def _clean_loc(loc: str) -> str:
         r'|engineer|manager|coordinator|specialist|full\s*stack|frontend|backend|devops'
         r'|accountant|technician|analyst|architect|planner|supervisor|operator|microsoft'
         r'|security|support|service|responsible|proficient|seeking|looking|objective'
-        r'|summary|profile|education|university|college|bachelor|master|degree)\b',
+        r'|summary|profile|education|university|college|bachelor|master|degree'
+        r'|english|hindi|arabic|urdu|french|spanish|german|tamil|telugu|malayalam'
+        r'|kannada|marathi|bengali|gujarati|punjabi|mandarin|chinese|japanese|korean'
+        r'|russian|portuguese|italian|language|languages|fluent|proficiency|native)\b',
         c, re.IGNORECASE)
     if _loc_stop:
         c = c[:_loc_stop.start()].strip(' ,;-.()')
@@ -141,6 +144,9 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
             derived = re.sub(r'[._-]+', ' ', email_part).strip()
             # Remove numeric suffixes
             derived = re.sub(r'\d+$', '', derived).strip()
+            # Split camelCase / concatenated words (e.g. "bilalafsar" → "bilal afsar")
+            # Insert space before uppercase letters that follow lowercase
+            derived = re.sub(r'([a-z])([A-Z])', r'\1 \2', derived)
             # Must have at least 2 chars and not look like a system address
             if len(derived) >= 2 and derived.lower() not in ('info', 'hr', 'admin', 'noreply', 'support', 'contact', 'mail', 'help'):
                 name = derived.title()
