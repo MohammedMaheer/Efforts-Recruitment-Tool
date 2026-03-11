@@ -54,7 +54,8 @@ class DualAccessRow:
         return key in self._dict
     
     def __iter__(self):
-        return iter(self._columns)
+        # Iterate over VALUES to match sqlite3.Row behavior (enables tuple unpacking)
+        return iter(self._values)
     
     def keys(self):
         return self._columns
