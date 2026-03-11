@@ -419,7 +419,7 @@ async def auto_sync_emails():
                                     'test', 'null', 'none', 'n/a', 'na', '',
                                     'lusha', 'maestrorecruiter', 'maestro recruiter', 'recruiter',
                                     'hiring manager', 'hiring team', 'dear sir', 'dear madam',
-                                    'candidate', 'applicant', 'resume', 'cv',
+                                    'candidate', 'applicant', 'resume', 'cv', 'cover letter',
                                     'naukri', 'bayt', 'gulftalent', 'ziprecruiter', 'careerbuilder',
                                     'jobstreet', 'seek', 'reed', 'totaljobs', 'cwjobs',
                                     'user', 'guest', 'subscriber', 'member',
