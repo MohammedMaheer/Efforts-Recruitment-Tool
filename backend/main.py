@@ -523,6 +523,18 @@ async def auto_sync_emails():
                                         else:
                                             candidate['matchScore'] = 20  # Clearly indicates needs AI reprocessing
                                 
+                                # If AI didn't run and matchScore is 0, calculate a basic fallback
+                                if not candidate.get('matchScore'):
+                                    skills = candidate.get('skills', [])
+                                    exp = candidate.get('experience', 0) or 0
+                                    has_edu = bool(candidate.get('education'))
+                                    has_summary = bool(candidate.get('summary', '').strip())
+                                    if skills or exp:
+                                        fs = 20.0 + min(30, len(skills) * 3) + min(25, exp * 3) + (10 if has_edu else 0) + (3 if has_summary else 0)
+                                        candidate['matchScore'] = min(85, max(10, round(fs, 1)))
+                                    else:
+                                        candidate['matchScore'] = 15  # Minimal info, needs AI reprocessing
+
                                 # Save resume file if present
                                 resume_file = candidate.pop('resume_file_data', None)
                                 resume_filename = candidate.pop('resume_filename', None)
@@ -881,6 +893,18 @@ async def auto_sync_emails():
                                         else:
                                             candidate['matchScore'] = 20
                                 
+                                # If AI didn't run and matchScore is 0, calculate a basic fallback
+                                if not candidate.get('matchScore'):
+                                    skills = candidate.get('skills', [])
+                                    exp = candidate.get('experience', 0) or 0
+                                    has_edu = bool(candidate.get('education'))
+                                    has_summary = bool(candidate.get('summary', '').strip())
+                                    if skills or exp:
+                                        fs = 20.0 + min(30, len(skills) * 3) + min(25, exp * 3) + (10 if has_edu else 0) + (3 if has_summary else 0)
+                                        candidate['matchScore'] = min(85, max(10, round(fs, 1)))
+                                    else:
+                                        candidate['matchScore'] = 15
+
                                 # Save resume file if present (mirror Graph API path)
                                 resume_file = candidate.pop('resume_file_data', None)
                                 resume_filename = candidate.pop('resume_filename', None)

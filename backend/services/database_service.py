@@ -32,7 +32,16 @@ def _clean_loc(loc: str) -> str:
     words = [w for w in c.split() if w.lower() not in _NOISE_LOCATIONS]
     c = ' '.join(words).strip(' ,;-.()')
     # Truncate at common non-location tokens (e.g. "Dubai, UAE Valid Driving License")
-    _loc_stop = re.search(r'\b(valid|visa|licence|license|driving|permit|passport|available|immediate|willing|remote|hybrid|operational|management|sql|server|linkedin|github|portfolio|website|http|www|com\b)\b', c, re.IGNORECASE)
+    _loc_stop = re.search(
+        r'\b(valid|visa|licence|license|driving|permit|passport|available|immediate|willing'
+        r'|remote|hybrid|operational|management|sql|server|linkedin|github|portfolio|website'
+        r'|http|www|com\b|email|address|phone|mobile|resume|cv|experience|years?|certified'
+        r'|ensuring|excellent|tracking|alternatives|analytics|supply|chain|consultant'
+        r'|assistant|assitant|storekeeper|receptionist|administrative|salesforce|developer'
+        r'|engineer|manager|coordinator|specialist|full\s*stack|frontend|backend|devops'
+        r'|security|support|service|responsible|proficient|seeking|looking|objective'
+        r'|summary|profile|education|university|college|bachelor|master|degree)\b',
+        c, re.IGNORECASE)
     if _loc_stop:
         c = c[:_loc_stop.start()].strip(' ,;-.()')
     # Cap at 80 chars (real locations are short)
@@ -102,17 +111,24 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
         name = re.sub(r'\s+', ' ', name).strip()
         # Remove trailing single characters (e.g. "Gowtham s" → "Gowtham")
         name = re.sub(r'\s+[a-zA-Z]$', '', name).strip()
-        # Remove leading single characters (e.g. "V Gopal" is OK but standalone "V" isn't)
-        name = re.sub(r'^[a-zA-Z]\s+', '', name).strip() if len(name.split()) == 1 and len(name) <= 2 else name
         # Remove leading/trailing numbers and special chars
         name = re.sub(r'^[\d\W]+|[\d\W]+$', '', name).strip()
+        # Block single-character or empty names
+        if len(name) < 2:
+            name = ''
+        # Truncate at obvious non-name tokens (slash, comma followed by opening paren, etc.)
+        name = re.sub(r'[/,;(].*$', '', name).strip()
         # Detect job title used as name — if name contains common job words, discard
         _job_words = {'developer', 'engineer', 'manager', 'analyst', 'designer', 'consultant',
                       'director', 'coordinator', 'specialist', 'intern', 'associate', 'executive',
-                      'officer', 'lead', 'architect', 'administrator', 'accountant', 'technician'}
+                      'officer', 'lead', 'architect', 'administrator', 'accountant', 'technician',
+                      'assistant', 'storekeeper', 'receptionist', 'secretary', 'clerk',
+                      'supervisor', 'operator', 'driver', 'helper', 'advisor', 'planner'}
         name_words_lower = set(name.lower().split())
-        if len(name_words_lower & _job_words) >= 1 and len(name_words_lower) <= 4:
-            # Likely a job title, not a real name
+        if len(name_words_lower & _job_words) >= 1 and len(name_words_lower) <= 5:
+            name = ''
+        # Block if still <= 1 char after cleaning
+        if len(name.strip()) < 2:
             name = ''
         # Title case if all-upper or all-lower
         if name and (name == name.upper() or name == name.lower()):
@@ -1897,7 +1913,7 @@ class DatabaseService:
             'workHistory': [],
             'linkedin': row[11] if num_cols > 11 else '',
             'status': row[12] if num_cols > 12 else 'New',
-            'matchScore': row[13] if num_cols > 13 and row[13] else 50,
+            'matchScore': row[13] if num_cols > 13 and row[13] is not None else 0,
             'jobCategory': row[14] or 'General',
             'job_category': row[14] or 'General',
             'jobSubcategory': row[subcategory_idx] if subcategory_idx is not None and num_cols > subcategory_idx else '',
