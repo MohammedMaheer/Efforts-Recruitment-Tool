@@ -1499,6 +1499,10 @@ class EmailScraperService:
                 for field in ('nationality', 'notice_period', 'current_salary', 'expected_salary', 'job_applied_for'):
                     if job_portal_data.get(field) and not resume_data.get(field):
                         resume_data[field] = job_portal_data[field]
+                
+                # quality_score from LLM parse
+                if job_portal_data.get('quality_score') and int(job_portal_data.get('quality_score', 0)) > 0:
+                    resume_data['quality_score'] = int(job_portal_data['quality_score'])
             
 
 
@@ -1626,7 +1630,7 @@ class EmailScraperService:
                 'workHistory': work_history_json,
                 'linkedin': resume_data.get('linkedin', ''),
                 'status': 'New',
-                'matchScore': 0,  # Will be calculated by AI
+                'matchScore': resume_data.get('quality_score', 0),  # From LLM parse or 0 for AI scoring later
                 'appliedDate': email_data['received_date'].isoformat(),
                 'job_category': job_category,
                 'job_subcategory': job_subcategory,

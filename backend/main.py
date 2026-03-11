@@ -446,10 +446,9 @@ async def auto_sync_emails():
                                 else:
                                     candidate = db_service.smart_merge_candidate(existing, candidate)
                                     existing_score = existing.get('matchScore') or existing.get('match_score') or 0
-                                    # Re-run AI if: no analysis, score is exactly 50 (likely default), or score is 0
+                                    # Re-run AI if: no analysis, or score is 0 (unscored)
                                     if (not existing.get('ai_analysis')
-                                            or existing_score <= 0
-                                            or existing_score == 50):
+                                            or existing_score <= 0):
                                         needs_ai = True
                                 
                                 # AI processing
@@ -841,23 +840,35 @@ async def auto_sync_emails():
                                         skills = candidate.get('skills', [])
                                         exp = candidate.get('experience', 0) or 0
                                         has_edu = bool(candidate.get('education'))
+                                        has_certs = bool(candidate.get('certifications'))
                                         has_summary = bool(candidate.get('summary', '').strip())
                                         if skills or exp:
-                                            fallback_score = 40.0 + min(25, len(skills) * 2.5) + (min(20, 5 + exp * 2) if exp else 0) + (5 if has_edu else 0) + (3 if has_summary else 0)
-                                            candidate['matchScore'] = min(92, round(fallback_score, 1))
+                                            fallback_score = 25.0
+                                            fallback_score += min(30, len(skills) * 3)
+                                            fallback_score += min(25, exp * 3)
+                                            fallback_score += 10 if has_edu else 0
+                                            fallback_score += 5 if has_certs else 0
+                                            fallback_score += 3 if has_summary else 0
+                                            candidate['matchScore'] = min(90, max(15, round(fallback_score, 1)))
                                         else:
-                                            candidate['matchScore'] = 30
+                                            candidate['matchScore'] = 20
                                     except Exception as ai_err:
                                         logger.warning(f"AI error ({type(ai_err).__name__}): {str(ai_err)[:100]}")
                                         skills = candidate.get('skills', [])
                                         exp = candidate.get('experience', 0) or 0
                                         has_edu = bool(candidate.get('education'))
+                                        has_certs = bool(candidate.get('certifications'))
                                         has_summary = bool(candidate.get('summary', '').strip())
                                         if skills or exp:
-                                            fallback_score = 40.0 + min(25, len(skills) * 2.5) + (min(20, 5 + exp * 2) if exp else 0) + (5 if has_edu else 0) + (3 if has_summary else 0)
-                                            candidate['matchScore'] = min(92, round(fallback_score, 1))
+                                            fallback_score = 25.0
+                                            fallback_score += min(30, len(skills) * 3)
+                                            fallback_score += min(25, exp * 3)
+                                            fallback_score += 10 if has_edu else 0
+                                            fallback_score += 5 if has_certs else 0
+                                            fallback_score += 3 if has_summary else 0
+                                            candidate['matchScore'] = min(90, max(15, round(fallback_score, 1)))
                                         else:
-                                            candidate['matchScore'] = 30
+                                            candidate['matchScore'] = 20
                                 
                                 # Save resume file if present (mirror Graph API path)
                                 resume_file = candidate.pop('resume_file_data', None)
@@ -1274,7 +1285,9 @@ async def _background_process_candidates(interval_minutes: int = 240):
                                                 try: ai_exp = int(float(ai_exp))
                                                 except: ai_exp = 0
                                             has_edu = bool(ai_result.get('education'))
-                                            match_score = 25 + min(30, len(ai_skills) * 3) + min(25, ai_exp * 3) + (10 if has_edu else 0)
+                                            has_certs = bool(ai_result.get('certifications'))
+                                            has_summary = bool(ai_result.get('summary', '').strip())
+                                            match_score = 25 + min(30, len(ai_skills) * 3) + min(25, ai_exp * 3) + (10 if has_edu else 0) + (5 if has_certs else 0) + (3 if has_summary else 0)
                                             match_score = min(90, max(15, match_score))
                                         job_category = ai_result.get('job_category', ai_result.get('category', '')) or ''
                                         

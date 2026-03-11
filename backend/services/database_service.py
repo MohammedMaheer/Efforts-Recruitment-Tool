@@ -669,7 +669,7 @@ class DatabaseService:
                 json.dumps(candidate.get('workHistory', [])),
                 candidate.get('linkedin', ''),
                 candidate.get('status', 'New'),
-                candidate.get('matchScore', 45),  # Default to 45 if not scored
+                candidate.get('matchScore') or 0,  # 0 = unscored, never assign fake score
                 candidate.get('job_category', 'General'),
                 candidate.get('job_subcategory', ''),
                 candidate.get('appliedDate'),
@@ -781,7 +781,7 @@ class DatabaseService:
                 json.dumps(candidate.get('workHistory', [])),
                 candidate.get('linkedin', ''),
                 candidate.get('status', 'New'),
-                candidate.get('matchScore', 50),
+                candidate.get('matchScore') or 0,
                 candidate.get('job_category', 'General'),
                 candidate.get('job_subcategory', ''),
                 candidate.get('last_updated'),
@@ -1417,7 +1417,7 @@ class DatabaseService:
                             candidate.get('summary', ''),
                             json.dumps(candidate.get('workHistory', [])),
                             candidate.get('linkedin', ''),
-                            candidate.get('matchScore', 50),
+                            candidate.get('matchScore') or 0,
                             candidate.get('job_category', 'General'),
                             candidate.get('job_subcategory', ''),
                             candidate.get('last_updated'),
@@ -1459,7 +1459,7 @@ class DatabaseService:
                             json.dumps(candidate.get('workHistory', [])),
                             candidate.get('linkedin', ''),
                             candidate.get('status', 'New'),
-                            candidate.get('matchScore', 50),
+                            candidate.get('matchScore') or 0,
                             candidate.get('job_category', 'General'),
                             candidate.get('job_subcategory', ''),
                             candidate.get('appliedDate'),
@@ -2153,10 +2153,14 @@ class DatabaseService:
             row = cursor.fetchone()
             
             if row:
+                file_data = row[2]
+                # psycopg2 returns BYTEA as memoryview — convert to bytes for FastAPI Response
+                if isinstance(file_data, memoryview):
+                    file_data = bytes(file_data)
                 return {
                     'filename': row[0],
                     'content_type': row[1],
-                    'file_data': row[2],
+                    'file_data': file_data,
                     'uploaded_at': row[3]
                 }
             return None

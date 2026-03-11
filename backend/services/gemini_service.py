@@ -985,6 +985,7 @@ Return ONLY valid JSON with this EXACT structure:
     "languages": ["Languages spoken if mentioned"],
     "job_category": "Best matching category from taxonomy",
     "job_subcategory": "Specific role subcategory from taxonomy",
+    "quality_score": 65,
     "is_candidate_email": true
 }}
 
@@ -995,7 +996,8 @@ CRITICAL RULES:
 - For work_history: extract EVERY position with title, company, dates, and description
 - For education: extract ALL degrees with institution name and field
 - NEVER fabricate data — use empty strings/arrays for missing fields
-- For experience_years: calculate from work history or use explicitly stated number"""
+- For experience_years: calculate from work history or use explicitly stated number
+- For quality_score: Rate 85-100 Exceptional (10+ yrs, strong skills, leadership), 70-84 Strong (5+ yrs, good skills), 55-69 Moderate (2-5 yrs, some skills), 40-54 Developing (entry-level), below 40 Weak. Be precise — do NOT default to 50 or 65."""
 
         try:
             result = await self._agenerate_json(prompt, temperature=0.05)
