@@ -6017,7 +6017,7 @@ async def auto_authenticate(current_user: dict = Depends(require_auth)):
     Automatically triggers email sync after authentication
     """
     try:
-        email_address = os.getenv('EMAIL_ADDRESS')
+        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID')
@@ -6539,7 +6539,7 @@ async def oauth2_callback_get(code: str = None, error: str = None, error_descrip
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID', 'common')
-        email_address = os.getenv('EMAIL_ADDRESS')
+        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
         default_redirect = f"{frontend_url}/auth/callback"
         redirect_uri = os.getenv('MICROSOFT_REDIRECT_URI', default_redirect)
         
@@ -6647,7 +6647,7 @@ async def oauth2_callback(request: OAuth2CallbackRequest):
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID', 'common')
-        email_address = os.getenv('EMAIL_ADDRESS')  # Primary email account
+        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')  # Primary email account
         
         if not all([client_id, client_secret, email_address]):
             raise HTTPException(400, "Microsoft OAuth2 not configured. Set MICROSOFT_CLIENT_ID, MICROSOFT_CLIENT_SECRET, and EMAIL_ADDRESS in .env")
@@ -6705,7 +6705,7 @@ async def sync_emails_now(current_user: dict = Depends(require_auth)):
     Runs inline (completes before response) to work with CPU throttling.
     """
     try:
-        email_address = os.getenv('EMAIL_ADDRESS')
+        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
         
         if not email_address:
             raise HTTPException(400, "No email configured in .env")
@@ -6741,7 +6741,7 @@ async def deep_sync_emails(current_user: dict = Depends(require_auth)):
     """
     from fastapi import Query
     try:
-        email_address = os.getenv('EMAIL_ADDRESS')
+        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
         if not email_address:
             raise HTTPException(400, "No email configured in .env")
         
@@ -6792,7 +6792,7 @@ async def cross_verify_inbox(current_user: dict = Depends(require_auth)):
     Returns immediately — work runs in background.
     """
     try:
-        email_address = os.getenv('EMAIL_ADDRESS')
+        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
         if not email_address:
             raise HTTPException(400, "No email configured in .env")
 
@@ -7085,7 +7085,7 @@ async def backfill_resumes(current_user: dict = Depends(require_auth)):
     Runs synchronously (keeps container alive until done).
     """
     try:
-        email_address = os.getenv('EMAIL_ADDRESS')
+        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
         if not email_address:
             raise HTTPException(400, "No email configured")
         
@@ -7125,7 +7125,7 @@ async def backfill_debug(current_user: dict = Depends(require_auth)):
     ]
 
     # 2) Setup Graph API (same as backfill)
-    email_address = os.getenv('EMAIL_ADDRESS')
+    email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
     token_storage = get_token_storage()
     token_data = token_storage.get_token(email_address) if email_address else None
     if not token_data:
@@ -7200,7 +7200,7 @@ async def cron_sync(request: Request):
     if not expected or not hmac.compare_digest(secret.encode(), expected.encode()):
         raise HTTPException(403, "Unauthorized")
     
-    email_address = os.getenv('EMAIL_ADDRESS')
+    email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
     if not email_address:
         raise HTTPException(400, "No email configured")
     
@@ -7484,7 +7484,7 @@ async def email_webhook(request: Request):
                     
                     if message_id:
                         # Process the new email in background
-                        email_address = os.getenv('EMAIL_ADDRESS')
+                        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
                         token_storage = get_token_storage()
                         token_data = token_storage.get_token(email_address)
                         
@@ -7513,7 +7513,7 @@ async def subscribe_to_email_webhook(current_user: dict = Depends(require_auth))
     This needs to be called once to set up real-time sync
     """
     try:
-        email_address = os.getenv('EMAIL_ADDRESS')
+        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID')
@@ -7891,7 +7891,7 @@ async def manual_email_sync(current_user: dict = Depends(require_auth)):
     This is the fallback when automatic sync fails
     """
     try:
-        email_address = os.getenv('EMAIL_ADDRESS')
+        email_address = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
         
         if not email_address:
             raise HTTPException(400, "No email configured in .env")
@@ -8400,7 +8400,7 @@ async def _send_rejection_email(candidate: Dict):
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID')
-        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or 'hr@effortz.com'
+        sender_email = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL') or _settings.email_address or 'hr@effortz.com'
         company_name = os.getenv('COMPANY_NAME', _settings.company_name) or 'Efforts Solutions'
         recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name) or 'Recruitment Team'
 
@@ -8514,7 +8514,7 @@ async def _send_shortlist_email(candidate: Dict):
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID')
-        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or 'hr@effortz.com'
+        sender_email = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL') or _settings.email_address or 'hr@effortz.com'
         company_name = os.getenv('COMPANY_NAME', _settings.company_name) or 'Efforts Solutions'
         recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name) or 'Recruitment Team'
 
@@ -8749,7 +8749,7 @@ async def test_email_send(current_user: dict = Depends(require_auth)):
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID')
-        sender_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
+        sender_email = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL') or _settings.email_address or ''
         recipient = current_user.get('email', sender_email)
 
         if not all([client_id, client_secret, tenant_id]):
