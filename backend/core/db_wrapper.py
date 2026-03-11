@@ -334,7 +334,15 @@ def create_connection(db_url: str = None) -> Any:
         last_err = None
         for attempt in range(10):
             try:
-                conn = psycopg2.connect(DATABASE_URL, connect_timeout=5)
+                conn = psycopg2.connect(
+                    DATABASE_URL,
+                    connect_timeout=5,
+                    options='-c statement_timeout=30000',
+                    keepalives=1,
+                    keepalives_idle=30,
+                    keepalives_interval=10,
+                    keepalives_count=5,
+                )
                 if attempt > 0:
                     logger.info(f"✅ PostgreSQL connected on attempt {attempt + 1}")
                 return PgConnectionWrapper(conn)

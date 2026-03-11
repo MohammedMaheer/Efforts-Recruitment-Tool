@@ -969,6 +969,9 @@ class EmailScraperService:
     def connect_to_inbox(self, account: EmailAccount):
         """Connect to specific email account via IMAP with timeout"""
         try:
+            if not account.password:
+                logger.warning(f"No password configured for {account.name} ({account.email}) - use OAuth instead")
+                return None
             # Use per-connection timeout instead of global socket.setdefaulttimeout
             mail = imaplib.IMAP4_SSL(account.server, account.port, timeout=10)
             mail.login(account.email, account.password)

@@ -123,7 +123,6 @@ async def auto_sync_emails():
     try:
         persisted_time = await asyncio.to_thread(db_service.get_sync_metadata, 'last_email_sync_time')
         if persisted_time:
-            from datetime import timedelta
             min_lookback = (datetime.utcnow() - timedelta(days=7)).strftime('%Y-%m-%dT%H:%M:%SZ')
             if persisted_time > min_lookback:
                 _last_email_sync_time = min_lookback

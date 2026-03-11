@@ -145,13 +145,28 @@ class DatabaseService:
     
     @contextmanager
     def get_connection(self):
-        """Thread-safe connection pooling"""
+        """Thread-safe connection pooling with stale connection detection for PostgreSQL"""
         conn = None
         try:
             with self.connection_lock:
-                if self._connection_pool:
-                    conn = self._connection_pool.pop()
-                else:
+                while self._connection_pool:
+                    candidate_conn = self._connection_pool.pop()
+                    # Validate pooled PG connections (Cloud SQL proxy may close idle ones)
+                    if IS_POSTGRES:
+                        try:
+                            candidate_conn.execute("SELECT 1")
+                            conn = candidate_conn
+                            break
+                        except Exception:
+                            try:
+                                candidate_conn.close()
+                            except Exception:
+                                pass
+                            continue
+                    else:
+                        conn = candidate_conn
+                        break
+                if conn is None:
                     conn = create_connection(self.db_path)
                     if not IS_POSTGRES:
                         # SQLite-specific optimizations
