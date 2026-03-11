@@ -153,7 +153,7 @@ async def auto_sync_emails():
             client_id = os.getenv('MICROSOFT_CLIENT_ID')
             client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
             tenant_id = os.getenv('MICROSOFT_TENANT_ID')
-            primary_email = os.getenv('EMAIL_ADDRESS')
+            primary_email = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
             
             oauth2_success = False
             
@@ -2086,7 +2086,7 @@ async def start_scraper(background_tasks: BackgroundTasks, current_user: dict = 
     if scraper_task and not scraper_task.done():
         return {"message": "Scraper already running"}
     
-    scraper_task = asyncio.create_task(scraper_service.run_continuous_scraper())
+    scraper_task = asyncio.create_task(scraper_service.run_continuous_scraper(db_service=db_service))
     return {"message": "Email scraper started"}
 
 @app.post("/api/scraper/stop")
@@ -2506,7 +2506,7 @@ async def relookup_garbled_from_email(current_user: dict = Depends(require_admin
         logger.info(f"Re-lookup: {len(candidates_to_fix)} candidates need email re-lookup")
         
         # Get OAuth token for email access
-        primary_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
+        primary_email = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL') or _settings.email_address or ''
         token_storage = get_token_storage()
         token_data = token_storage.get_token(primary_email)
         
@@ -2716,7 +2716,7 @@ async def reset_and_reparse_all_emails(current_user: dict = Depends(require_admi
         scraper_service.processed_message_ids.clear()
         
         # Step 3: Trigger full email sync via OAuth2 (Microsoft Graph)
-        primary_email = os.getenv('EMAIL_ADDRESS') or _settings.email_address or ''
+        primary_email = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL') or _settings.email_address or ''
         token_storage = get_token_storage()
         token_data = token_storage.get_token(primary_email)
         

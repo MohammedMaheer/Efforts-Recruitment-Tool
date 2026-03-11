@@ -952,14 +952,16 @@ class EmailScraperService:
         """Load multiple email accounts from environment"""
         accounts = []
         
-        # Primary account (backward compatible)
-        if os.getenv('EMAIL_ADDRESS'):
+        # Primary account (backward compatible — check EMAIL_ADDRESS and IMAP_EMAIL)
+        primary_email = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL')
+        primary_password = os.getenv('EMAIL_PASSWORD') or os.getenv('IMAP_PASSWORD')
+        if primary_email:
             accounts.append(EmailAccount(
                 name="Primary",
                 server=os.getenv('IMAP_SERVER', 'outlook.office365.com'),
                 port=int(os.getenv('IMAP_PORT', '993')),
-                email=os.getenv('EMAIL_ADDRESS'),
-                password=os.getenv('EMAIL_PASSWORD')
+                email=primary_email,
+                password=primary_password
             ))
         
         # Load additional accounts (EMAIL_1_, EMAIL_2_, etc.)
