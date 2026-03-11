@@ -2350,12 +2350,23 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                         new_category = 'General'
                     else:
                         try:
+                            _rescore_ai = ai_service
+                            try:
+                                _g = get_gemini_service()
+                                if _g and _g.available:
+                                    _rescore_ai = _g
+                            except Exception:
+                                pass
                             analysis_result = await asyncio.wait_for(
-                                ai_service.analyze_candidate(combined_text),
+                                _rescore_ai.analyze_candidate(combined_text),
                                 timeout=AI_ANALYSIS_TIMEOUT
                             )
                             new_score = analysis_result.get('quality_score') or analysis_result.get('match_score')
-                            if new_score is None:
+                            try:
+                                new_score = int(float(new_score)) if new_score else 0
+                            except (ValueError, TypeError):
+                                new_score = 0
+                            if new_score <= 0:
                                 new_score = min(95, max(25, len(skills) * 5 + exp_years * 3 + 20))
                             new_category = analysis_result.get('job_category', 'General')
                         except Exception:
