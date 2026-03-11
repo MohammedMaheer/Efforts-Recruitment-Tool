@@ -104,6 +104,9 @@ def _convert_sqlite_functions(sql: str) -> str:
         flags=re.IGNORECASE
     )
     
+    # datetime(column) → (column)::timestamp  (must be AFTER the datetime('now') rules)
+    sql = re.sub(r"\bdatetime\((\w+)\)", r"(\1)::timestamp", sql, flags=re.IGNORECASE)
+    
     # date(column) → (column)::date
     sql = re.sub(r"\bdate\((\w+)\)", r"(\1)::date", sql, flags=re.IGNORECASE)
     
@@ -112,6 +115,12 @@ def _convert_sqlite_functions(sql: str) -> str:
     
     # AUTOINCREMENT → remove
     sql = re.sub(r'\bAUTOINCREMENT\b', '', sql, flags=re.IGNORECASE)
+    
+    # LIKE → ILIKE for case-insensitive matching (SQLite LIKE is case-insensitive)
+    sql = re.sub(r'\bLIKE\b', 'ILIKE', sql, flags=re.IGNORECASE)
+    
+    # GROUP_CONCAT(col) → string_agg(col::text, ',')
+    sql = re.sub(r'\bGROUP_CONCAT\((\w+)\)', r"string_agg(\1::text, ',')", sql, flags=re.IGNORECASE)
     
     return sql
 

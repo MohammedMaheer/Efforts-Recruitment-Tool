@@ -33,6 +33,7 @@ from services.auth_service import get_auth_service
 from services.db_repair import audit_database, repair_database, quick_health_check
 from models.candidate import Candidate, JobDescription, MatchResult
 from core.config import get_settings
+from core.db_wrapper import IS_POSTGRES
 from core.dependencies import require_auth, optional_auth, require_admin
 
 # Advanced AI services
@@ -943,6 +944,9 @@ def _get_gcs_bucket():
 
 def restore_db_from_gcs():
     """Download recruitment.db from GCS on startup (blocking, runs before DB init)"""
+    if IS_POSTGRES:
+        print("💾 GCS restore: Skipped (using PostgreSQL)", flush=True)
+        return False
     if not _settings.is_production:
         print("💾 GCS restore: Skipped (not production)", flush=True)
         return False
@@ -1013,6 +1017,8 @@ def restore_db_from_gcs():
 
 def backup_db_to_gcs():
     """Upload recruitment.db to GCS (blocking)"""
+    if IS_POSTGRES:
+        return False  # PostgreSQL handles its own persistence
     try:
         if not os.path.exists(LOCAL_DB_PATH):
             logger.warning("💾 GCS backup: No local database file found")
@@ -1059,6 +1065,9 @@ async def periodic_db_backup(interval_minutes: int = 30):
 
 async def _background_seed_from_json():
     """Seed database from JSON backup in GCS — runs as background task after server starts"""
+    if IS_POSTGRES:
+        print("💾 [BG] JSON seed skipped (using PostgreSQL)", flush=True)
+        return
     await asyncio.sleep(2)  # Let server finish startup first
     try:
         print("💾 [BG] Starting JSON seed from GCS...", flush=True)
@@ -1196,7 +1205,6 @@ async def _background_process_candidates(interval_minutes: int = 240):
             # Find candidates needing processing — use db_service context manager
             def _get_unprocessed():
                 with db_service.get_connection() as conn:
-                    conn.row_factory = __import__('sqlite3').Row
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT id, name, skills, experience, education, location, 
