@@ -2305,7 +2305,7 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                         SELECT id, email, name, skills, summary, education, work_history, 
                                resume_text, experience
                         FROM candidates 
-                        WHERE is_active = 1 AND (match_score = 0 OR match_score IS NULL OR match_score = 50)
+                        WHERE is_active = 1 AND (match_score = 0 OR match_score IS NULL OR match_score <= 35)
                     """)
                     return cursor.fetchall()
             rows = await asyncio.to_thread(_fetch_rescore_candidates)
