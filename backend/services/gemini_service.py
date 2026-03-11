@@ -654,7 +654,7 @@ class GeminiService:
     - Email template generation
     """
 
-    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: Optional[str] = None, model_name: str = "gemini-2.5-flash"):
         import os
         self.api_key = (api_key or os.getenv("GEMINI_API_KEY", "")).strip()
         self.model_name = model_name
@@ -2964,7 +2964,7 @@ def get_gemini_service() -> Optional[GeminiService]:
     if _gemini_service is None:
         import os
         api_key = os.getenv("GEMINI_API_KEY", "").strip()
-        model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
         if api_key:
             _gemini_service = GeminiService(api_key=api_key, model_name=model)
         else:
