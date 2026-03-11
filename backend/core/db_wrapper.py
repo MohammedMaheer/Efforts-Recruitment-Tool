@@ -384,8 +384,14 @@ def init_pg_schema(conn):
         cursor.execute(ddl)
     for idx_sql in PG_INDEXES:
         cursor.execute(idx_sql)
+    conn.commit()
     
     # Migration: add columns that may be missing from older schema versions
+    # Use raw psycopg2 connection with autocommit to avoid aborted-transaction cascade
+    raw_conn = conn._conn
+    old_autocommit = raw_conn.autocommit
+    raw_conn.autocommit = True
+    raw_cursor = raw_conn.cursor()
     _migration_columns = [
         ("candidates", "shortlisted_at", "TEXT"),
         ("candidates", "nationality", "TEXT"),
@@ -397,11 +403,12 @@ def init_pg_schema(conn):
     ]
     for table, col, coltype in _migration_columns:
         try:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {coltype}")
-        except Exception:
-            pass
-    
-    conn.commit()
+            raw_cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {coltype}")
+            logger.info(f"✅ Migration: {table}.{col} ensured")
+        except Exception as e:
+            logger.warning(f"Migration {table}.{col}: {e}")
+    raw_cursor.close()
+    raw_conn.autocommit = old_autocommit
     logger.info("✅ PostgreSQL schema initialized")
 
 
