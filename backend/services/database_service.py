@@ -44,7 +44,8 @@ def _clean_loc(loc: str) -> str:
         r'|summary|profile|education|university|college|bachelor|master|degree'
         r'|english|hindi|arabic|urdu|french|spanish|german|tamil|telugu|malayalam'
         r'|kannada|marathi|bengali|gujarati|punjabi|mandarin|chinese|japanese|korean'
-        r'|russian|portuguese|italian|language|languages|fluent|proficiency|native)\b',
+        r'|russian|portuguese|italian|language|languages|fluent|proficiency|native'
+        r'|duration|salary|notice|period|current|expected|total|gender|dob|age)\b',
         c, re.IGNORECASE)
     if _loc_stop:
         c = c[:_loc_stop.start()].strip(' ,;-.()')
@@ -117,6 +118,8 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
         name = re.sub(r'\s+[a-zA-Z]$', '', name).strip()
         # Remove leading/trailing numbers and special chars
         name = re.sub(r'^[\d\W]+|[\d\W]+$', '', name).strip()
+        # Remove embedded numbers (e.g. "Vignesh2002Skk" → "VigneshSkk")
+        name = re.sub(r'\d+', '', name).strip()
         # Block single-character or empty names
         if len(name) < 2:
             name = ''
