@@ -138,6 +138,10 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
             'candidate', 'applicant', 'resume', 'cv', 'cover letter',
             'naukri', 'bayt', 'gulftalent', 'ziprecruiter', 'careerbuilder',
             'user', 'guest', 'subscriber', 'member',
+            'india', 'uae', 'usa', 'uk', 'dubai', 'pakistan', 'qatar',
+            'oman', 'bahrain', 'kuwait', 'saudi', 'riyadh', 'jeddah',
+            'abu dhabi', 'sharjah', 'ajman', 'chennai', 'mumbai', 'delhi',
+            'bangalore', 'hyderabad', 'pune', 'kolkata',
         })
         if name.lower() in _blocked_names:
             name = ''
@@ -161,8 +165,8 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
             email_part = c['email'].split('@')[0]
             # Replace dots, underscores, dashes with spaces
             derived = re.sub(r'[._-]+', ' ', email_part).strip()
-            # Remove numeric suffixes
-            derived = re.sub(r'\d+$', '', derived).strip()
+            # Remove numeric suffixes and embedded numbers
+            derived = re.sub(r'\d+', '', derived).strip()
             # Split camelCase / concatenated words (e.g. "bilalafsar" → "bilal afsar")
             # Insert space before uppercase letters that follow lowercase
             derived = re.sub(r'([a-z])([A-Z])', r'\1 \2', derived)
