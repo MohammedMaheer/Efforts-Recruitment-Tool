@@ -1,0 +1,69 @@
+﻿bindings:
+- members:
+  - serviceAccount:service-82519464499@gcp-sa-artifactregistry.iam.gserviceaccount.com
+  role: roles/artifactregistry.serviceAgent
+- members:
+  - serviceAccount:82519464499@cloudbuild.gserviceaccount.com
+  role: roles/artifactregistry.writer
+- members:
+  - serviceAccount:service-82519464499@gcp-sa-cloudaicompanion.iam.gserviceaccount.com
+  role: roles/cloudaicompanion.serviceAgent
+- members:
+  - serviceAccount:82519464499@cloudbuild.gserviceaccount.com
+  role: roles/cloudbuild.builds.builder
+- members:
+  - serviceAccount:service-82519464499@gcp-sa-cloudbuild.iam.gserviceaccount.com
+  role: roles/cloudbuild.serviceAgent
+- members:
+  - serviceAccount:service-82519464499@gcp-sa-cloudscheduler.iam.gserviceaccount.com
+  role: roles/cloudscheduler.serviceAgent
+- members:
+  - serviceAccount:82519464499-compute@developer.gserviceaccount.com
+  role: roles/cloudsql.client
+- members:
+  - serviceAccount:service-82519464499@containerregistry.iam.gserviceaccount.com
+  role: roles/containerregistry.ServiceAgent
+- members:
+  - serviceAccount:82519464499-compute@developer.gserviceaccount.com
+  - serviceAccount:82519464499@cloudservices.gserviceaccount.com
+  role: roles/editor
+- members:
+  - serviceAccount:firebase-deployer@efforts-recruitment.iam.gserviceaccount.com
+  - user:mohdmaahir786@gmail.com
+  role: roles/firebase.admin
+- members:
+  - serviceAccount:service-82519464499@gcp-sa-firebase.iam.gserviceaccount.com
+  role: roles/firebase.managementServiceAgent
+- members:
+  - serviceAccount:firebase-adminsdk-fbsvc@efforts-recruitment.iam.gserviceaccount.com
+  role: roles/firebase.sdkAdminServiceAgent
+- members:
+  - serviceAccount:firebase-deployer@efforts-recruitment.iam.gserviceaccount.com
+  role: roles/firebasehosting.admin
+- members:
+  - serviceAccount:firebase-adminsdk-fbsvc@efforts-recruitment.iam.gserviceaccount.com
+  role: roles/iam.serviceAccountTokenCreator
+- members:
+  - serviceAccount:82519464499@cloudbuild.gserviceaccount.com
+  role: roles/iam.serviceAccountUser
+- members:
+  - user:efforts.solutions@gmail.com
+  role: roles/owner
+- members:
+  - serviceAccount:service-82519464499@gcp-sa-pubsub.iam.gserviceaccount.com
+  role: roles/pubsub.serviceAgent
+- members:
+  - serviceAccount:82519464499@cloudbuild.gserviceaccount.com
+  role: roles/run.admin
+- members:
+  - serviceAccount:service-82519464499@serverless-robot-prod.iam.gserviceaccount.com
+  role: roles/run.serviceAgent
+- members:
+  - serviceAccount:firebase-deployer@efforts-recruitment.iam.gserviceaccount.com
+  role: roles/run.viewer
+- members:
+  - serviceAccount:82519464499-compute@developer.gserviceaccount.com
+  - serviceAccount:82519464499@cloudbuild.gserviceaccount.com
+  role: roles/secretmanager.secretAccessor
+etag: BwZLR_7xyrQ=
+version: 1

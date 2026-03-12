@@ -611,7 +611,7 @@ export default function Candidates() {
                       <Table className="min-w-[900px] w-full">
                         <TableHeader>
                           <TableRow>
-                            <TableHead className="w-[50px]">Rank</TableHead>
+                            <TableHead className="w-[50px]">SI No.</TableHead>
                             <TableHead className="w-[220px]">Candidate</TableHead>
                             <TableHead className="w-[90px]">Score</TableHead>
                             <TableHead className="w-[140px]">Skills</TableHead>
@@ -638,7 +638,7 @@ export default function Candidates() {
                                   index === 2 ? 'bg-orange-100 text-orange-700' :
                                   'bg-gray-50 text-gray-500'
                                 }`}>
-                                  #{index + 1}
+                                  {index + 1}
                                 </div>
                               </TableCell>
                               <TableCell className="max-w-[220px]">
@@ -877,7 +877,7 @@ export default function Candidates() {
           <Table className="min-w-[1000px] w-full">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-[60px]">Rank</TableHead>
+                <TableHead className="w-[60px]">SI No.</TableHead>
                 <TableHead className="w-[250px]">Candidate</TableHead>
                 <TableHead className="w-[130px]">Category</TableHead>
                 <TableHead className="w-[100px]">Match Score</TableHead>
@@ -905,7 +905,7 @@ export default function Candidates() {
                         index === 2 ? 'bg-orange-100 text-orange-700' :
                         'bg-gray-50 text-gray-500'
                       }`}>
-                        #{index + 1}
+                        {index + 1}
                       </div>
                     </TableCell>
                     <TableCell className="max-w-[250px]">
