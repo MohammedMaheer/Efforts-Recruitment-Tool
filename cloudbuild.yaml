@@ -65,7 +65,7 @@ steps:
       - '8000'
       - '--allow-unauthenticated'
       - '--set-env-vars'
-      - 'ENVIRONMENT=production,DEBUG=false,HOST=0.0.0.0,PORT=8000,SYNC_INTERVAL_MINUTES=30,MAX_EMAILS_PER_SYNC=500,AI_TIMEOUT=60,AI_ANALYSIS_TIMEOUT=30,GEMINI_MODEL=gemini-2.5-flash,GCS_BUCKET_NAME=${_GCS_BUCKET}'
+      - 'ENVIRONMENT=production,DEBUG=false,HOST=0.0.0.0,PORT=8000,SYNC_INTERVAL_MINUTES=30,MAX_EMAILS_PER_SYNC=500,AI_TIMEOUT=60,AI_ANALYSIS_TIMEOUT=90,GEMINI_MODEL=gemini-2.5-flash,GCS_BUCKET_NAME=${_GCS_BUCKET},CORS_ORIGINS=${_CORS_ORIGINS},EMAIL_ADDRESS=${_EMAIL_ADDRESS},OAUTH_REDIRECT_URI=${_OAUTH_REDIRECT_URI}'
       - '--update-secrets'
       - 'GEMINI_API_KEY=GEMINI_API_KEY:latest,JWT_SECRET_KEY=JWT_SECRET_KEY:latest,MICROSOFT_CLIENT_ID=MICROSOFT_CLIENT_ID:latest,MICROSOFT_CLIENT_SECRET=MICROSOFT_CLIENT_SECRET:latest,MICROSOFT_TENANT_ID=MICROSOFT_TENANT_ID:latest'
     id: 'deploy-backend'
@@ -136,6 +136,9 @@ steps:
 substitutions:
   _REGION: 'us-central1'
   _GCS_BUCKET: 'efforts-recruitment-data'
+  _CORS_ORIGINS: 'https://efforts-recruitment-ai.web.app'
+  _EMAIL_ADDRESS: ''
+  _OAUTH_REDIRECT_URI: 'https://efforts-recruitment-ai.web.app/auth/callback'
 
 images:
   - 'gcr.io/${PROJECT_ID}/recruitment-backend:${SHORT_SHA}'

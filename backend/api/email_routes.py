@@ -2,6 +2,7 @@
 import os
 import json
 import asyncio
+import hmac
 import logging
 import time
 from core.lifespan import backup_db_to_gcs
@@ -12,6 +13,9 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Depends, UploadFile, File, Body, Query
 from fastapi.responses import Response, JSONResponse, StreamingResponse, RedirectResponse
+from services.microsoft_graph import MicrosoftGraphService
+from services.token_storage import get_token_storage
+from api.deps import db_semaphore
 
 from core.config import get_settings
 from core.dependencies import require_auth, optional_auth, require_admin
@@ -19,6 +23,7 @@ from models.schemas import EmailConnectRequest, EmailSyncRequest, OAuth2Callback
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
+_last_email_sync_time = None
 
 router = APIRouter(tags=["email"])
 
@@ -69,6 +74,668 @@ def _deps():
     """Get deps module for constants."""
     import api.deps as deps
     return deps
+
+def _oauth_automation():
+    """Get the OAuth automation service singleton from lifespan."""
+    from core.lifespan import oauth_automation_service
+    return oauth_automation_service
+
+
+# ---- Helpers ported from main_legacy.py ----
+
+async def trigger_reset_and_reparse(email_address: str, incremental: bool = False):
+    """
+    Full inbox cross-verify: page through ALL inbox emails, compare with
+    email_processing_log, and process any missing/unprocessed candidates.
+    Uses smart_merge for existing candidates. Marks every message processed.
+
+    When incremental=True (used by Cloud Scheduler cron), only fetches emails
+    since last sync time -- much faster for periodic runs.
+    Returns a result dict when called inline (e.g. from cron endpoint).
+    """
+    global _last_email_sync_time
+    if not hasattr(trigger_reset_and_reparse, '_lock'):
+        trigger_reset_and_reparse._lock = asyncio.Lock()
+    if trigger_reset_and_reparse._lock.locked():
+        logger.info("Sync already in progress, skipping duplicate request")
+        return
+    await trigger_reset_and_reparse._lock.acquire()
+    try:
+        logger.info("Full inbox cross-verify started (incremental -- keeping existing data)...")
+
+        _cache().clear()
+
+        current_count = await asyncio.to_thread(_db().get_total_candidates)
+        logger.info(f"Starting with {current_count} existing candidates in database")
+
+        processed_ids = await asyncio.to_thread(_db().get_all_processed_message_ids)
+        logger.info(f"Already processed: {len(processed_ids)} emails in log")
+
+        token_storage = get_token_storage()
+        token_data = token_storage.get_token(email_address)
+
+        if not token_data:
+            logger.warning("No token found for cross-verify sync")
+            return
+
+        client_id = os.getenv('MICROSOFT_CLIENT_ID')
+        client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
+        tenant_id = os.getenv('MICROSOFT_TENANT_ID')
+        saved_auth_type = token_data.get('auth_type', 'delegated')
+
+        graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=email_address)
+
+        token_expired = token_data.get('is_expired', True) or not token_data.get('access_token')
+        if not token_expired:
+            try:
+                expires_at = datetime.fromisoformat(token_data['expires_at'])
+                if expires_at < datetime.now() + timedelta(minutes=5):
+                    token_expired = True
+            except Exception:
+                token_expired = True
+
+        if token_expired:
+            logger.warning(f"Cross-verify: token expired for {email_address}, refreshing...")
+            refresh_success = False
+
+            refresh_token = token_data.get('refresh_token')
+            if refresh_token:
+                try:
+                    refresh_result = await graph_service.refresh_access_token(refresh_token)
+                    if refresh_result.get('status') == 'success':
+                        token_storage.save_token(
+                            email=email_address,
+                            access_token=refresh_result['access_token'],
+                            refresh_token=refresh_result.get('refresh_token', refresh_token),
+                            expires_in=refresh_result['expires_in'],
+                            auth_type='delegated'
+                        )
+                        token_data = token_storage.get_token(email_address)
+                        refresh_success = True
+                        logger.warning("Cross-verify: delegated token refreshed successfully")
+                except Exception as e:
+                    logger.warning(f"Cross-verify: delegated refresh failed: {e}")
+
+            if not refresh_success:
+                try:
+                    cred_result = await graph_service.authenticate_with_credentials()
+                    if cred_result.get('status') == 'success':
+                        token_data = {
+                            'access_token': cred_result['access_token'],
+                            'auth_type': 'application',
+                            'is_expired': False,
+                            'expires_at': (datetime.now() + timedelta(seconds=cred_result.get('expires_in', 3600))).isoformat()
+                        }
+                        refresh_success = True
+                        saved_auth_type = 'application'
+                        logger.warning("Cross-verify: authenticated via app credentials")
+                except Exception as e:
+                    logger.warning(f"Cross-verify: app credentials failed: {e}")
+
+            if not refresh_success:
+                logger.warning("Cross-verify: ALL authentication methods failed -- aborting")
+                return
+
+        graph_service.access_token = token_data['access_token']
+        graph_service.auth_type = saved_auth_type
+        try:
+            graph_service.token_expiry = datetime.fromisoformat(token_data['expires_at'])
+        except Exception:
+            graph_service.token_expiry = datetime.now() + timedelta(hours=1)
+
+        logger.warning(f"Cross-verify: using {saved_auth_type} auth -- {'incremental' if incremental else 'full'} mode")
+
+        new_count = 0
+        updated_count = 0
+        skipped_count = 0
+        error_count = 0
+        total_fetched = 0
+
+        filter_query = None
+        scan_max_pages = 200
+        if incremental and _last_email_sync_time:
+            filter_query = f"receivedDateTime ge {_last_email_sync_time}"
+            scan_max_pages = 60
+            logger.info(f"Incremental: emails since {_last_email_sync_time}")
+        else:
+            logger.info("Full scan: paging through entire inbox")
+
+        consecutive_all_seen = 0
+
+        async for page in graph_service.get_messages_paged(
+            folder='inbox',
+            filter_query=filter_query,
+            page_size=50,
+            max_pages=scan_max_pages
+        ):
+            total_fetched += len(page)
+
+            for msg in page:
+                try:
+                    msg_id = msg.get('id', '') or msg.get('internetMessageId', '')
+                    if not msg_id:
+                        import hashlib as _hashlib
+                        dedup_input = f"{msg.get('from', {}).get('emailAddress', {}).get('address', '')}{msg.get('subject', '')}"
+                        msg_id = f"gen_{_hashlib.sha256(dedup_input.encode()).hexdigest()[:16]}"
+
+                    if msg_id in processed_ids:
+                        skipped_count += 1
+                        continue
+
+                    sender = msg.get('from', {}).get('emailAddress', {})
+                    sender_email = sender.get('address', '')
+                    sender_name = sender.get('name', sender_email.split('@')[0] if sender_email else '')
+                    subject = msg.get('subject', '') or ''
+                    body = msg.get('body', {}).get('content', '') or ''
+
+                    _pre_subj_lower = subject.lower()
+                    _pre_email_lower = sender_email.lower()
+                    _notification_patterns = [
+                        r'^your\s+job[,:]',
+                        r'you\s+have\s+\d+\s+new\s+applicants',
+                        r'^your\s+sponsored\s+job',
+                        r'^your\s+posting',
+                        r'job\s+performance\s+report',
+                        r'^hiring\s+insights',
+                        r'^budget\s+alert',
+                        r'^confirm\s+your\s+account',
+                        r'^welcome\s+to\s+microsoft',
+                        r'^find\s+your\s+next\s+star',
+                        r'^your\s+jobs\s+are\s+on',
+                        r'^undeliverable:',
+                        r'wants\s+to\s+access',
+                        r'^your\s+invoice',
+                        r'^password\s+reset',
+                        r'^verify\s+your\s+email',
+                        r'^your\s+subscription',
+                    ]
+                    if any(re.search(p, _pre_subj_lower) for p in _notification_patterns):
+                        continue
+                    _system_senders = ['noreply', 'no-reply', 'postmaster', 'mailer-daemon',
+                                       'notifications', 'system', 'donotreply', 'do-not-reply']
+                    if any(s in _pre_email_lower for s in _system_senders):
+                        continue
+
+                    attachments = []
+                    if msg.get('hasAttachments'):
+                        try:
+                            attach_result = await graph_service.get_message_with_attachments(msg['id'])
+                            if attach_result['status'] == 'success':
+                                attachments = attach_result['attachments']
+                        except Exception as e:
+                            logger.debug(f"Non-critical: failed to get attachments for cross-verify: {e}")
+
+                    received_dt = msg.get('receivedDateTime')
+                    try:
+                        received_date = datetime.fromisoformat(received_dt.replace('Z', '+00:00')) if received_dt else datetime.now()
+                    except Exception as e:
+                        logger.debug(f"Non-critical: failed to parse receivedDateTime: {e}")
+                        received_date = datetime.now()
+
+                    email_data = {
+                        'subject': subject,
+                        'sender_email': sender_email,
+                        'sender_name': sender_name,
+                        'body': body,
+                        'attachments': attachments,
+                        'received_date': received_date
+                    }
+
+                    candidate = await _scraper().extract_candidate_from_email(email_data)
+                    if not candidate or not candidate.get('email'):
+                        if not hasattr(trigger_reset_and_reparse, '_fail_count'):
+                            trigger_reset_and_reparse._fail_count = 0
+                        trigger_reset_and_reparse._fail_count += 1
+                        if trigger_reset_and_reparse._fail_count <= 10 or trigger_reset_and_reparse._fail_count % 100 == 0:
+                            logger.warning(f"Extraction failed #{trigger_reset_and_reparse._fail_count}: '{subject[:60]}' from {sender_email} (body: {len(body)} chars, attachments: {len(attachments)})")
+                        continue
+
+                    if _db().is_blocked_email(candidate['email']):
+                        if msg_id:
+                            try:
+                                await asyncio.to_thread(_db().mark_email_processed, msg_id, '', 'blocked-relay')
+                                processed_ids.add(msg_id)
+                            except Exception as e:
+                                logger.debug(f"Non-critical: mark_email_processed failed for blocked-relay: {e}")
+                        continue
+
+                    existing = await asyncio.to_thread(_db().get_candidate_by_email, candidate['email'])
+
+                    needs_ai = False
+                    if not existing:
+                        needs_ai = True
+                    else:
+                        candidate = _db().smart_merge_candidate(existing, candidate)
+                        if (not existing.get('ai_analysis')
+                                and (existing.get('matchScore') or existing.get('match_score') or 0) <= 0):
+                            needs_ai = True
+
+                    analysis_text = candidate.get('resume_text') or candidate.get('summary', '')
+                    if analysis_text:
+                        candidate['resume_text'] = analysis_text[:5000]
+
+                    if needs_ai and analysis_text and len(analysis_text) > 20:
+                        try:
+                            ai_analysis = await asyncio.wait_for(
+                                _ai().analyze_candidate(analysis_text),
+                                timeout=_deps().AI_ANALYSIS_TIMEOUT
+                            )
+                            if ai_analysis and ai_analysis.get('quality_score', 0) > 0:
+                                score = ai_analysis.get('quality_score')
+                                candidate.update({
+                                    'job_category': ai_analysis.get('job_category', 'General'),
+                                    'matchScore': score,
+                                    'summary': ai_analysis.get('summary', candidate.get('summary', '')),
+                                    'skills': ai_analysis.get('skills', candidate.get('skills', [])),
+                                    'experience': ai_analysis.get('experience', candidate.get('experience', 0)),
+                                    'education': ai_analysis.get('education', []),
+                                    'phone': candidate.get('phone') or ai_analysis.get('phone', ''),
+                                    'location': candidate.get('location') or ai_analysis.get('location', ''),
+                                    'linkedin': candidate.get('linkedin') or ai_analysis.get('linkedin', ''),
+                                    'certifications': ai_analysis.get('certifications', []),
+                                    'languages': ai_analysis.get('languages', []),
+                                    'work_history': ai_analysis.get('work_history', []),
+                                })
+                                candidate['status'] = 'Strong' if score >= 70 else ('Partial' if score >= 40 else 'Reject')
+                                logger.info(f"AI scored {candidate.get('name')}: {score}%")
+                        except Exception as ai_err:
+                            logger.warning(f"AI error for cross-verify ({type(ai_err).__name__}): {str(ai_err)[:80]}")
+                            skills = candidate.get('skills', [])
+                            exp = candidate.get('experience', 0)
+                            if skills or exp:
+                                fb = 35.0 + min(30, len(skills) * 2.5 + (10 if skills else 0)) + (min(20, 6 + exp * 2) if exp else 0)
+                                candidate['matchScore'] = min(90, round(fb, 1))
+                            else:
+                                candidate['matchScore'] = 45
+
+                    if candidate.get('matchScore', 0) == 0:
+                        candidate['matchScore'] = 35
+
+                    resume_file = candidate.pop('resume_file_data', None)
+                    resume_filename = candidate.pop('resume_filename', None)
+
+                    if existing:
+                        await asyncio.to_thread(_db().update_candidate, candidate)
+                        updated_count += 1
+                    else:
+                        await asyncio.to_thread(_db().insert_candidate, candidate)
+                        new_count += 1
+
+                    if resume_file and resume_filename:
+                        try:
+                            ct = 'application/pdf' if resume_filename.lower().endswith('.pdf') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                            await asyncio.to_thread(_db().save_resume, candidate['id'], resume_filename, resume_file, ct)
+                        except Exception as e:
+                            logger.warning(f"Failed to save resume for {candidate.get('id', 'unknown')}: {e}")
+
+                    if msg_id:
+                        action = 'updated' if existing else 'inserted'
+                        try:
+                            await asyncio.to_thread(_db().mark_email_processed, msg_id, candidate.get('id', ''), action)
+                            processed_ids.add(msg_id)
+                        except Exception as e:
+                            logger.debug(f"Non-critical: mark_email_processed failed for {action}: {e}")
+
+                    if needs_ai and analysis_text and len(analysis_text) > 20:
+                        try:
+                            _skills = candidate.get('skills', [])
+                            _exp = candidate.get('experience', 0) or 0
+                            _edu = candidate.get('education', [])
+                            _certs = candidate.get('certifications', [])
+                            _score = candidate.get('matchScore', 50)
+                            _strengths = []
+                            if len(_skills) >= 8: _strengths.append(f"Strong technical profile with {len(_skills)} identified skills")
+                            elif len(_skills) >= 4: _strengths.append(f"Solid skill set covering {len(_skills)} technologies")
+                            if _exp >= 5: _strengths.append(f"{_exp} years of professional experience")
+                            elif _exp >= 2: _strengths.append(f"{_exp} years of relevant experience")
+                            if _edu and len(_edu) > 0: _strengths.append("Formal educational background documented")
+                            if _certs and len(_certs) > 0: _strengths.append(f"Certified: {', '.join(_certs[:3])}")
+                            if _score >= 70: _strengths.append("High overall profile quality")
+                            _gaps = []
+                            if len(_skills) < 3: _gaps.append("Limited skills information available")
+                            if _exp == 0: _gaps.append("Experience level not specified")
+                            if not _edu or len(_edu) == 0: _gaps.append("No education details provided")
+                            if not candidate.get('phone'): _gaps.append("No phone number on file")
+                            if not candidate.get('linkedin'): _gaps.append("No LinkedIn profile available")
+                            await asyncio.to_thread(_db().save_ai_analysis, candidate.get('id', ''), {
+                                'score': _score, 'job_category': candidate.get('job_category', 'General'),
+                                'summary': candidate.get('summary', ''), 'skills': _skills,
+                                'experience': _exp, 'strengths': _strengths[:5], 'gaps': _gaps[:5],
+                                'analyzed_at': datetime.now().isoformat(),
+                            })
+                        except Exception as e:
+                            logger.warning(f"Failed to save AI analysis for {candidate.get('id', 'unknown')}: {e}")
+
+                    del body, attachments, email_data
+                    if 'candidate' in dir(): del candidate
+                    if 'analysis_text' in dir(): del analysis_text
+                    if 'attach_result' in dir(): del attach_result
+
+                    _emails_processed_this_page = new_count + updated_count + error_count
+                    if _emails_processed_this_page % 10 == 0 and _emails_processed_this_page > 0:
+                        import gc
+                        gc.collect()
+
+                except Exception as e:
+                    error_count += 1
+                    logger.warning(f"Cross-verify error: {str(e)[:100]}")
+
+            page_seen = sum(1 for _ in [m for m in page if (m.get('id', '') or m.get('internetMessageId', '')) in processed_ids])
+            if page_seen == len(page):
+                consecutive_all_seen += 1
+                if incremental and consecutive_all_seen >= 3:
+                    logger.info("Incremental: 3 pages all already-processed - stopping early")
+                    break
+            else:
+                consecutive_all_seen = 0
+
+            if total_fetched % 250 < len(page):
+                import gc
+                gc.collect()
+                try:
+                    try:
+                        with open('/sys/fs/cgroup/memory/memory.usage_in_bytes') as f:
+                            usage = int(f.read().strip())
+                        with open('/sys/fs/cgroup/memory/memory.limit_in_bytes') as f:
+                            limit = int(f.read().strip())
+                        mem_pct = (usage / limit) * 100
+                    except FileNotFoundError:
+                        try:
+                            with open('/sys/fs/cgroup/memory.current') as f:
+                                usage = int(f.read().strip())
+                            with open('/sys/fs/cgroup/memory.max') as f:
+                                limit = int(f.read().strip())
+                            mem_pct = (usage / limit) * 100
+                        except Exception:
+                            import psutil
+                            mem_pct = psutil.virtual_memory().percent
+                    if mem_pct > 85:
+                        logger.error(f"Container memory at {mem_pct:.1f}% - stopping cross-verify to prevent OOM")
+                        break
+                except Exception as e:
+                    logger.debug(f"Non-critical: memory check failed: {e}")
+
+            if total_fetched % 200 < len(page):
+                logger.warning(f"Cross-verify progress: {total_fetched} scanned, {new_count} new, {updated_count} updated, {skipped_count} already-processed, {error_count} errors")
+
+        final_count = await asyncio.to_thread(_db().get_total_candidates)
+        logger.warning(f"Cross-verify complete! {total_fetched} emails scanned, {new_count} new, {updated_count} updated, {skipped_count} skipped, {error_count} errors")
+        logger.warning(f"Database: {current_count} -> {final_count} candidates")
+
+        _last_email_sync_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+        try:
+            await asyncio.to_thread(_db().set_sync_metadata, 'last_email_sync_time', _last_email_sync_time)
+        except Exception as e:
+            logger.debug(f"Non-critical: set_sync_metadata failed after cross-verify: {e}")
+
+        if new_count > 0:
+            _cache().clear()
+            logger.info(f"Cache cleared after adding {new_count} new candidates")
+
+        if _settings.is_production:
+            try:
+                logger.info("Backing up DB to GCS after sync...")
+                await asyncio.to_thread(backup_db_to_gcs)
+                logger.info("Post-sync GCS backup complete")
+            except Exception as _bk_err:
+                logger.error(f"Post-sync GCS backup failed: {_bk_err}")
+
+        return {
+            'status': 'completed',
+            'mode': 'incremental' if incremental else 'full',
+            'emails_scanned': total_fetched,
+            'new_candidates': new_count,
+            'updated_candidates': updated_count,
+            'skipped_already_processed': skipped_count,
+            'errors': error_count,
+            'candidates_before': current_count,
+            'candidates_after': final_count,
+            'sync_time': _last_email_sync_time,
+        }
+
+    except Exception as e:
+        logger.error(f"Error in cross-verify sync: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {'status': 'error', 'message': str(e)}
+    finally:
+        if hasattr(trigger_reset_and_reparse, '_lock') and trigger_reset_and_reparse._lock.locked():
+            trigger_reset_and_reparse._lock.release()
+
+
+async def _backfill_resumes_task(email_address: str):
+    """
+    Backfill resumes using the email_processing_log message_id->candidate_id
+    mapping.  For every candidate that has no resume stored, fetch the
+    original email by its Graph API message ID, grab any resume-type
+    attachment and store it.
+    """
+    import base64 as b64
+    import requests
+    try:
+        logger.warning("Resume backfill v2 started (message-id based)")
+
+        token_storage = get_token_storage()
+        token_data = token_storage.get_token(email_address)
+        if not token_data:
+            return {'status': 'error', 'message': 'No OAuth token'}
+
+        client_id = os.getenv('MICROSOFT_CLIENT_ID')
+        client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
+        tenant_id = os.getenv('MICROSOFT_TENANT_ID')
+
+        graph_service = MicrosoftGraphService(
+            client_id, client_secret, tenant_id, user_email=email_address
+        )
+        graph_service.access_token = token_data['access_token']
+        graph_service.auth_type = token_data.get('auth_type', 'delegated')
+        graph_service.token_expiry = datetime.fromisoformat(token_data['expires_at'])
+
+        msg_candidates = await asyncio.to_thread(_db().get_candidate_message_ids)
+        existing_resumes = await asyncio.to_thread(_db().get_all_resume_candidate_ids)
+
+        need_resume: dict = {}
+        for msg_id, cid in msg_candidates:
+            if cid not in existing_resumes and cid not in need_resume:
+                need_resume[cid] = msg_id
+
+        total = len(need_resume)
+        logger.warning(
+            f"{len(msg_candidates)} msg->candidate pairs, "
+            f"{len(existing_resumes)} already have resumes, "
+            f"{total} need resume backfill"
+        )
+
+        if total == 0:
+            return {
+                'status': 'completed', 'emails_scanned': 0,
+                'resumes_stored': 0, 'already_had': len(existing_resumes),
+                'errors': 0, 'message': 'All candidates already have resumes or no mappings found'
+            }
+
+        headers = {
+            'Authorization': f'Bearer {graph_service.access_token}',
+            'Content-Type': 'application/json'
+        }
+
+        async def _refresh_token():
+            nonlocal headers
+            rt = token_data.get('refresh_token')
+            if not rt:
+                logger.warning("No refresh_token available -- cannot renew")
+                return False
+            result = await graph_service.refresh_access_token(rt)
+            if result.get('status') == 'success':
+                headers['Authorization'] = f"Bearer {result['access_token']}"
+                token_storage.save_token(
+                    email=email_address,
+                    access_token=result['access_token'],
+                    refresh_token=result.get('refresh_token', rt),
+                    expires_in=result.get('expires_in', 3600),
+                    auth_type='delegated'
+                )
+                logger.warning("OAuth2 token refreshed mid-backfill")
+                return True
+            logger.warning(f"Token refresh failed: {result.get('error', 'unknown')}")
+            return False
+
+        if graph_service.auth_type == 'application' and graph_service.user_email:
+            base = f"{graph_service.graph_url}/users/{graph_service.user_email}/messages"
+        else:
+            base = f"{graph_service.graph_url}/me/messages"
+
+        stored = 0
+        skipped_no_attach = 0
+        skipped_no_resume = 0
+        errors = 0
+        checked = 0
+        last_upload_count = 0
+
+        items = list(need_resume.items())
+        for candidate_id, message_id in items:
+            checked += 1
+            try:
+                meta_url = f"{base}/{message_id}?$select=id,hasAttachments"
+                meta_resp = await asyncio.to_thread(
+                    lambda u=meta_url: requests.get(u, headers=headers, timeout=30)
+                )
+
+                if meta_resp.status_code == 429:
+                    retry_after = int(meta_resp.headers.get('Retry-After', '30'))
+                    logger.warning(f"Rate limited, sleeping {retry_after}s (checked {checked}/{total})")
+                    await asyncio.sleep(retry_after)
+                    meta_resp = await asyncio.to_thread(
+                        lambda u=meta_url: requests.get(u, headers=headers, timeout=30)
+                    )
+
+                if meta_resp.status_code == 404:
+                    skipped_no_attach += 1
+                    continue
+
+                if meta_resp.status_code == 401:
+                    if await _refresh_token():
+                        meta_resp = await asyncio.to_thread(
+                            lambda u=meta_url: requests.get(u, headers=headers, timeout=30)
+                        )
+                        if meta_resp.status_code in (401, 403):
+                            errors += 1
+                            if errors <= 5:
+                                logger.warning(f"401 even after refresh for {candidate_id}")
+                            continue
+                    else:
+                        errors += 1
+                        continue
+
+                meta_resp.raise_for_status()
+                meta = meta_resp.json()
+
+                if not meta.get('hasAttachments'):
+                    skipped_no_attach += 1
+                    if checked % 200 == 0:
+                        await asyncio.sleep(0.05)
+                    continue
+
+                att_url = f"{base}/{message_id}/attachments"
+                att_resp = await asyncio.to_thread(
+                    lambda u=att_url: requests.get(u, headers=headers, timeout=60)
+                )
+
+                if att_resp.status_code == 429:
+                    retry_after = int(att_resp.headers.get('Retry-After', '30'))
+                    logger.warning(f"Rate limited on attachments, sleeping {retry_after}s")
+                    await asyncio.sleep(retry_after)
+                    att_resp = await asyncio.to_thread(
+                        lambda u=att_url: requests.get(u, headers=headers, timeout=60)
+                    )
+
+                att_resp.raise_for_status()
+                attachments = att_resp.json().get('value', [])
+
+                found_resume = False
+                for att in attachments:
+                    if att.get('@odata.type') != '#microsoft.graph.fileAttachment':
+                        continue
+                    att_name = (att.get('name') or '').lower()
+                    att_ct = (att.get('contentType') or '').lower()
+                    is_resume = (
+                        att_ct in ('application/pdf', 'application/msword',
+                                   'application/vnd.openxmlformats-officedocument.wordprocessingml.document')
+                        or att_name.endswith(('.pdf', '.doc', '.docx'))
+                    )
+                    if not is_resume:
+                        continue
+                    raw = att.get('contentBytes', '')
+                    if not raw or len(raw) < 100:
+                        continue
+
+                    try:
+                        file_bytes = b64.b64decode(raw) if isinstance(raw, str) else raw
+                    except Exception:
+                        file_bytes = raw
+
+                    ct = 'application/pdf' if ('pdf' in att_ct or att_name.endswith('.pdf')) else att_ct
+                    filename = att.get('name') or f"resume.{'pdf' if 'pdf' in ct else 'docx'}"
+
+                    await asyncio.to_thread(
+                        _db().save_resume, candidate_id, filename, file_bytes, ct
+                    )
+                    existing_resumes.add(candidate_id)
+                    stored += 1
+                    found_resume = True
+                    break
+
+                if not found_resume:
+                    skipped_no_resume += 1
+
+                await asyncio.sleep(0.15)
+
+            except Exception as e:
+                errors += 1
+                if errors <= 10:
+                    logger.warning(f"Backfill error [{type(e).__name__}] cid={candidate_id} mid={message_id[:40]}: {str(e)[:120]}")
+
+            if checked % 100 == 0:
+                logger.warning(
+                    f"Backfill progress: {checked}/{total} checked, "
+                    f"{stored} stored, {skipped_no_attach} no-attach, "
+                    f"{skipped_no_resume} no-resume, {errors} errors"
+                )
+
+            if stored > 0 and stored % 200 == 0 and stored != last_upload_count:
+                try:
+                    await asyncio.to_thread(backup_db_to_gcs)
+                    last_upload_count = stored
+                    logger.warning(f"Periodic DB upload at {stored} resumes stored")
+                except Exception as ue:
+                    logger.warning(f"Periodic DB upload failed at {stored}: {str(ue)[:100]}")
+
+        if stored > 0:
+            try:
+                await asyncio.to_thread(backup_db_to_gcs)
+                logger.warning(f"DB uploaded to GCS after {stored} resume backfills")
+            except Exception as e:
+                logger.warning(f"Failed to upload DB to GCS after resume backfill: {e}")
+
+        logger.warning(
+            f"Resume backfill v2 complete: {checked}/{total} checked, "
+            f"{stored} resumes stored, {skipped_no_attach} no attachments, "
+            f"{skipped_no_resume} had attachments but no resume, {errors} errors"
+        )
+        return {
+            'status': 'completed',
+            'candidates_checked': checked,
+            'total_needing_resume': total,
+            'resumes_stored': stored,
+            'skipped_no_attachments': skipped_no_attach,
+            'skipped_no_resume_file': skipped_no_resume,
+            'already_had_resume': len(existing_resumes) - stored,
+            'errors': errors,
+        }
+    except Exception as e:
+        logger.error(f"Resume backfill v2 error: {str(e)}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return {'status': 'error', 'message': str(e)}
 
 
 @router.post("/api/email/connect")

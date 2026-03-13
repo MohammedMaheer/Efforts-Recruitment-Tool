@@ -387,7 +387,8 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
 
             # Save resume file
             try:
-                await asyncio.to_thread(_db().save_resume, candidate['id'], filename, content)
+                content_type = 'application/pdf' if ext == 'pdf' else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                await asyncio.to_thread(_db().save_resume, candidate['id'], filename, content, content_type)
             except Exception as e:
                 logger.warning(f"Failed to save resume file {filename}: {e}")
 

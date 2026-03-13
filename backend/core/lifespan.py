@@ -1432,7 +1432,9 @@ async def lifespan(app):
                 except Exception as e:
                     logger.warning(f"Failed to close DB connection: {e}")
 
-    asyncio.create_task(_auto_repair_on_startup())
+    _repair_task = asyncio.create_task(_auto_repair_on_startup())
+    _persistent_tasks.add(_repair_task)
+    _repair_task.add_done_callback(_persistent_tasks.discard)
 
     logger.info("Server ready")
 

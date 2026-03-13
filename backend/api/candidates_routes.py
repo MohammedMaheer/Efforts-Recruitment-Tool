@@ -6,6 +6,7 @@ import logging
 import time
 from core.lifespan import backup_db_to_gcs
 from core.db_wrapper import IS_POSTGRES
+from services.gemini_service import get_gemini_service
 import re
 import hashlib
 from typing import Dict, List, Optional, Any
@@ -578,9 +579,8 @@ async def fix_garbage_summaries(current_user: dict = Depends(require_auth)):
         # Initialize AI service
         ai_svc = None
         try:
-            from services.gemini_service import GeminiService
-            ai_svc = GeminiService()
-            logger.info("🤖 Gemini AI available for summary regeneration")
+            ai_svc = get_gemini_service()
+            logger.info("Gemini AI available for summary regeneration")
         except Exception as e:
             logger.warning(f"Gemini not available, will use structured summaries: {e}")
         

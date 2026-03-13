@@ -1792,11 +1792,12 @@ class EmailScraperService:
                 resume_name = candidate.get('resume_filename')
                 if resume_data and resume_name:
                     try:
+                        ct = 'application/pdf' if resume_name.lower().endswith('.pdf') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
                         db_service.save_resume(
                             candidate['id'],
                             resume_name,
-                            'application/pdf' if resume_name.lower().endswith('.pdf') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-                            resume_data
+                            resume_data,
+                            ct
                         )
                     except Exception as res_err:
                         logger.warning(f"Failed to save resume for {candidate.get('email', '?')}: {res_err}")

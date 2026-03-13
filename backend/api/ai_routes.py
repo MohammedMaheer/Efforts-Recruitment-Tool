@@ -6,6 +6,7 @@ import logging
 import time
 import re
 import hashlib
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Depends, UploadFile, File, Body, Query, Form
@@ -17,6 +18,12 @@ from models.schemas import AnalyzeMatchRequest, InterviewQuestionsRequest, Summa
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
+
+# Module-level state (replaces app.state and module globals from main_legacy.py)
+_chat_rate_limits: dict = {}
+_ai_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ai_worker")
+_analysis_in_progress: dict = {}  # candidate_id -> asyncio.Event
+_MAX_CONCURRENT_ANALYSES = 100
 
 router = APIRouter(tags=["ai"])
 
@@ -69,6 +76,307 @@ def _deps():
     return deps
 
 
+# ---- Helper functions ported from main_legacy.py ----
+
+async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
+    """Internal: actually run the LLM analysis for a candidate."""
+    try:
+        def _get_candidate_for_llm_analysis():
+            with _db().get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT * FROM candidates WHERE id = ? AND is_active = 1", (candidate_id,))
+                row = cursor.fetchone()
+            if not row:
+                return None
+            return _db()._row_to_candidate(row)
+        candidate = await asyncio.to_thread(_get_candidate_for_llm_analysis)
+
+        if not candidate:
+            raise HTTPException(404, "Candidate not found")
+
+        resume_text = candidate.get('resume_text', '') or ''
+        if not resume_text:
+            try:
+                resume_data = await asyncio.to_thread(_db().get_resume, candidate_id)
+                if resume_data and resume_data.get('file_data'):
+                    parsed = await _resume_parser().parse_resume(resume_data['file_data'], resume_data['filename'])
+                    resume_text = parsed.get('raw_text', '') if parsed else ''
+            except Exception as e:
+                logger.debug(f"Non-critical: failed to get/parse resume for {candidate_id}: {e}")
+
+        candidate_for_analysis = {
+            'name': candidate.get('name', 'Unknown'),
+            'email': candidate.get('email', ''),
+            'location': candidate.get('location', ''),
+            'skills': candidate.get('skills', []),
+            'experience': candidate.get('experience', 0),
+            'education': candidate.get('education', []),
+            'work_history': candidate.get('workHistory', []),
+            'summary': candidate.get('summary', ''),
+            'matchScore': candidate.get('matchScore', 0),
+            'job_category': candidate.get('jobCategory', candidate.get('job_category', 'General')),
+            'job_subcategory': candidate.get('jobSubcategory', candidate.get('job_subcategory', '')),
+        }
+
+        if resume_text:
+            candidate_for_analysis['resume_text'] = resume_text[:4000]
+
+        analysis = None
+        try:
+            from services.llm_service import get_llm_service
+            llm_svc = await get_llm_service()
+            if llm_svc and llm_svc.available:
+                analysis = await asyncio.wait_for(
+                    llm_svc.analyze_candidate_deep(candidate_for_analysis),
+                    timeout=_deps().AI_ANALYSIS_TIMEOUT
+                )
+                if analysis:
+                    analysis['source'] = 'local_llm'
+        except asyncio.TimeoutError:
+            logger.warning(f"LLM deep analysis timeout for {candidate_id}")
+        except Exception as llm_err:
+            logger.warning(f"LLM deep analysis error: {llm_err}")
+
+        if not analysis:
+            try:
+                from services.gemini_service import get_gemini_service
+                gemini_svc = get_gemini_service()
+                if gemini_svc and gemini_svc.available:
+                    analysis = await asyncio.wait_for(
+                        gemini_svc.analyze_candidate_deep(candidate_for_analysis),
+                        timeout=_deps().AI_ANALYSIS_TIMEOUT
+                    )
+                    if analysis:
+                        analysis['source'] = 'gemini'
+            except asyncio.TimeoutError:
+                logger.warning(f"Gemini deep analysis timeout for {candidate_id}")
+            except Exception as gemini_err:
+                logger.warning(f"Gemini deep analysis error: {gemini_err}")
+
+        if not analysis:
+            skills = candidate_for_analysis.get('skills', [])
+            exp = candidate_for_analysis.get('experience', 0)
+            name = candidate_for_analysis.get('name', 'Unknown')
+            match_score = candidate_for_analysis.get('matchScore', candidate_for_analysis.get('match_score', 50))
+            location = candidate_for_analysis.get('location', '')
+
+            if match_score >= 90:
+                fb_rating, fb_rec, fb_conf = 'A+', 'STRONGLY_RECOMMEND', 95
+            elif match_score >= 80:
+                fb_rating, fb_rec, fb_conf = 'A', 'STRONGLY_RECOMMEND', 88
+            elif match_score >= 70:
+                fb_rating, fb_rec, fb_conf = 'A-', 'RECOMMEND', 80
+            elif match_score >= 60:
+                fb_rating, fb_rec, fb_conf = 'B+', 'RECOMMEND', 72
+            elif match_score >= 50:
+                fb_rating, fb_rec, fb_conf = 'B', 'CONSIDER', 65
+            elif match_score >= 40:
+                fb_rating, fb_rec, fb_conf = 'B-', 'CONSIDER', 55
+            elif match_score >= 30:
+                fb_rating, fb_rec, fb_conf = 'C+', 'REVIEW', 45
+            else:
+                fb_rating, fb_rec, fb_conf = 'C', 'REVIEW', 35
+
+            fb_pros = []
+            if exp > 0:
+                fb_pros.append(f'Brings {exp} years of domain experience')
+            if len(skills) > 5:
+                fb_pros.append(f'Well-rounded skill set with {len(skills)} competencies')
+            elif len(skills) > 0:
+                fb_pros.append(f'Focused expertise in {", ".join(skills[:3])}')
+            if match_score >= 70:
+                fb_pros.append('Strong overall match score for the target role')
+            fb_pros.append('Profile is complete and in active pipeline')
+
+            fb_cons = []
+            if len(skills) < 5:
+                fb_cons.append('Limited skills breadth -- expanding technical portfolio recommended')
+            if exp < 3:
+                fb_cons.append('Early career stage -- may need mentorship and onboarding support')
+            if not location or location in ('Not Specified', 'Unknown', ''):
+                fb_cons.append('Location not specified -- remote/relocation flexibility should be verified')
+            if match_score < 60:
+                fb_cons.append('Below-average match score -- verify alignment with role requirements')
+            if not fb_cons:
+                fb_cons.append('Profile appears strong overall -- detailed AI review recommended for deeper insights')
+
+            analysis = {
+                'executive_summary': f'{name} is a professional with {exp} years of experience specializing in {", ".join(skills[:5]) if skills else "their field"}. With a match score of {match_score}%, they {"show strong alignment" if match_score >= 70 else "show moderate alignment" if match_score >= 50 else "may need further evaluation"} for the target role.',
+                'technical_assessment': f'The candidate lists {len(skills)} technical skills including {", ".join(skills[:8]) if skills else "unspecified technologies"}.',
+                'experience_assessment': f'With {exp} years of professional experience, {name} {"demonstrates significant industry tenure" if exp > 5 else "is building their career foundation"}.',
+                'education_assessment': 'Educational credentials are listed in their profile. Verification of qualifications is recommended during the screening process.',
+                'pros': fb_pros,
+                'cons': fb_cons,
+                'career_trajectory': f'Based on {exp} years of experience, the candidate appears to be at a {"senior" if exp > 7 else "mid" if exp > 3 else "junior"}-level career stage.',
+                'ideal_roles': [candidate_for_analysis.get('job_category', 'General')],
+                'interview_focus_areas': ['Technical depth verification', 'Cultural alignment', 'Career motivation'],
+                'hiring_recommendation': fb_rec,
+                'hiring_recommendation_rationale': f'Based on a {match_score}% match score with {exp} years of experience and {len(skills)} listed skills.',
+                'confidence_score': fb_conf,
+                'overall_rating': fb_rating,
+                'source': 'fallback',
+            }
+
+        await asyncio.to_thread(_db().save_ai_analysis, candidate_id, analysis)
+        analysis['from_cache'] = False
+
+        candidate_email_from_ai = analysis.get('candidate_email', '')
+        if candidate_email_from_ai and '@' in candidate_email_from_ai:
+            current_email = (candidate.get('email', '') or '').lower()
+            portal_prefixes = ('cv@', 'jobs@', 'careers@', 'recruitment@', 'noreply@', 'apply@', 'resume@', 'info@', 'admin@', 'hr@')
+            if current_email and any(current_email.startswith(p) for p in portal_prefixes):
+                try:
+                    def _update_email():
+                        with _db().get_connection() as conn:
+                            cursor = conn.cursor()
+                            cursor.execute("UPDATE candidates SET email = ? WHERE id = ?", (candidate_email_from_ai, candidate_id))
+                            conn.commit()
+                    await asyncio.to_thread(_update_email)
+                    logger.info(f"Updated candidate email: {current_email} -> {candidate_email_from_ai}")
+                except Exception as email_err:
+                    logger.warning(f"Failed to update candidate email: {email_err}")
+
+        if analysis.get('source') == 'fallback':
+            analysis['isFallback'] = True
+
+        return analysis
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"AI analysis error for {candidate_id}: {e}")
+        raise HTTPException(500, "Error generating AI analysis")
+
+
+def _quick_fallback_analysis(candidate: dict, job_description: dict) -> dict:
+    """Quick rule-based fallback when AI is unavailable."""
+    candidate_skills = set(s.lower() for s in candidate.get('skills', []))
+    required_skills = set(s.lower() for s in job_description.get('required_skills', []))
+
+    matched = candidate_skills & required_skills
+    skill_score = (len(matched) / max(len(required_skills), 1)) * 100 if required_skills else 50
+
+    exp = candidate.get('experience', 0)
+    if isinstance(exp, str):
+        exp = int(''.join(filter(str.isdigit, str(exp))) or '0')
+    exp_score = min(100, exp * 15)
+
+    score = int(skill_score * 0.7 + exp_score * 0.3)
+    score = max(20, min(95, score))
+
+    missing = list(required_skills - candidate_skills)[:3]
+
+    return {
+        "score": score,
+        "strengths": [
+            f"Matched {len(matched)} of {len(required_skills)} required skills" if required_skills else "Skills review needed",
+            f"{exp} years of experience" if exp else "Experience to be verified"
+        ],
+        "gaps": [f"Missing: {', '.join(missing)}"] if missing else ["No major gaps identified"],
+        "recommendation": "Recommended" if score >= 60 else "Consider with reservations",
+        "matched_skills": len(matched),
+        "total_required": len(required_skills),
+        "semantic_used": False
+    }
+
+
+def _determine_primary_engine(llm_status: Dict) -> str:
+    """Determine which AI engine is currently primary based on tier order and availability."""
+    tier = _settings.ai_tier_order
+    gemini_svc = _gemini()
+    for engine in tier:
+        if engine == "gemini" and gemini_svc and gemini_svc.available:
+            return "gemini"
+        if engine == "ollama" and llm_status.get('available'):
+            return "ollama_llm"
+    return "local_ai"
+
+
+def _determine_model_description(llm_status: Dict) -> str:
+    """Dynamic model description based on what's available."""
+    parts = []
+    gemini_svc = _gemini()
+    if gemini_svc and gemini_svc.available:
+        parts.append(f"Gemini ({gemini_svc.model_name})")
+    if llm_status.get('available'):
+        parts.append(f"Ollama ({llm_status.get('primary_model', 'local')})")
+    parts.extend(["Sentence-Transformers", "SpaCy NER", "Keyword"])
+    return "Multi-Tier AI: " + " -> ".join(parts)
+
+
+def _determine_ai_message(llm_status: Dict) -> str:
+    """Generate AI status message based on current configuration."""
+    primary = _determine_primary_engine(llm_status)
+    gemini_svc = _gemini()
+    if primary == "gemini":
+        return f"AI Stack: Gemini {gemini_svc.model_name} (primary) + Local Embeddings + NER"
+    elif primary == "ollama_llm":
+        return "AI Stack: Local LLM + Embeddings + NER (FREE) with Gemini fallback"
+    return "AI Stack: Sentence-Transformers + SpaCy NER + Keyword (FREE, no LLM)"
+
+
+def _determine_cost_info(llm_status: Dict) -> str:
+    """Generate cost information string."""
+    primary = _determine_primary_engine(llm_status)
+    if primary == "gemini":
+        return "~$0.01-0.05/day (Gemini 2.5 Flash is very low cost)"
+    elif primary == "ollama_llm":
+        return "$0 (all local, Gemini fallback charges only if local AI fails)"
+    return "$0 (all local, no API costs)"
+
+
+def _format_search_results(raw_results: list, candidates: list) -> list:
+    """Normalize search results into {candidate, relevance_score, match_reasons} format.
+    Deduplicates by candidate ID -- keeps the first (highest-ranked) occurrence."""
+    formatted = []
+    seen_ids = set()
+    for item in raw_results:
+        if isinstance(item, dict):
+            cand_id = None
+            if 'candidate' in item and isinstance(item['candidate'], dict):
+                cand_id = str(item['candidate'].get('id', ''))
+            elif 'id' in item:
+                cand_id = str(item['id'])
+            elif 'candidate_id' in item:
+                cand_id = str(item['candidate_id'])
+
+            if cand_id and cand_id in seen_ids:
+                continue
+
+            if 'candidate' in item and 'relevance_score' in item:
+                formatted.append(item)
+                if cand_id: seen_ids.add(cand_id)
+            elif 'candidate' in item and 'score' in item:
+                match_data = item.get('match', {})
+                formatted.append({
+                    "candidate": item['candidate'],
+                    "relevance_score": int(item['score']),
+                    "match_reasons": match_data.get('strengths', match_data.get('matched_skills', ["AI matched"])),
+                    "matched_skills": match_data.get('matched_skills', []),
+                    "missing_skills": match_data.get('missing_skills', []),
+                    "recommendation": match_data.get('recommendation', ''),
+                })
+                if cand_id: seen_ids.add(cand_id)
+            elif 'id' in item or 'name' in item:
+                score = item.get('score', item.get('match_score', item.get('matchScore', 50)))
+                formatted.append({
+                    "candidate": item,
+                    "relevance_score": score,
+                    "match_reasons": item.get('match_reasons', item.get('key_strengths', ["AI matched"]))
+                })
+                if cand_id: seen_ids.add(cand_id)
+            elif 'candidate_id' in item:
+                cand = next((c for c in candidates if str(c.get('id')) == str(item['candidate_id'])), None)
+                if cand:
+                    formatted.append({
+                        "candidate": cand,
+                        "relevance_score": int(item.get('score', item.get('job_fit_score', 50))),
+                        "match_reasons": item.get('match_reasons', item.get('key_strengths', ["AI matched"]))
+                    })
+                    if cand_id: seen_ids.add(cand_id)
+    return formatted
+
+
 @router.get("/api/ai/candidate/{candidate_id}/analysis")
 async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = Depends(require_auth)):
     """
@@ -95,8 +403,8 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
         
         # Check cache first
         cache_key = f"deep_analysis_{candidate_id}"
-        if cache_key in response_cache:
-            cached = response_cache[cache_key]
+        if cache_key in _cache():
+            cached = _cache()[cache_key]
             cached['from_cache'] = True
             return cached
         
@@ -114,7 +422,7 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
                         "ai_powered": True,
                         "source": "local_llm"
                     }
-                    response_cache[cache_key] = result
+                    _cache()[cache_key] = result
                     return result
         except Exception as llm_err:
             logger.warning(f"LLM deep analysis failed: {llm_err}")
@@ -537,21 +845,18 @@ async def ai_chat(
     # ── Simple rate limiting (10 requests per minute per user) ──
     import time as _time
     user_id = current_user.get("id", "anon")
-    if not hasattr(app.state, "_chat_rate_limits"):
-        app.state._chat_rate_limits = {}
     now = _time.time()
-    user_hits = app.state._chat_rate_limits.get(user_id, [])
+    user_hits = _chat_rate_limits.get(user_id, [])
     user_hits = [t for t in user_hits if now - t < 60]  # Keep last 60s
     if len(user_hits) >= 10:
         raise HTTPException(429, "Too many requests. Please wait a moment before sending another message.")
     user_hits.append(now)
-    app.state._chat_rate_limits[user_id] = user_hits
+    _chat_rate_limits[user_id] = user_hits
     # Periodic cleanup: remove stale users (every ~100 requests)
-    if len(app.state._chat_rate_limits) > 100:
-        app.state._chat_rate_limits = {
-            uid: hits for uid, hits in app.state._chat_rate_limits.items()
-            if any(now - t < 60 for t in hits)
-        }
+    if len(_chat_rate_limits) > 100:
+        stale = [uid for uid, hits in _chat_rate_limits.items() if not any(now - t < 60 for t in hits)]
+        for uid in stale:
+            _chat_rate_limits.pop(uid, None)
 
     try:
         candidates_data = None

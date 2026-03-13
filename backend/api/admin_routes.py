@@ -4,7 +4,12 @@ import json
 import asyncio
 import logging
 import time
-from core.lifespan import backup_db_to_gcs
+from core.lifespan import backup_db_to_gcs, LOCAL_DB_PATH
+from services.db_repair import audit_database, repair_database, quick_health_check
+from services.resume_parser import is_spaced_text, text_quality_score, collapse_spaced_chars
+from services.token_storage import get_token_storage
+from services.microsoft_graph import MicrosoftGraphService
+from services.gemini_service import get_gemini_service
 import re
 import hashlib
 from typing import Dict, List, Optional, Any

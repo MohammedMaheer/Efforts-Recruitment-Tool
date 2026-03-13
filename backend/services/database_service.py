@@ -1240,7 +1240,7 @@ class DatabaseService:
             rows = cursor.fetchall()
             candidates = []
             for row in rows:
-                c = self._row_to_candidate(row[:-1], check_resume=False)
+                c = self._row_to_candidate(row, check_resume=False)
                 c['hasResume'] = bool(row[-1])
                 candidates.append(c)
             return candidates
@@ -1436,7 +1436,7 @@ class DatabaseService:
             
             candidates = []
             for row in rows:
-                c = self._row_to_candidate(row[:-1], check_resume=False)
+                c = self._row_to_candidate(row, check_resume=False)
                 c['hasResume'] = bool(row[-1])
                 candidates.append(c)
             return candidates, total_count

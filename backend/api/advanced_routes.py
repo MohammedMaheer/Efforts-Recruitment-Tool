@@ -249,8 +249,8 @@ async def check_duplicates(request: DuplicateCheckRequest):
         
         # Get all candidates from database for comparison
         db_service = get_db_service()
-        all_candidates = db_service.get_candidates_paginated(1, 5000, {})
-        
+        all_candidates, _ = db_service.get_candidates_paginated(1, 5000, {})
+
         duplicates = service.find_duplicates(candidate, all_candidates, request.threshold)
 
         # Map duplicates to response schema
@@ -350,8 +350,8 @@ async def match_job_to_candidates(request: CandidateMatchRequest):
         
         # Get job and candidates from database
         job = {'id': request.job_id}
-        all_candidates = db_service.get_candidates_paginated(1, 1000, {})
-        candidates = all_candidates if all_candidates else []
+        all_candidates, _ = db_service.get_candidates_paginated(1, 1000, {})
+        candidates = all_candidates
         
         matches = []
         for candidate in candidates:
