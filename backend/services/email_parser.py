@@ -7,6 +7,44 @@ import re
 from datetime import datetime
 import base64
 
+# ============================================================================
+# PRECOMPILED REGEX PATTERNS FOR PERFORMANCE
+# ============================================================================
+_RE_NOREPLY_PREFIX = re.compile(r'^(conversation|reply|noreply|info|contact|hr|jobs|careers)-?', re.IGNORECASE)
+_RE_HASH_SUFFIX = re.compile(r'\s*[a-z0-9]{5,}$', re.IGNORECASE)
+_RE_DIGITS_ONLY = re.compile(r'\D')
+_RE_SCRIPT = re.compile(r'<script[^>]*>.*?</script>', re.DOTALL | re.IGNORECASE)
+_RE_STYLE = re.compile(r'<style[^>]*>.*?</style>', re.DOTALL | re.IGNORECASE)
+_RE_BR = re.compile(r'<br\s*/?>', re.IGNORECASE)
+_RE_P_END = re.compile(r'</p>', re.IGNORECASE)
+_RE_DIV_END = re.compile(r'</div>', re.IGNORECASE)
+_RE_LI_END = re.compile(r'</li>', re.IGNORECASE)
+_RE_TR_END = re.compile(r'</tr>', re.IGNORECASE)
+_RE_HTML_TAG = re.compile(r'<[^>]+>')
+_RE_MULTI_SPACE = re.compile(r'[ \t]+')
+_RE_MULTI_NEWLINE = re.compile(r'\n\s*\n')
+
+# Precompiled skill patterns (avoids re.compile on every email parse — big hot-path win)
+_SKILL_KEYWORDS = [
+    'python', 'javascript', 'typescript', 'react', 'node.js', 'vue', 'angular',
+    'java', 'c++', 'c#', 'golang', 'rust', 'ruby', 'php', 'swift', 'kotlin', 'scala',
+    'sql', 'postgresql', 'mongodb', 'mysql', 'redis', 'elasticsearch', 'oracle',
+    'docker', 'kubernetes', 'aws', 'azure', 'gcp', 'terraform', 'jenkins',
+    'machine learning', 'deep learning', 'data science', 'tensorflow', 'pytorch',
+    'django', 'flask', 'fastapi', 'spring boot', 'express', 'next.js',
+    'html', 'css', 'tailwind', 'figma', 'photoshop',
+    'agile', 'scrum', 'jira', 'git', 'ci/cd', 'devops',
+    'salesforce', 'sap', 'erp', 'crm', 'power bi', 'tableau',
+    'excel', 'marketing', 'seo', 'sales', 'accounting', 'finance',
+    'project management', 'business development', 'recruitment',
+]
+_SKILL_PATTERNS = {
+    skill: re.compile(r'\b' + re.escape(skill) + r'\b', re.IGNORECASE)
+    for skill in _SKILL_KEYWORDS
+}
+# Precompiled location pattern
+_RE_LOCATION = re.compile(r'\b([A-Z][a-z]+(?:\s+[A-Za-z]+)*),\s*(?:UAE|([A-Z]{2}))\b')
+
 class EmailParser:
     """
     Universal email parser supporting Gmail, Outlook, Yahoo, and other IMAP providers
@@ -68,11 +106,11 @@ class EmailParser:
         if sender_email:
             name_part = sender_email.split('@')[0]
             # Remove conversation- prefix and random IDs
-            name_part = re.sub(r'^(conversation|reply|noreply|info|contact|hr|jobs|careers)-?', '', name_part, flags=re.IGNORECASE)
+            name_part = _RE_NOREPLY_PREFIX.sub('', name_part)
             # Clean up common patterns like firstname.lastname or firstname_lastname
             name_part = name_part.replace('.', ' ').replace('_', ' ').replace('-', ' ')
             # Remove trailing random IDs (5+ alphanumeric chars)
-            name_part = re.sub(r'\s*[a-z0-9]{5,}$', '', name_part, flags=re.IGNORECASE)
+            name_part = _RE_HASH_SUFFIX.sub('', name_part)
             # Capitalize each word
             words = [word.capitalize() for word in name_part.split() if len(word) > 1]
             result['name'] = ' '.join(words) if words else ''
@@ -94,7 +132,7 @@ class EmailParser:
             if match:
                 phone_candidate = match.group()
                 # Filter out year-like numbers (4 digits between 1900-2100)
-                digits_only = re.sub(r'\D', '', phone_candidate)
+                digits_only = _RE_DIGITS_ONLY.sub('', phone_candidate)
                 if len(digits_only) >= 7:  # Valid phone has at least 7 digits
                     result['phone'] = phone_candidate
                     break
@@ -203,29 +241,23 @@ class EmailParser:
         from html import unescape
         
         text = html_content
-        
         # Remove script and style elements
-        text = re.sub(r'<script[^>]*>.*?</script>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-        
+        text = _RE_SCRIPT.sub('', text)
+        text = _RE_STYLE.sub('', text)
         # Replace common block elements with newlines
-        text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
-        text = re.sub(r'</p>', '\n\n', text, flags=re.IGNORECASE)
-        text = re.sub(r'</div>', '\n', text, flags=re.IGNORECASE)
-        text = re.sub(r'</li>', '\n', text, flags=re.IGNORECASE)
-        text = re.sub(r'</tr>', '\n', text, flags=re.IGNORECASE)
-        
+        text = _RE_BR.sub('\n', text)
+        text = _RE_P_END.sub('\n\n', text)
+        text = _RE_DIV_END.sub('\n', text)
+        text = _RE_LI_END.sub('\n', text)
+        text = _RE_TR_END.sub('\n', text)
         # Remove all remaining HTML tags
-        text = re.sub(r'<[^>]+>', '', text)
-        
+        text = _RE_HTML_TAG.sub('', text)
         # Decode HTML entities
         text = unescape(text)
-        
         # Clean up whitespace
-        text = re.sub(r'[ \t]+', ' ', text)  # Multiple spaces to single
-        text = re.sub(r'\n\s*\n', '\n\n', text)  # Multiple newlines to double
+        text = _RE_MULTI_SPACE.sub(' ', text)
+        text = _RE_MULTI_NEWLINE.sub('\n\n', text)
         text = text.strip()
-        
         return text
     
     async def connect_email_account(
@@ -516,29 +548,14 @@ class EmailParser:
                 info['years_experience'] = int(match.group(1))
                 break
         
-        # Extract skills (common tech skills — word-boundary matching)
-        skill_keywords = [
-            'python', 'javascript', 'typescript', 'react', 'node.js', 'vue', 'angular',
-            'java', 'c++', 'c#', 'golang', 'rust', 'ruby', 'php', 'swift', 'kotlin', 'scala',
-            'sql', 'postgresql', 'mongodb', 'mysql', 'redis', 'elasticsearch', 'oracle',
-            'docker', 'kubernetes', 'aws', 'azure', 'gcp', 'terraform', 'jenkins',
-            'machine learning', 'deep learning', 'data science', 'tensorflow', 'pytorch',
-            'django', 'flask', 'fastapi', 'spring boot', 'express', 'next.js',
-            'html', 'css', 'tailwind', 'figma', 'photoshop',
-            'agile', 'scrum', 'jira', 'git', 'ci/cd', 'devops',
-            'salesforce', 'sap', 'erp', 'crm', 'power bi', 'tableau',
-            'excel', 'marketing', 'seo', 'sales', 'accounting', 'finance',
-            'project management', 'business development', 'recruitment',
-        ]
-        
+        # Extract skills using precompiled module-level patterns (no local list needed)
+        # Extract skills using precompiled word-boundary patterns
         text_lower = text.lower()
-        found_skills = [skill for skill in skill_keywords if re.search(r'\b' + re.escape(skill) + r'\b', text_lower)]
+        found_skills = [skill for skill, pat in _SKILL_PATTERNS.items() if pat.search(text_lower)]
         info['skills'] = list(set(found_skills))
-        
+
         # Extract location (UAE cities or international format)
-        # Support UAE format: "Dubai, UAE" or US format: "City, ST"
-        location_pattern = r'\b([A-Z][a-z]+(?:\s+[A-Za-z]+)*),\s*(?:UAE|([A-Z]{2}))\b'
-        location_match = re.search(location_pattern, text)
+        location_match = _RE_LOCATION.search(text)
         if location_match:
             city = location_match.group(1)
             region = location_match.group(2) if location_match.group(2) else 'UAE'

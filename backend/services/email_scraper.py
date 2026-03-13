@@ -47,6 +47,45 @@ _GARBAGE_SUMMARY_PATTERNS = [
 
 _GARBAGE_SUMMARY_COMPILED = [re.compile(p) for p in _GARBAGE_SUMMARY_PATTERNS]
 
+# ============================================================================
+# PRECOMPILED REGEX PATTERNS FOR PERFORMANCE
+# ============================================================================
+# HTML cleaning patterns
+_RE_SCRIPT = re.compile(r'<script[^>]*>.*?</script>', re.DOTALL | re.IGNORECASE)
+_RE_STYLE = re.compile(r'<style[^>]*>.*?</style>', re.DOTALL | re.IGNORECASE)
+_RE_BR = re.compile(r'<br\s*/?>', re.IGNORECASE)
+_RE_P_END = re.compile(r'</p>', re.IGNORECASE)
+_RE_DIV_END = re.compile(r'</div>', re.IGNORECASE)
+_RE_LI_END = re.compile(r'</li>', re.IGNORECASE)
+_RE_TR_END = re.compile(r'</tr>', re.IGNORECASE)
+_RE_HTML_TAG = re.compile(r'<[^>]+>')
+_RE_MULTI_SPACE = re.compile(r'[ \t]+')
+_RE_MULTI_NEWLINE = re.compile(r'\n\s*\n')
+
+# Name extraction/validation patterns
+_RE_NOREPLY_PREFIX = re.compile(r'^(conversation|reply|noreply|info|contact|hr|jobs|careers)-?', re.IGNORECASE)
+_RE_HASH_SUFFIX = re.compile(r'[a-z0-9]{5,}$', re.IGNORECASE)
+_RE_NUM_SUFFIX = re.compile(r'[\s_-]*[0-9]+[a-z]*$', re.IGNORECASE)
+_RE_YEAR_RANGE = re.compile(r'\d{4}\s*[-–]\s*\d{4}')
+_RE_SPACED_DIGITS = re.compile(r'[0-9]\s+[0-9]\s+[0-9]\s+[0-9]')
+_RE_HEX_STRING = re.compile(r'^[a-f0-9]{8,}$', re.IGNORECASE)
+_RE_CONVERSATION = re.compile(r'^conversation', re.IGNORECASE)
+
+# Email/contact extraction patterns
+_RE_EMAIL = re.compile(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}')
+_RE_LINKEDIN = re.compile(r'(?:https?://)?(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-]+)', re.IGNORECASE)
+_RE_DIGITS_ONLY = re.compile(r'\D')
+_RE_PHONE_LINE = re.compile(r'^[\d\s\+\-\(\)]+$')
+
+# Education field cleaning
+_RE_EDU_STOPWORDS = re.compile(r'\b(in|of|from|the|and|with)\b', re.IGNORECASE)
+_RE_SHORT_WORD = re.compile(r'^[a-z]{1,3}\s*$')
+
+# Chat transcript detection
+_RE_CHAT_TRANSCRIPT = re.compile(r'chat\s*transcript|attended\s*by\s*:|chat\s*duration\s*:', re.IGNORECASE)
+_RE_CHAT_NAME = re.compile(r'(?:my\s+name\s+is|i\s+am|this\s+is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})', re.IGNORECASE)
+_RE_MSG_START = re.compile(r'(?:dear\s+sir|dear\s+madam|hi\s*,|hello|i\s+am\s+writing|my\s+name\s+is)', re.IGNORECASE)
+
 
 def is_garbage_summary(summary: str) -> bool:
     """Check if a summary is actually raw email body text rather than a real professional summary."""
@@ -225,27 +264,27 @@ def clean_html_to_text(html_content: str) -> str:
     """Convert HTML content to clean plain text"""
     if not html_content:
         return ""
-    
-    # Remove script and style elements
-    text = re.sub(r'<script[^>]*>.*?</script>', '', html_content, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r'<style[^>]*>.*?</style>', '', text, flags=re.DOTALL | re.IGNORECASE)
-    
+
+    # Remove script and style elements (using precompiled patterns)
+    text = _RE_SCRIPT.sub('', html_content)
+    text = _RE_STYLE.sub('', text)
+
     # Replace common block elements with newlines
-    text = re.sub(r'<br\s*/?>', '\n', text, flags=re.IGNORECASE)
-    text = re.sub(r'</p>', '\n\n', text, flags=re.IGNORECASE)
-    text = re.sub(r'</div>', '\n', text, flags=re.IGNORECASE)
-    text = re.sub(r'</li>', '\n', text, flags=re.IGNORECASE)
-    text = re.sub(r'</tr>', '\n', text, flags=re.IGNORECASE)
-    
+    text = _RE_BR.sub('\n', text)
+    text = _RE_P_END.sub('\n\n', text)
+    text = _RE_DIV_END.sub('\n', text)
+    text = _RE_LI_END.sub('\n', text)
+    text = _RE_TR_END.sub('\n', text)
+
     # Remove all remaining HTML tags
-    text = re.sub(r'<[^>]+>', '', text)
-    
+    text = _RE_HTML_TAG.sub('', text)
+
     # Decode HTML entities
     text = unescape(text)
-    
+
     # Clean up whitespace
-    text = re.sub(r'[ \t]+', ' ', text)  # Multiple spaces to single
-    text = re.sub(r'\n\s*\n', '\n\n', text)  # Multiple newlines to double
+    text = _RE_MULTI_SPACE.sub(' ', text)
+    text = _RE_MULTI_NEWLINE.sub('\n\n', text)
     text = text.strip()
     
     return text
@@ -260,16 +299,16 @@ def extract_name_from_email_address(email_address: str) -> str:
     name_part = email_address.split('@')[0]
     
     # Remove common prefixes like 'conversation-'
-    name_part = re.sub(r'^(conversation|reply|noreply|info|contact|hr|jobs|careers)-?', '', name_part, flags=re.IGNORECASE)
-    
+    name_part = _RE_NOREPLY_PREFIX.sub('', name_part)
+
     # Clean up common patterns
     name_part = name_part.replace('.', ' ').replace('_', ' ').replace('-', ' ')
-    
+
     # Remove random strings (like IDs): sequences of more than 4 mixed chars/digits at the end
-    name_part = re.sub(r'[a-z0-9]{5,}$', '', name_part, flags=re.IGNORECASE)
-    
+    name_part = _RE_HASH_SUFFIX.sub('', name_part)
+
     # Remove trailing numbers/random chars
-    name_part = re.sub(r'[\s_-]*[0-9]+[a-z]*$', '', name_part, flags=re.IGNORECASE)
+    name_part = _RE_NUM_SUFFIX.sub('', name_part)
     
     # Capitalize each word
     words = [word.capitalize() for word in name_part.split() if len(word) > 1]
@@ -342,12 +381,12 @@ def parse_indeed_email(body: str, subject: str) -> Optional[Dict]:
                 break
     
     # Extract email from body
-    email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', clean_body)
+    email_match = _RE_EMAIL.search(clean_body)
     if email_match:
         result['email'] = email_match.group()
-    
+
     # Extract LinkedIn URL
-    linkedin_match = re.search(r'(?:https?://)?(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-]+)', body, re.IGNORECASE)
+    linkedin_match = _RE_LINKEDIN.search(body)
     if linkedin_match:
         result['linkedin'] = f"https://linkedin.com/in/{linkedin_match.group(1)}"
     
@@ -363,7 +402,7 @@ def parse_indeed_email(body: str, subject: str) -> Optional[Dict]:
         if phone_match:
             phone_candidate = phone_match.group(1) if phone_match.lastindex else phone_match.group()
             # Filter out year-like numbers - must have at least 7 digits
-            digits_only = re.sub(r'\D', '', phone_candidate)
+            digits_only = _RE_DIGITS_ONLY.sub('', phone_candidate)
             if len(digits_only) >= 7:
                 result['phone'] = phone_candidate.strip()
                 break
@@ -454,7 +493,7 @@ def parse_linkedin_email(body: str, subject: str) -> Optional[Dict]:
                 break
     
     # Extract email
-    email_match = re.search(r'[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}', clean_body)
+    email_match = _RE_EMAIL.search(clean_body)
     if email_match:
         result['email'] = email_match.group()
     
@@ -481,7 +520,7 @@ def parse_linkedin_email(body: str, subject: str) -> Optional[Dict]:
     for pattern in phone_patterns:
         match = re.search(pattern, clean_body)
         if match:
-            digits = re.sub(r'\D', '', match.group())
+            digits = _RE_DIGITS_ONLY.sub('', match.group())
             if len(digits) >= 7:
                 result['phone'] = match.group()
                 break
@@ -606,12 +645,12 @@ def _generic_portal_parser(clean_body: str, subject: str, source: str) -> Option
             break
 
     # ---- Email ----
-    em = re.search(r'[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}', clean_body)
+    em = _RE_EMAIL.search(clean_body)
     if em:
         result['email'] = em.group()
 
     # ---- LinkedIn ----
-    lm = re.search(r'(?:https?://)?(?:www\.)?linkedin\.com/in/([a-zA-Z0-9\-]+)', clean_body, re.IGNORECASE)
+    lm = _RE_LINKEDIN.search(clean_body)
     if lm:
         result['linkedin'] = f"https://linkedin.com/in/{lm.group(1)}"
 
@@ -626,7 +665,7 @@ def _generic_portal_parser(clean_body: str, subject: str, source: str) -> Option
         pm = re.search(pat, clean_body, re.IGNORECASE)
         if pm:
             val = pm.group(1) if pm.lastindex else pm.group()
-            digits = re.sub(r'\D', '', val)
+            digits = _RE_DIGITS_ONLY.sub('', val)
             if len(digits) >= 7:
                 result['phone'] = val.strip()
                 break
@@ -750,9 +789,9 @@ def extract_education_from_text(text: str) -> List[Dict]:
             field = match.group(1).strip() if match.group(1) else ''
             institution = match.group(2).strip() if len(match.groups()) > 1 and match.group(2) else ''
             # Clean up field
-            field = re.sub(r'\b(in|of|from|the|and|with)\b', '', field, flags=re.IGNORECASE).strip()
+            field = _RE_EDU_STOPWORDS.sub('', field).strip()
             # Validate field isn't garbage
-            if len(field) >= 3 and not re.match(r'^[a-z]{1,3}\s*$', field.lower()):
+            if len(field) >= 3 and not _RE_SHORT_WORD.match(field.lower()):
                 education.append({
                     'degree': degree_type,
                     'field': field.title(),
@@ -800,26 +839,26 @@ def is_valid_name(name: str) -> bool:
         return False
     
     # Contains patterns that look like dates (e.g., "2 0 1 3 - 2 0 1 5")
-    if re.search(r'\d{4}\s*[-â€“]\s*\d{4}', name.replace(' ', '')):
+    if _RE_YEAR_RANGE.search(name.replace(' ', '')):
         return False
-    if re.search(r'[0-9]\s+[0-9]\s+[0-9]\s+[0-9]', name):
+    if _RE_SPACED_DIGITS.search(name):
         return False
-    
+
     # Contains too many special characters
     special_count = sum(1 for c in name if not c.isalnum() and c not in ' .-\'')
     if special_count > 3:
         return False
-    
+
     # Looks like an email address
     if '@' in name:
         return False
-    
+
     # Looks like a UUID or hash
-    if re.match(r'^[a-f0-9]{8,}$', name.lower().replace('-', '')):
+    if _RE_HEX_STRING.match(name.lower().replace('-', '')):
         return False
-    
+
     # Looks like a conversation ID
-    if re.match(r'^conversation', name, re.IGNORECASE):
+    if _RE_CONVERSATION.match(name):
         return False
     
     # At least one letter required
@@ -887,7 +926,7 @@ def compute_extraction_quality(candidate: Dict) -> int:
     # Phone (10 pts)
     max_score += 10
     phone = candidate.get('phone', '')
-    if phone and len(re.sub(r'\D', '', phone)) >= 7:
+    if phone and len(_RE_DIGITS_ONLY.sub('', phone)) >= 7:
         score += 10
 
     # Skills (15 pts)
@@ -980,7 +1019,7 @@ class EmailScraperService:
             ))
             i += 1
         
-        print(f"ðŸ“§ Loaded {len(accounts)} email account(s)")
+        logger.info(f"Loaded {len(accounts)} email account(s)")
         return accounts
     
     def connect_to_inbox(self, account: EmailAccount):
@@ -1001,56 +1040,52 @@ class EmailScraperService:
 
     async def fetch_emails(self, mail, process_all: bool = False, since_date=None) -> List[Dict]:
         """
-        Fetch emails from mailbox
-        process_all=True: Fetch ALL emails from beginning
-        process_all=False: Fetch only UNSEEN (new) emails
+        Fetch emails from mailbox.
+        IMAP operations are blocking -- offloaded to thread pool via asyncio.to_thread
+        to avoid freezing the main event loop during large inbox fetches.
         """
         try:
-            # Determine search criteria based on parameters
             if process_all:
-                # Get ALL emails from the beginning
                 search_criteria = 'ALL'
             elif since_date:
                 date_str = since_date.strftime("%d-%b-%Y")
                 search_criteria = f'(SINCE "{date_str}")'
             else:
-                # Get only unseen (new) emails by default
                 search_criteria = 'UNSEEN'
-            
-            status, messages = mail.search(None, search_criteria)
-            
+
+            # Offload blocking IMAP search to thread pool
+            status, messages = await asyncio.to_thread(mail.search, None, search_criteria)
+
             if status != 'OK':
                 return []
-            
+
             email_ids = messages[0].split()
             total_emails = len(email_ids)
-            logger.info(f"ðŸ“¬ Found {total_emails} emails to process...")
-            
-            # Track filtering stats
+            logger.info(f"Found {total_emails} emails to process...")
+
             total_checked = 0
             filtered_count = 0
-            
-            # Process only new emails (incremental)
             new_emails = []
+
             for idx, email_id in enumerate(email_ids, 1):
-                # Progress logging for large fetches
                 if total_emails > 100 and idx % 50 == 0:
-                    logger.info(f"ðŸ“Š Fetching progress: {idx}/{total_emails} emails checked...")
-                status, msg_data = mail.fetch(email_id, '(RFC822)')
-                
+                    logger.info(f"Fetching progress: {idx}/{total_emails} emails checked...")
+
+                # Offload blocking IMAP fetch to thread pool
+                status, msg_data = await asyncio.to_thread(mail.fetch, email_id, '(RFC822)')
+
                 if status != 'OK':
                     continue
-                
+
                 for response_part in msg_data:
                     if isinstance(response_part, tuple):
                         msg = email.message_from_bytes(response_part[1])
                         total_checked += 1
-                        
-                        # Get unique message ID to prevent duplicates
+
                         message_id = msg.get('Message-ID')
                         if message_id in self.processed_message_ids:
                             continue
-                        
+
                         email_data = await self.parse_email_message(msg)
                         if email_data:
                             email_data['email_id'] = email_id.decode()
@@ -1059,10 +1094,10 @@ class EmailScraperService:
                             self.processed_message_ids.add(message_id)
                         else:
                             filtered_count += 1
-            
+
             if filtered_count > 0:
-                logger.info(f"ðŸ“§ Email filter: {total_checked} checked, {len(new_emails)} job applications, {filtered_count} filtered out")
-            
+                logger.info(f"Email filter: {total_checked} checked, {len(new_emails)} job applications, {filtered_count} filtered out")
+
             return new_emails
             
         except Exception as e:
@@ -1250,7 +1285,7 @@ class EmailScraperService:
             # FILTER: Detect chat transcript / non-candidate content
             _body_lower = clean_body[:500].lower() if clean_body else ''
             _subject_lower = subject.lower() if subject else ''
-            is_chat_transcript = bool(re.search(r'chat\s*transcript|attended\s*by\s*:|chat\s*duration\s*:', _body_lower))
+            is_chat_transcript = bool(_RE_CHAT_TRANSCRIPT.search(_body_lower))
             # System notification detection — only flag if sender is a system email
             # Personal email addresses (gmail, outlook, yahoo etc.) should NEVER be flagged
             # because candidates may have keywords like "invoice" in their job descriptions
@@ -1279,8 +1314,8 @@ class EmailScraperService:
             # For chat transcripts from SalesIQ etc. - extract real candidate or skip
             if is_chat_transcript and is_system_email:
                 logger.info(f"Chat transcript from {sender_email} - attempting to extract real candidate")
-                _chat_name_match = re.search(r'(?:my\s+name\s+is|i\s+am|this\s+is)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,3})', clean_body, re.IGNORECASE)
-                _chat_email_match = re.search(r'[\w.+-]+@[\w-]+\.[\w.]+', clean_body)
+                _chat_name_match = _RE_CHAT_NAME.search(clean_body)
+                _chat_email_match = _RE_EMAIL.search(clean_body)
                 if _chat_name_match and _chat_email_match:
                     _real_name = _chat_name_match.group(1).strip()
                     _real_email = _chat_email_match.group(0).strip()
@@ -1288,7 +1323,7 @@ class EmailScraperService:
                         sender_email = _real_email
                         email_data['sender_name'] = _real_name
                         # Strip chat metadata, keep candidate's actual message
-                        _msg_start = re.search(r'(?:dear\s+sir|dear\s+madam|hi\s*,|hello|i\s+am\s+writing|my\s+name\s+is)', clean_body, re.IGNORECASE)
+                        _msg_start = _RE_MSG_START.search(clean_body)
                         if _msg_start:
                             clean_body = clean_body[_msg_start.start():]
                         logger.info(f"Extracted real candidate from chat: {_real_name} ({_real_email})")
@@ -1349,23 +1384,29 @@ class EmailScraperService:
                     sender_email
                 )
             
-            # FIRST: Try LLM-powered email parsing (100% accurate)
+            # FIRST: Try AI-powered email parsing
+            # In production (Cloud Run), skip Ollama (never available) and go straight to Gemini
+            # to avoid wasted connection attempts and timeouts per email.
             llm_portal_data = None
-            try:
-                from services.llm_service import get_llm_service
-                llm_service = await get_llm_service()
-                if llm_service.available:
-                    llm_portal_data = await llm_service.parse_candidate_email(
-                        subject=subject,
-                        body=clean_body[:6000],
-                        sender=sender_email
-                    )
-                    if llm_portal_data:
-                        logger.info(f"LLM parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
-            except Exception as llm_err:
-                logger.debug(f"LLM email parsing skipped: {llm_err}")
+            _is_production = bool(os.getenv('K_SERVICE') or os.getenv('PYTHON_ENV') == 'production')
             
-            # If LLM (Ollama) not available, try Gemini for email parsing
+            if not _is_production:
+                # Local dev: try Ollama first (faster, free)
+                try:
+                    from services.llm_service import get_llm_service
+                    llm_service = await get_llm_service()
+                    if llm_service.available:
+                        llm_portal_data = await llm_service.parse_candidate_email(
+                            subject=subject,
+                            body=clean_body[:6000],
+                            sender=sender_email
+                        )
+                        if llm_portal_data:
+                            logger.info(f"LLM parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
+                except Exception as llm_err:
+                    logger.debug(f"LLM email parsing skipped: {llm_err}")
+            
+            # Gemini fallback (or primary in production)
             if not llm_portal_data:
                 try:
                     from services.gemini_service import get_gemini_service
@@ -1597,7 +1638,7 @@ class EmailScraperService:
                     for _line in _raw.strip().splitlines()[:5]:
                         _line = _line.strip()
                         # Skip empty lines, emails, phone numbers, URLs
-                        if not _line or '@' in _line or _line.startswith('http') or re.match(r'^[\d\s\+\-\(\)]+$', _line):
+                        if not _line or '@' in _line or _line.startswith('http') or _RE_PHONE_LINE.match(_line):
                             continue
                         # Lines that look like a name (2-5 words, all alpha)
                         _parts = _line.split()
@@ -1619,8 +1660,9 @@ class EmailScraperService:
             # Sanitize: reject email body text, generate structured summary as fallback
             summary = sanitize_summary(raw_summary, resume_data)
             
-            # Get raw text for AI analysis (prefer resume text over email body)
-            raw_text = resume_data.get('raw_text', '') or clean_body[:3000]
+            # Get raw text for AI analysis — only use actual resume attachment text,
+            # NOT email body (which is just a cover letter / follow-up, not a resume)
+            raw_text = resume_data.get('raw_text', '')
             
             # Get education and work history, convert to JSON-serializable format
             education = resume_data.get('education', [])
@@ -1786,7 +1828,8 @@ class EmailScraperService:
             try:
                 for account in self.email_accounts:
                     try:
-                        mail = self.connect_to_inbox(account)
+                        # Offload blocking IMAP SSL connect + login to thread pool
+                        mail = await asyncio.to_thread(self.connect_to_inbox, account)
                         if not mail:
                             continue
                         
@@ -1836,11 +1879,17 @@ class EmailScraperService:
                 logger.error(f"Scraper error: {e}")
                 await asyncio.sleep(interval_seconds)
 
-# Singleton instance
+# Singleton instance (thread-safe)
 _scraper_service = None
+_scraper_lock = None
 
 def get_scraper_service():
-    global _scraper_service
+    global _scraper_service, _scraper_lock
+    import threading
+    if _scraper_lock is None:
+        _scraper_lock = threading.Lock()
     if _scraper_service is None:
-        _scraper_service = EmailScraperService()
+        with _scraper_lock:
+            if _scraper_service is None:
+                _scraper_service = EmailScraperService()
     return _scraper_service

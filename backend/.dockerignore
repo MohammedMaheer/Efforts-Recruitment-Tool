@@ -6,3 +6,8 @@ __pycache__
 models_trained
 .env
 oauth_tokens.json
+# Legacy monolith and extraction utilities (not needed in production image)
+main_legacy.py
+_extract_routes.py
+_inject_helpers.py
+logs.json

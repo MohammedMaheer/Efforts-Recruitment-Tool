@@ -643,125 +643,195 @@ export default function CandidateDetail() {
         </Card>
       </motion.div>
 
-      {/* AI Analysis — Compact Assessment Card */}
+      {/* AI Analysis — Vibrant Assessment Card */}
       {aiAnalysis && (
         <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="rounded-xl border border-sky-100 bg-white overflow-hidden shadow-sm">
-            <div className="bg-gradient-to-r from-sky-50 to-indigo-50 px-5 py-3 flex items-center justify-between border-b border-sky-100/60">
-              <div className="flex items-center gap-2">
-                <Sparkles className="w-4 h-4 text-sky-500" />
-                <span className="text-sm font-semibold text-gray-900">AI Assessment</span>
-                  {aiAnalysis.isFallback && <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Basic</span>}
-                  {aiAnalysis.from_cache && <span className="text-[10px] text-gray-400 bg-gray-100 px-1.5 py-0.5 rounded">Cached</span>}
+          <div className="rounded-2xl border-0 bg-white overflow-hidden shadow-lg ring-1 ring-gray-100">
+            {/* Header with gradient accent */}
+            <div className="bg-gradient-to-r from-violet-600 via-indigo-600 to-blue-600 px-6 py-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2.5">
+                  <div className="w-8 h-8 rounded-lg bg-white/20 backdrop-blur flex items-center justify-center">
+                    <Sparkles className="w-4.5 h-4.5 text-white" />
+                  </div>
+                  <div>
+                    <span className="text-sm font-bold text-white tracking-wide">AI Assessment</span>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      {aiAnalysis.isFallback && <span className="text-[10px] text-white/60 bg-white/15 px-1.5 py-0.5 rounded">Basic</span>}
+                      {aiAnalysis.from_cache && <span className="text-[10px] text-white/60 bg-white/15 px-1.5 py-0.5 rounded">Cached</span>}
+                    </div>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2.5">
                   {aiAnalysis.overall_rating && (
-                    <span className={`text-sm font-bold px-2 py-0.5 rounded ${
-                      aiAnalysis.overall_rating?.startsWith('A') ? 'bg-emerald-100 text-emerald-700' :
-                      aiAnalysis.overall_rating?.startsWith('B') ? 'bg-blue-100 text-blue-700' :
-                      aiAnalysis.overall_rating?.startsWith('C') ? 'bg-amber-100 text-amber-700' :
-                      'bg-red-100 text-red-700'
+                    <span className={`text-lg font-extrabold px-3 py-1 rounded-lg shadow-sm ${
+                      aiAnalysis.overall_rating?.startsWith('A') ? 'bg-emerald-400 text-emerald-950' :
+                      aiAnalysis.overall_rating?.startsWith('B') ? 'bg-sky-400 text-sky-950' :
+                      aiAnalysis.overall_rating?.startsWith('C') ? 'bg-amber-400 text-amber-950' :
+                      'bg-red-400 text-red-950'
                     }`}>{aiAnalysis.overall_rating}</span>
                   )}
                   {aiAnalysis.hiring_recommendation && (
-                    <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${
-                      aiAnalysis.hiring_recommendation === 'STRONGLY_RECOMMEND' ? 'bg-emerald-600 text-white' :
-                      aiAnalysis.hiring_recommendation === 'RECOMMEND' ? 'bg-emerald-500 text-white' :
-                      aiAnalysis.hiring_recommendation === 'CONSIDER' ? 'bg-amber-500 text-white' :
-                      'bg-red-500 text-white'
+                    <span className={`text-[11px] font-bold px-3 py-1.5 rounded-lg uppercase tracking-wide shadow-sm ${
+                      aiAnalysis.hiring_recommendation === 'STRONGLY_RECOMMEND' ? 'bg-emerald-400 text-emerald-950' :
+                      aiAnalysis.hiring_recommendation === 'RECOMMEND' ? 'bg-green-400 text-green-950' :
+                      aiAnalysis.hiring_recommendation === 'CONSIDER' ? 'bg-amber-400 text-amber-950' :
+                      'bg-rose-400 text-rose-950'
                     }`}>{aiAnalysis.hiring_recommendation.replace('_', ' ')}</span>
                   )}
                 </div>
               </div>
-            <div className="p-5 space-y-4">
-              {/* Executive Summary */}
+            </div>
+
+            <div className="p-6 space-y-5">
+              {/* Executive Summary — highlighted block */}
               {aiAnalysis.executive_summary && (
-                <p className="text-sm text-gray-700 leading-relaxed bg-slate-50 rounded-lg p-4">{aiAnalysis.executive_summary}</p>
+                <div className="relative rounded-xl bg-gradient-to-br from-indigo-50 via-violet-50 to-purple-50 p-5 border border-indigo-100/60">
+                  <div className="absolute top-3 left-4 w-1 h-8 rounded-full bg-gradient-to-b from-violet-500 to-indigo-500" />
+                  <p className="text-sm text-gray-800 leading-relaxed pl-4 font-medium">{aiAnalysis.executive_summary}</p>
+                </div>
               )}
 
-              {/* Assessment grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {/* Assessment grid — colorful cards */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
                 {aiAnalysis.technical_assessment && (
-                  <div className="rounded-lg p-3 bg-gray-50/70 border border-gray-100">
-                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Technical</h4>
+                  <div className="rounded-xl p-4 bg-gradient-to-br from-blue-50 to-cyan-50 border border-blue-100/60 shadow-sm">
+                    <h4 className="text-xs font-bold text-blue-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-blue-500" />Technical Assessment
+                    </h4>
                     <p className="text-sm text-gray-700 leading-relaxed">{aiAnalysis.technical_assessment}</p>
                   </div>
                 )}
                 {aiAnalysis.experience_assessment && (
-                  <div className="rounded-lg p-3 bg-gray-50/70 border border-gray-100">
-                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Experience</h4>
+                  <div className="rounded-xl p-4 bg-gradient-to-br from-purple-50 to-fuchsia-50 border border-purple-100/60 shadow-sm">
+                    <h4 className="text-xs font-bold text-purple-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-purple-500" />Experience Assessment
+                    </h4>
                     <p className="text-sm text-gray-700 leading-relaxed">{aiAnalysis.experience_assessment}</p>
                   </div>
                 )}
                 {aiAnalysis.education_assessment && (
-                  <div className="rounded-lg p-3 bg-gray-50/70 border border-gray-100">
-                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Education</h4>
+                  <div className="rounded-xl p-4 bg-gradient-to-br from-teal-50 to-emerald-50 border border-teal-100/60 shadow-sm">
+                    <h4 className="text-xs font-bold text-teal-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <span className="w-2 h-2 rounded-full bg-teal-500" />Education
+                    </h4>
                     <p className="text-sm text-gray-700 leading-relaxed">{aiAnalysis.education_assessment}</p>
                   </div>
                 )}
                 {aiAnalysis.career_trajectory && (
-                  <div className="rounded-lg p-3 bg-gray-50/70 border border-gray-100">
-                    <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5 flex items-center gap-1"><TrendingUp className="w-3 h-3" />Career</h4>
+                  <div className="rounded-xl p-4 bg-gradient-to-br from-orange-50 to-amber-50 border border-orange-100/60 shadow-sm">
+                    <h4 className="text-xs font-bold text-orange-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                      <TrendingUp className="w-3.5 h-3.5" />Career Trajectory
+                    </h4>
                     <p className="text-sm text-gray-700 leading-relaxed">{aiAnalysis.career_trajectory}</p>
                   </div>
                 )}
               </div>
 
-              {/* Pros & Cons — compact side-by-side */}
-              <div className="grid grid-cols-2 gap-3">
+              {/* Pros & Cons — vibrant side-by-side */}
+              <div className="grid grid-cols-2 gap-3.5">
                 {(aiAnalysis.pros?.length ?? 0) > 0 && (
-                  <div className="rounded-lg p-3 border border-emerald-100 bg-emerald-50/30">
-                    <h4 className="text-xs font-semibold text-emerald-700 mb-2 flex items-center gap-1"><CheckCircle className="w-3 h-3" />Strengths</h4>
-                    <ul className="space-y-1">
+                  <div className="rounded-xl p-4 border-2 border-emerald-200 bg-gradient-to-br from-emerald-50 to-green-50 shadow-sm">
+                    <h4 className="text-xs font-bold text-emerald-800 mb-3 flex items-center gap-1.5 uppercase tracking-wider">
+                      <CheckCircle className="w-4 h-4 text-emerald-600" />Strengths
+                    </h4>
+                    <ul className="space-y-2">
                       {aiAnalysis.pros!.map((pro: string, i: number) => (
-                        <li key={i} className="text-xs text-gray-700 flex items-start gap-1.5"><span className="text-emerald-500 mt-px font-bold">+</span><span>{pro}</span></li>
+                        <li key={i} className="text-xs text-gray-700 flex items-start gap-2">
+                          <span className="w-5 h-5 rounded-full bg-emerald-500 text-white flex items-center justify-center flex-shrink-0 text-[10px] font-bold mt-px">{i + 1}</span>
+                          <span className="leading-relaxed">{pro}</span>
+                        </li>
                       ))}
                     </ul>
                   </div>
                 )}
                 {(aiAnalysis.cons?.length ?? 0) > 0 && (
-                  <div className="rounded-lg p-3 border border-red-100 bg-red-50/30">
-                    <h4 className="text-xs font-semibold text-red-600 mb-2 flex items-center gap-1"><AlertCircle className="w-3 h-3" />Gaps</h4>
-                    <ul className="space-y-1">
+                  <div className="rounded-xl p-4 border-2 border-rose-200 bg-gradient-to-br from-rose-50 to-red-50 shadow-sm">
+                    <h4 className="text-xs font-bold text-rose-800 mb-3 flex items-center gap-1.5 uppercase tracking-wider">
+                      <AlertCircle className="w-4 h-4 text-rose-600" />Areas of Concern
+                    </h4>
+                    <ul className="space-y-2">
                       {aiAnalysis.cons!.map((con: string, i: number) => (
-                        <li key={i} className="text-xs text-gray-700 flex items-start gap-1.5"><span className="text-red-400 mt-px font-bold">-</span><span>{con}</span></li>
+                        <li key={i} className="text-xs text-gray-700 flex items-start gap-2">
+                          <span className="w-5 h-5 rounded-full bg-rose-500 text-white flex items-center justify-center flex-shrink-0 text-[10px] font-bold mt-px">{i + 1}</span>
+                          <span className="leading-relaxed">{con}</span>
+                        </li>
                       ))}
                     </ul>
                   </div>
                 )}
               </div>
 
-              {/* Interview Focus & Ideal Roles */}
+              {/* Interview Focus & Ideal Roles — colorful */}
               {((aiAnalysis.interview_focus_areas?.length ?? 0) > 0 || (aiAnalysis.ideal_roles?.length ?? 0) > 0) && (
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-2 gap-3.5">
                   {(aiAnalysis.interview_focus_areas?.length ?? 0) > 0 && (
-                    <div>
-                      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Interview Focus</h4>
-                      <ul className="space-y-0.5">{aiAnalysis.interview_focus_areas!.map((a: string, i: number) => <li key={i} className="text-xs text-gray-600">• {a}</li>)}</ul>
+                    <div className="rounded-xl p-4 bg-gradient-to-br from-sky-50 to-blue-50 border border-sky-100/60">
+                      <h4 className="text-xs font-bold text-sky-700 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-sky-500" />Interview Focus
+                      </h4>
+                      <ul className="space-y-1.5">{aiAnalysis.interview_focus_areas!.map((a: string, i: number) => (
+                        <li key={i} className="text-xs text-gray-700 flex items-start gap-1.5">
+                          <span className="text-sky-500 font-bold mt-px">→</span>{a}
+                        </li>
+                      ))}</ul>
                     </div>
                   )}
                   {(aiAnalysis.ideal_roles?.length ?? 0) > 0 && (
-                    <div>
-                      <h4 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-1.5">Ideal Roles</h4>
-                      <div className="flex flex-wrap gap-1">{aiAnalysis.ideal_roles!.map((r: string, i: number) => <span key={i} className="text-xs bg-sky-50 text-sky-700 px-2 py-0.5 rounded-full border border-sky-100">{r}</span>)}</div>
-                      {aiAnalysis.salary_range_estimate && <p className="text-[11px] text-gray-400 mt-1.5">Est. Salary: {aiAnalysis.salary_range_estimate}</p>}
+                    <div className="rounded-xl p-4 bg-gradient-to-br from-violet-50 to-indigo-50 border border-violet-100/60">
+                      <h4 className="text-xs font-bold text-violet-700 uppercase tracking-wider mb-2.5 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-violet-500" />Ideal Roles
+                      </h4>
+                      <div className="flex flex-wrap gap-1.5">{aiAnalysis.ideal_roles!.map((r: string, i: number) => (
+                        <span key={i} className="text-xs bg-gradient-to-r from-violet-100 to-indigo-100 text-violet-800 px-2.5 py-1 rounded-full font-medium border border-violet-200/60">{r}</span>
+                      ))}</div>
+                      {aiAnalysis.salary_range_estimate && (
+                        <p className="text-[11px] text-violet-600 mt-2.5 font-medium">💰 Est. Salary: {aiAnalysis.salary_range_estimate}</p>
+                      )}
                     </div>
                   )}
                 </div>
               )}
 
-              {/* Recommendation + Confidence */}
+              {/* Recommendation — prominent block */}
               {aiAnalysis.hiring_recommendation_rationale && (
-                <div className="bg-sky-50/60 rounded-lg p-3 border border-sky-100">
-                  <p className="text-sm text-gray-800 leading-relaxed">{aiAnalysis.hiring_recommendation_rationale}</p>
-                  {aiAnalysis.culture_fit_notes && <p className="text-xs text-gray-500 mt-2">Culture: {aiAnalysis.culture_fit_notes}</p>}
+                <div className="rounded-xl p-4 bg-gradient-to-r from-indigo-50 via-blue-50 to-sky-50 border border-indigo-200/60 shadow-sm">
+                  <h4 className="text-xs font-bold text-indigo-700 uppercase tracking-wider mb-2 flex items-center gap-1.5">
+                    <Award className="w-3.5 h-3.5" />Recommendation
+                  </h4>
+                  <p className="text-sm text-gray-800 leading-relaxed font-medium">{aiAnalysis.hiring_recommendation_rationale}</p>
+                  {aiAnalysis.culture_fit_notes && (
+                    <p className="text-xs text-indigo-600 mt-2.5 bg-indigo-100/50 rounded-lg px-3 py-1.5">🎯 Culture Fit: {aiAnalysis.culture_fit_notes}</p>
+                  )}
                 </div>
               )}
+
+              {/* Confidence bar — polished */}
               {aiAnalysis.confidence_score && (
-                <div className="flex items-center gap-2 text-xs text-gray-400">
-                  <span>Confidence: {aiAnalysis.confidence_score}%</span>
-                  <Progress value={aiAnalysis.confidence_score} className="h-1.5 flex-1 max-w-32" />
-                  {aiAnalysis.source && <span className="capitalize">{aiAnalysis.source === 'fallback' ? 'profile-based' : aiAnalysis.source}</span>}
+                <div className="flex items-center gap-3 bg-gray-50 rounded-xl px-4 py-3">
+                  <span className="text-xs font-semibold text-gray-600">Confidence</span>
+                  <div className="flex-1 max-w-48 bg-gray-200 rounded-full h-2 overflow-hidden">
+                    <div
+                      className={`h-full rounded-full transition-all duration-500 ${
+                        aiAnalysis.confidence_score >= 80 ? 'bg-gradient-to-r from-emerald-400 to-emerald-500' :
+                        aiAnalysis.confidence_score >= 60 ? 'bg-gradient-to-r from-blue-400 to-indigo-500' :
+                        aiAnalysis.confidence_score >= 40 ? 'bg-gradient-to-r from-amber-400 to-orange-500' :
+                        'bg-gradient-to-r from-rose-400 to-red-500'
+                      }`}
+                      style={{ width: `${aiAnalysis.confidence_score}%` }}
+                    />
+                  </div>
+                  <span className={`text-xs font-bold ${
+                    aiAnalysis.confidence_score >= 80 ? 'text-emerald-600' :
+                    aiAnalysis.confidence_score >= 60 ? 'text-indigo-600' :
+                    aiAnalysis.confidence_score >= 40 ? 'text-amber-600' :
+                    'text-rose-600'
+                  }`}>{aiAnalysis.confidence_score}%</span>
+                  {aiAnalysis.source && (
+                    <span className="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full capitalize">
+                      {aiAnalysis.source === 'fallback' ? 'profile-based' : aiAnalysis.source}
+                    </span>
+                  )}
                 </div>
               )}
             </div>

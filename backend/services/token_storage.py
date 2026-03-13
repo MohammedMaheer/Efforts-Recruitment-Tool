@@ -14,17 +14,33 @@ logger = logging.getLogger(__name__)
 
 GCS_TOKEN_BLOB_PATH = "config/oauth_tokens.json"
 
+# Cached GCS bucket (avoids recreating storage.Client() on every call)
+_gcs_bucket_cache = None
+_gcs_bucket_checked = False
+
 
 def _get_gcs_bucket():
-    """Get GCS bucket for token backup (lazy, no crash if unavailable)"""
+    """Get GCS bucket for token backup (lazy, cached, no crash if unavailable)"""
+    global _gcs_bucket_cache, _gcs_bucket_checked
+    if _gcs_bucket_checked:
+        return _gcs_bucket_cache
     try:
-        bucket_name = os.getenv("GCS_BUCKET_NAME", "efforts-recruitment-data")
-        if os.getenv("ENVIRONMENT") != "production":
+        bucket_name = os.getenv("GCS_BUCKET_NAME", "efforts-recruitment-ai-data")
+        is_production = (
+            (os.getenv("PYTHON_ENV", "").lower() == "production")
+            or bool(os.getenv("K_SERVICE"))
+            or (os.getenv("ENVIRONMENT", "").lower() == "production")
+        )
+        if not is_production:
+            _gcs_bucket_checked = True
             return None
         from google.cloud import storage
         client = storage.Client()
-        return client.bucket(bucket_name)
+        _gcs_bucket_cache = client.bucket(bucket_name)
+        _gcs_bucket_checked = True
+        return _gcs_bucket_cache
     except Exception:
+        _gcs_bucket_checked = True
         return None
 
 
@@ -120,34 +136,35 @@ class TokenStorage:
                 return False
     
     def get_token(self, email: str) -> Optional[Dict]:
-        """Get OAuth2 token for an email account, with expiry status"""
-        try:
-            tokens = self._load_tokens()
-            token_data = tokens.get(email)
-            
-            # If no local token, try GCS restore (instance may have restarted)
-            if not token_data and not self._gcs_restored:
-                if self._restore_from_gcs():
-                    tokens = self._load_tokens()
-                    token_data = tokens.get(email)
-                self._gcs_restored = True  # Only try once per instance lifetime
-            
-            if not token_data:
+        """Get OAuth2 token for an email account, with expiry status. Thread-safe."""
+        with self._lock:
+            try:
+                tokens = self._load_tokens()
+                token_data = tokens.get(email)
+
+                # If no local token, try GCS restore (instance may have restarted)
+                if not token_data and not self._gcs_restored:
+                    if self._restore_from_gcs():
+                        tokens = self._load_tokens()
+                        token_data = tokens.get(email)
+                    self._gcs_restored = True  # Only try once per instance lifetime
+
+                if not token_data:
+                    return None
+
+                # Check if token is expired
+                expires_at = datetime.fromisoformat(token_data['expires_at'])
+                is_expired = datetime.now() >= expires_at
+
+                # Return token data with expiry status - let caller decide to refresh
+                return {
+                    **token_data,
+                    'is_expired': is_expired,
+                    'expires_at_dt': expires_at
+                }
+            except Exception as e:
+                logger.error(f"Error getting token: {str(e)}")
                 return None
-            
-            # Check if token is expired
-            expires_at = datetime.fromisoformat(token_data['expires_at'])
-            is_expired = datetime.now() >= expires_at
-            
-            # Return token data with expiry status - let caller decide to refresh
-            return {
-                **token_data,
-                'is_expired': is_expired,
-                'expires_at_dt': expires_at
-            }
-        except Exception as e:
-            logger.error(f"Error getting token: {str(e)}")
-            return None
     
     def get_valid_token(self, email: str) -> Optional[Dict]:
         """Get OAuth2 token ONLY if not expired"""
@@ -192,12 +209,15 @@ class TokenStorage:
         except Exception:
             return {}
 
-# Global instance
+# Global instance (thread-safe initialization)
 _token_storage = None
+_token_storage_lock = threading.Lock()
 
 def get_token_storage() -> TokenStorage:
-    """Get global token storage instance"""
+    """Get global token storage instance (thread-safe)"""
     global _token_storage
     if _token_storage is None:
-        _token_storage = TokenStorage()
+        with _token_storage_lock:
+            if _token_storage is None:
+                _token_storage = TokenStorage()
     return _token_storage

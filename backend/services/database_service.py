@@ -281,7 +281,15 @@ class DatabaseService:
                         conn.execute("PRAGMA temp_store=MEMORY")
             
             yield conn
-            
+
+        except Exception:
+            # Rollback on error before returning connection to pool
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
         finally:
             if conn:
                 with self.connection_lock:
@@ -509,12 +517,43 @@ class DatabaseService:
         logger.info("✅ Database initialized with optimized indexes")
     
     def get_connection_raw(self):
-        """Get a raw database connection (caller must close). Use get_connection() context manager when possible."""
+        """Get a database connection from the pool. Caller must call return_connection() or close().
+        Prefer get_connection() context manager when possible."""
+        with self.connection_lock:
+            while self._connection_pool:
+                candidate_conn = self._connection_pool.pop()
+                if IS_POSTGRES:
+                    try:
+                        candidate_conn.execute("SELECT 1")
+                        return candidate_conn
+                    except Exception:
+                        try:
+                            candidate_conn.close()
+                        except Exception:
+                            pass
+                        continue
+                else:
+                    return candidate_conn
+        # Pool exhausted — create new connection
         conn = create_connection(self.db_path)
         if not IS_POSTGRES:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=30000")
         return conn
+
+    def return_connection(self, conn):
+        """Return a connection to the pool instead of closing it."""
+        if conn is None:
+            return
+        with self.connection_lock:
+            if len(self._connection_pool) < self._pool_size:
+                self._connection_pool.append(conn)
+            else:
+                conn.close()
+
+    def _release(self, conn):
+        """Alias for return_connection — shorter name for use in finally blocks."""
+        self.return_connection(conn)
     
     def email_to_hash(self, email: str) -> str:
         """Convert email to hash for fast lookups"""
@@ -539,7 +578,7 @@ class DatabaseService:
                 return self._row_to_candidate(row)
             return None
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def get_candidate_by_linkedin(self, linkedin_url: str) -> Optional[Dict]:
         """Lookup candidate by LinkedIn profile URL"""
@@ -561,7 +600,7 @@ class DatabaseService:
                 return self._row_to_candidate(row)
             return None
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def get_candidate_by_id(self, candidate_id: str) -> Optional[Dict]:
         """Get a single candidate by their ID"""
@@ -635,7 +674,7 @@ class DatabaseService:
             logger.info(f"🗑️ Cleared {count} candidates from database")
             return count
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     # ── Blocked email patterns (Indeed relay, system emails) ──
     BLOCKED_EMAIL_PATTERNS = [
@@ -649,6 +688,18 @@ class DatabaseService:
         r'@zohocrm\.',
         r'@freshdesk\.',
         r'@zendesk\.',
+        # Generic portal forwarding addresses — these are portal inboxes, not candidate emails
+        r'^cv@',
+        r'^resume@',
+        r'^resumes@',
+        r'^careers@',
+        r'^jobs@',
+        r'^apply@',
+        r'^applications@',
+        r'^recruitment@',
+        r'^hiring@',
+        r'^talent@',
+        r'^candidates@',
     ]
     
     @staticmethod
@@ -707,7 +758,7 @@ class DatabaseService:
                 'remaining_candidates': remaining
             }
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def insert_candidate(self, candidate: Dict):
         """Insert new candidate (or merge if exists). Blocks Indeed relay emails."""
@@ -732,7 +783,7 @@ class DatabaseService:
             if existing:
                 # Candidate exists — use smart merge to preserve existing data
                 existing_id = existing[0]
-                conn.close()
+                self.return_connection(conn)
                 existing_data = self.get_candidate_by_id(existing_id)
                 if existing_data:
                     merged = self.smart_merge_candidate(existing_data, candidate)
@@ -793,7 +844,7 @@ class DatabaseService:
             
             conn.commit()
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def save_ai_analysis(self, candidate_id: str, analysis: Dict):
         """Save detailed AI analysis for a candidate and update strengths/gaps"""
@@ -814,7 +865,7 @@ class DatabaseService:
                 )
             conn.commit()
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def get_ai_analysis(self, candidate_id: str) -> Optional[Dict]:
         """Get stored AI analysis for a candidate"""
@@ -830,7 +881,7 @@ class DatabaseService:
                     return None
             return None
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def update_candidate(self, candidate: Dict):
         """Update existing candidate (merge new data)"""
@@ -905,7 +956,7 @@ class DatabaseService:
             
             conn.commit()
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     # ---- helpers for smart value comparison ----
 
@@ -986,7 +1037,7 @@ class DatabaseService:
                 logger.error(f"Dedup transaction failed, rolled back: {e}")
                 raise
             finally:
-                conn.close()
+                self.return_connection(conn)
     
     def _update_candidate_row(self, cursor, candidate: Dict):
         """Update or insert a candidate row using all merged data (includes v2.1 enriched fields)."""
@@ -1194,7 +1245,7 @@ class DatabaseService:
                 candidates.append(c)
             return candidates
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def get_candidates_for_ai(self, filters: Dict = None, limit: int = 10000) -> List[Dict]:
         """
@@ -1265,7 +1316,7 @@ class DatabaseService:
                 })
             return results
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def get_candidates_lightweight(self, filters: Dict = None, limit: int = 500) -> List[Dict]:
         """
@@ -1315,7 +1366,7 @@ class DatabaseService:
                 })
             return results
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def _qualify_where(self, where_clause: str) -> str:
         """Prefix bare column names with 'c.' for use in JOIN queries."""
@@ -1390,7 +1441,7 @@ class DatabaseService:
                 candidates.append(c)
             return candidates, total_count
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def get_candidates_light(self, page: int = 1, limit: int = 500, filters: Dict = None):
         """Lightweight candidate listing — minimal columns for list/card views.
@@ -1469,7 +1520,7 @@ class DatabaseService:
                     logger.warning(f"Skipping candidate row: {e}")
             return candidates, total_count
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def insert_candidates_batch(self, candidates: List[Dict], batch_size: int = 100):
         """
@@ -1607,7 +1658,7 @@ class DatabaseService:
             logger.error(f"Batch insert error: {e}")
             raise
         finally:
-            conn.close()
+            self.return_connection(conn)
         
         return {'inserted': inserted, 'updated': updated}
     
@@ -1639,7 +1690,7 @@ class DatabaseService:
                 yield [self._row_to_candidate(row, check_resume=False) for row in rows]
                 offset += batch_size
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def get_statistics(self) -> Dict:
         """Get database statistics for monitoring"""
@@ -1695,7 +1746,7 @@ class DatabaseService:
                 'recent_24h': recent
             }
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def get_new_candidates_since(self, since_date: str) -> List[Dict]:
         """Get only NEW candidates since specific date (incremental processing)"""
@@ -1711,7 +1762,7 @@ class DatabaseService:
             rows = cursor.fetchall()
             return [self._row_to_candidate(row, check_resume=False) for row in rows]
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def mark_email_processed(self, message_id: str, candidate_id: str, action: str):
         """Track processed emails to prevent reprocessing"""
@@ -1727,7 +1778,7 @@ class DatabaseService:
             
             conn.commit()
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def is_email_processed(self, message_id: str) -> bool:
         """Check if email already processed"""
@@ -1744,7 +1795,7 @@ class DatabaseService:
         except Exception:
             return False
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def get_processed_email_count(self) -> int:
         """Get total number of processed emails in the log"""
@@ -1753,7 +1804,7 @@ class DatabaseService:
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM email_processing_log")
             result = cursor.fetchone()
-            conn.close()
+            self.return_connection(conn)
             return result[0] if result else 0
         except Exception:
             return 0
@@ -1768,7 +1819,7 @@ class DatabaseService:
         except Exception:
             return set()
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def clear_processing_log_since(self, since_date: str) -> int:
         """Delete email_processing_log entries processed on or after since_date (ISO format).
@@ -1784,7 +1835,7 @@ class DatabaseService:
             logger.error(f"Failed to clear processing log since {since_date}: {e}")
             raise
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def clear_no_candidate_entries(self) -> int:
         """Delete all email_processing_log entries with action='no-candidate'.
@@ -1800,7 +1851,7 @@ class DatabaseService:
             logger.error(f"Failed to clear no-candidate entries: {e}")
             raise
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def clear_all_blocked_entries(self) -> int:
         """Delete ALL blocked/failed entries from email_processing_log.
@@ -1819,7 +1870,7 @@ class DatabaseService:
             logger.error(f"Failed to clear blocked entries: {e}")
             raise
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def clear_orphaned_processing_entries(self) -> int:
         """Delete processing log entries where action='inserted'/'updated' but 
@@ -1844,7 +1895,7 @@ class DatabaseService:
             logger.error(f"Failed to clear orphaned processing entries: {e}")
             raise
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def clear_all_processing_entries(self) -> int:
         """Nuclear option: Delete ALL entries from email_processing_log.
@@ -1859,7 +1910,7 @@ class DatabaseService:
         except Exception:
             return 0
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def get_all_candidate_emails(self) -> list:
         """Return list of (id, email) tuples for all active candidates."""
@@ -1871,7 +1922,7 @@ class DatabaseService:
         except Exception:
             return []
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def get_all_resume_candidate_ids(self) -> set:
         """Return set of candidate_ids that already have a resume stored."""
@@ -1883,7 +1934,7 @@ class DatabaseService:
         except Exception:
             return set()
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def get_candidate_message_ids(self) -> list:
         """Return list of (message_id, candidate_id) for emails that produced a candidate."""
@@ -1898,7 +1949,7 @@ class DatabaseService:
         except Exception:
             return []
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def get_sync_metadata(self, key: str) -> Optional[str]:
         """Get a persisted sync metadata value (e.g. last_email_sync_time)"""
@@ -1911,7 +1962,7 @@ class DatabaseService:
         except Exception:
             return None
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def set_sync_metadata(self, key: str, value: str):
         """Persist a sync metadata value"""
@@ -1924,116 +1975,89 @@ class DatabaseService:
             """, (key, value, datetime.now().isoformat()))
             conn.commit()
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def _row_to_candidate(self, row, check_resume: bool = True) -> Dict:
-        """Convert database row to candidate dict"""
-        # Column order (with job_subcategory and ai_analysis added):
-        # 0: id, 1: email, 2: email_hash, 3: name, 4: phone, 5: location, 
-        # 6: skills, 7: experience, 8: education, 9: summary, 10: work_history,
-        # 11: linkedin, 12: status, 13: match_score, 14: job_category,
-        # 15: job_subcategory, 16: applied_date, 17: last_updated,
-        # 18: raw_email_subject, 19: is_active, 20: created_at, 21: ai_analysis
-        
-        num_cols = len(row)
-        
-        # Detect schema: if the DB was created without job_subcategory yet, gracefully handle it
-        has_subcategory = num_cols >= 21
-        
-        if has_subcategory:
-            subcategory_idx, applied_idx, updated_idx, subject_idx = 15, 16, 17, 18
-        else:
-            subcategory_idx, applied_idx, updated_idx, subject_idx = None, 15, 16, 17
-        
+        """Convert database row to candidate dict using named column access.
+        Works with both sqlite3.Row and DualAccessRow (PostgreSQL)."""
+
+        def _g(col: str, default=''):
+            """Safe row getter by column name, falling back to default."""
+            try:
+                val = row[col]
+                return val if val is not None else default
+            except (KeyError, IndexError, TypeError):
+                return default
+
+        def _gj(col: str, default_factory=list):
+            """Safe JSON deserialization from a column."""
+            raw = _g(col, '')
+            if not raw:
+                return default_factory()
+            try:
+                val = json.loads(raw) if isinstance(raw, str) else raw
+                return val if isinstance(val, (list, dict)) else default_factory()
+            except (json.JSONDecodeError, TypeError):
+                return default_factory()
+
         candidate = {
-            'id': row[0],
-            'email': row[1],
-            'name': row[3],
-            'phone': row[4] or '',
-            'location': _clean_loc(row[5] or ''),
-            'skills': json.loads(row[6]) if row[6] else [],
-            'experience': row[7] or 0,
-            'education': json.loads(row[8]) if row[8] and str(row[8]).startswith('[') else [],
-            'summary': row[9] or '',
+            'id': _g('id'),
+            'email': _g('email'),
+            'name': _g('name'),
+            'phone': _g('phone'),
+            'location': _clean_loc(_g('location')),
+            'skills': _gj('skills'),
+            'experience': _g('experience', 0) or 0,
+            'education': _gj('education'),
+            'summary': _g('summary'),
             'workHistory': [],
-            'linkedin': row[11] if num_cols > 11 else '',
-            'status': row[12] if num_cols > 12 else 'New',
-            'matchScore': row[13] if num_cols > 13 and row[13] is not None else 0,
-            'jobCategory': row[14] or 'General',
-            'job_category': row[14] or 'General',
-            'jobSubcategory': row[subcategory_idx] if subcategory_idx is not None and num_cols > subcategory_idx else '',
-            'job_subcategory': row[subcategory_idx] if subcategory_idx is not None and num_cols > subcategory_idx else '',
-            'appliedDate': row[applied_idx] if num_cols > applied_idx else '',
-            'last_updated': row[updated_idx] if num_cols > updated_idx else '',
-            'raw_email_subject': row[subject_idx] if num_cols > subject_idx else '',
-            'hasResume': False
+            'linkedin': _g('linkedin'),
+            'status': _g('status', 'New'),
+            'matchScore': _g('match_score', 0) or 0,
+            'jobCategory': _g('job_category', 'General') or 'General',
+            'job_category': _g('job_category', 'General') or 'General',
+            'jobSubcategory': _g('job_subcategory', ''),
+            'job_subcategory': _g('job_subcategory', ''),
+            'appliedDate': _g('applied_date', ''),
+            'last_updated': _g('last_updated', ''),
+            'raw_email_subject': _g('raw_email_subject', ''),
+            'hasResume': False,
         }
-        
+
         # Work history: map 'period' → 'duration' for frontend compatibility
-        raw_work_history = json.loads(row[10]) if row[10] else []
+        raw_work_history = _gj('work_history')
         if isinstance(raw_work_history, list):
             for entry in raw_work_history:
                 if isinstance(entry, dict):
-                    # Ensure 'duration' key exists (frontend expects it)
                     if 'period' in entry and 'duration' not in entry:
                         entry['duration'] = entry['period']
                     elif 'duration' not in entry:
                         entry['duration'] = ''
             candidate['workHistory'] = raw_work_history
-        
-        # ai_analysis is added via ALTER TABLE so it appears at the end
-        # Column order after created_at: ai_analysis, certifications, languages, resume_text
-        ai_analysis_idx = 21 if has_subcategory else 20
-        if num_cols > ai_analysis_idx and row[ai_analysis_idx]:
+
+        # AI analysis
+        ai_raw = _g('ai_analysis', '')
+        ai = None
+        if ai_raw:
             try:
-                candidate['ai_analysis'] = json.loads(row[ai_analysis_idx])
-            except Exception:
-                candidate['ai_analysis'] = None
-        else:
-            candidate['ai_analysis'] = None
-        
-        # Certifications and languages (added via ALTER TABLE, after ai_analysis)
-        try:
-            cert_idx = ai_analysis_idx + 1
-            lang_idx = ai_analysis_idx + 2
-            if num_cols > cert_idx and row[cert_idx]:
-                candidate['certifications'] = json.loads(row[cert_idx]) if isinstance(row[cert_idx], str) and row[cert_idx].startswith('[') else []
-            else:
-                candidate['certifications'] = []
-            if num_cols > lang_idx and row[lang_idx]:
-                candidate['languages'] = json.loads(row[lang_idx]) if isinstance(row[lang_idx], str) and row[lang_idx].startswith('[') else []
-            else:
-                candidate['languages'] = []
-        except Exception:
-            candidate['certifications'] = []
-            candidate['languages'] = []
-        
-        # resume_text (added via ALTER TABLE, after languages)
-        try:
-            resume_text_idx = ai_analysis_idx + 3
-            if num_cols > resume_text_idx and row[resume_text_idx]:
-                candidate['resume_text'] = row[resume_text_idx]
-            else:
-                candidate['resume_text'] = ''
-        except Exception:
-            candidate['resume_text'] = ''
-        
-        # strengths and gaps columns (added via ALTER TABLE, after resume_text)
-        stored_col_strengths = []
-        stored_col_gaps = []
-        try:
-            strengths_idx = ai_analysis_idx + 4
-            gaps_idx = ai_analysis_idx + 5
-            if num_cols > strengths_idx and row[strengths_idx]:
-                parsed = json.loads(row[strengths_idx]) if isinstance(row[strengths_idx], str) else []
-                if isinstance(parsed, list) and len(parsed) > 0:
-                    stored_col_strengths = parsed
-            if num_cols > gaps_idx and row[gaps_idx]:
-                parsed = json.loads(row[gaps_idx]) if isinstance(row[gaps_idx], str) else []
-                if isinstance(parsed, list) and len(parsed) > 0:
-                    stored_col_gaps = parsed
-        except Exception:
-            pass
+                ai = json.loads(ai_raw) if isinstance(ai_raw, str) else ai_raw
+                if not isinstance(ai, dict):
+                    ai = None
+            except (json.JSONDecodeError, TypeError):
+                ai = None
+        candidate['ai_analysis'] = ai
+
+        # Certifications and languages
+        candidate['certifications'] = _gj('certifications')
+        candidate['languages'] = _gj('languages')
+
+        # Resume text
+        resume_text = _g('resume_text', '')
+        candidate['resume_text'] = resume_text
+
+        # Strengths and gaps from dedicated columns
+        stored_col_strengths = _gj('strengths')
+        stored_col_gaps = _gj('gaps')
         
         # Generate strengths and gaps — priority order:
         # 1) Dedicated columns (persisted from AI analysis)
@@ -2122,30 +2146,16 @@ class DatabaseService:
                 ai_recommendation = ai_recommendation.replace('_', ' ')
         candidate['recommendation'] = ai_recommendation or candidate.get('job_category', 'General')
         
-        # shortlisted_at (added via ALTER TABLE, after gaps)
-        try:
-            shortlisted_idx = ai_analysis_idx + 6
-            if num_cols > shortlisted_idx and row[shortlisted_idx]:
-                candidate['shortlisted_at'] = row[shortlisted_idx]
-        except Exception:
-            pass
-        
-        # --- NEW ENRICHED FIELDS (v2.1) ---
-        try:
-            nationality_idx = ai_analysis_idx + 7
-            candidate['nationality'] = (row[nationality_idx] or '') if num_cols > nationality_idx else ''
-            candidate['notice_period'] = (row[nationality_idx + 1] or '') if num_cols > nationality_idx + 1 else ''
-            candidate['current_salary'] = (row[nationality_idx + 2] or '') if num_cols > nationality_idx + 2 else ''
-            candidate['expected_salary'] = (row[nationality_idx + 3] or '') if num_cols > nationality_idx + 3 else ''
-            candidate['source_portal'] = (row[nationality_idx + 4] or 'Direct') if num_cols > nationality_idx + 4 else 'Direct'
-            candidate['job_applied_for'] = (row[nationality_idx + 5] or '') if num_cols > nationality_idx + 5 else ''
-        except Exception:
-            candidate['nationality'] = ''
-            candidate['notice_period'] = ''
-            candidate['current_salary'] = ''
-            candidate['expected_salary'] = ''
-            candidate['source_portal'] = 'Direct'
-            candidate['job_applied_for'] = ''
+        # shortlisted_at
+        candidate['shortlisted_at'] = _g('shortlisted_at', '')
+
+        # --- ENRICHED FIELDS (v2.1) ---
+        candidate['nationality'] = _g('nationality', '')
+        candidate['notice_period'] = _g('notice_period', '')
+        candidate['current_salary'] = _g('current_salary', '')
+        candidate['expected_salary'] = _g('expected_salary', '')
+        candidate['source_portal'] = _g('source_portal', 'Direct') or 'Direct'
+        candidate['job_applied_for'] = _g('job_applied_for', '')
         
         # Check if resume exists (optional to avoid N+1 queries)
         if check_resume:
@@ -2153,13 +2163,13 @@ class DatabaseService:
             try:
                 conn = self.get_connection_raw()
                 cursor = conn.cursor()
-                cursor.execute("SELECT 1 FROM resumes WHERE candidate_id = ?", (row[0],))
+                cursor.execute("SELECT 1 FROM resumes WHERE candidate_id = ?", (candidate['id'],))
                 candidate['hasResume'] = cursor.fetchone() is not None
             except Exception:
                 pass
             finally:
                 if conn:
-                    conn.close()
+                    self.return_connection(conn)
         
         return candidate
     
@@ -2190,7 +2200,7 @@ class DatabaseService:
         except Exception:
             return None
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def cache_ai_score(self, candidate_id: str, job_id: str, analysis: Dict):
         """Cache AI analysis result to save tokens"""
@@ -2217,7 +2227,7 @@ class DatabaseService:
             
             conn.commit()
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def get_candidates_needing_ai_analysis(self, job_id: str) -> List[Dict]:
         """
@@ -2238,7 +2248,7 @@ class DatabaseService:
             rows = cursor.fetchall()
             return [self._row_to_candidate(row, check_resume=False) for row in rows]
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def save_resume(self, candidate_id: str, filename: str, file_data: bytes, content_type: str = 'application/pdf'):
         """Save resume file to database"""
@@ -2254,7 +2264,7 @@ class DatabaseService:
             conn.commit()
             logger.info(f"📄 Saved resume for candidate {candidate_id}: {filename}")
         finally:
-            conn.close()
+            self.return_connection(conn)
     
     def get_resume(self, candidate_id: str) -> Optional[Dict]:
         """Get resume file from database"""
@@ -2282,7 +2292,7 @@ class DatabaseService:
                 }
             return None
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     # ── Search History ──────────────────────────────────────────────────
     def save_search(self, search_id: str, query: str, description: str, result_count: int, top_results: list, user_id: str = ""):
@@ -2298,7 +2308,7 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error saving search: {e}")
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def get_search_history(self, limit: int = 50) -> list:
         """Get recent search history"""
@@ -2342,7 +2352,7 @@ class DatabaseService:
             logger.error(f"Error getting search history: {e}")
             return []
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def delete_search_entry(self, entry_id: str) -> bool:
         """Delete a single search history entry by ID"""
@@ -2355,7 +2365,7 @@ class DatabaseService:
             logger.error(f"Error deleting search entry {entry_id}: {e}")
             return False
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     def clear_search_history(self):
         """Clear all search history"""
@@ -2366,7 +2376,7 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error clearing search history: {e}")
         finally:
-            conn.close()
+            self.return_connection(conn)
 
     # ── Pipeline Status Counts ──────────────────────────────────────────
     def get_pipeline_counts(self) -> dict:
@@ -2387,7 +2397,7 @@ class DatabaseService:
             logger.error(f"Error getting pipeline counts: {e}")
             return {}
         finally:
-            conn.close()
+            self.return_connection(conn)
 
 # Singleton
 _db_service = None

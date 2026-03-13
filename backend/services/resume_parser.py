@@ -42,6 +42,26 @@ _SPACED_CHAR_RE = re.compile(
     re.MULTILINE
 )
 
+# Precompiled date-range pattern for work history extraction (avoids recompilation per line)
+_DATE_RANGE_RE = re.compile(
+    r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*'
+    r'(20\d{2}|19\d{2})\s*[-\u2013\u2014to]+\s*'
+    r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*'
+    r'(20\d{2}|[Pp]resent|[Cc]urrent|[Oo]ngoing)',
+    re.IGNORECASE
+)
+
+# Precompiled patterns for text cleaning (called on every PDF)
+_CID_RE = re.compile(r'\(cid:\d+\)')
+_CID_PARTIAL_RE = re.compile(r'\(cid:[^)]*\)')
+_MULTI_SPACE_RE = re.compile(r'  +')
+_CONTROL_CHAR_RE = re.compile(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]')
+_HYPHEN_WRAP_RE = re.compile(r'(\w{2,})-\s+(\w{2,})')
+_MULTI_NEWLINE_RE = re.compile(r'\n{3,}')
+_YEAR_RANGE_RE = re.compile(r'\d{4}\s*[-\u2013\u2014]\s*\d{4}')
+_SPACED_DIGITS_RE = re.compile(r'[0-9]\s+[0-9]\s+[0-9]\s+[0-9]')
+_EDUCATION_YEAR_RE = re.compile(r'(19[89]\d|20[0-2]\d)')
+
 def is_spaced_text(text: str, threshold: float = 0.25, min_length: int = 40) -> bool:
     """Return True when a significant fraction of the text consists of
     single characters separated by spaces / dashes / dots / bullets — a hallmark of
@@ -173,8 +193,9 @@ class ResumeParser:
     Service for parsing resume files and extracting structured data.
     
     Uses a tiered approach:
-    1. LLM (Ollama) for 100% accurate structured extraction (primary)
-    2. Regex-based extraction as fallback when LLM is unavailable
+    1. Gemini AI for structured extraction (primary — available on Cloud Run)
+    2. LLM (Ollama) as local dev fallback
+    3. Regex-based extraction as final fallback
     """
     
     def __init__(self):
@@ -232,6 +253,11 @@ class ResumeParser:
             # Version Control
             'git', 'github', 'version control', 'code review'
         ]
+        # Precompile skill regex patterns (avoids re.compile on every resume parse)
+        self._skill_patterns = {
+            skill: re.compile(r'\b' + re.escape(skill) + r'\b', re.IGNORECASE)
+            for skill in self.skill_keywords
+        }
     
     async def extract_text(self, content: bytes, filename: str) -> str:
         """Extract text from PDF or DOCX file"""
@@ -262,30 +288,29 @@ class ResumeParser:
         # Strip CID font artifacts: (cid:NN) sequences from broken PDF font mappings
         # These appear when PDFs use CID (Character ID) fonts with custom encodings
         if '(cid:' in text:
-            cid_count = len(re.findall(r'\(cid:\d+\)', text))
+            cid_count = len(_CID_RE.findall(text))
             if cid_count > 0:
                 logger.warning(f"Stripping {cid_count} CID font artifacts from PDF text")
-                text = re.sub(r'\(cid:\d+\)', '', text)
-                # Also strip orphaned parentheses left from partial CID patterns
-                text = re.sub(r'\(cid:[^)]*\)', '', text)
+                text = _CID_RE.sub('', text)
+                text = _CID_PARTIAL_RE.sub('', text)
 
         # Fix common PDF extraction artifacts
         lines = text.split('\n')
         cleaned_lines = []
         for line in lines:
             # Collapse multiple spaces (but preserve intentional indentation)
-            line = re.sub(r'  +', '  ', line)
+            line = _MULTI_SPACE_RE.sub('  ', line)
             # Remove control characters except newline/tab
-            line = re.sub(r'[\x00-\x08\x0b-\x0c\x0e-\x1f\x7f]', '', line)
+            line = _CONTROL_CHAR_RE.sub('', line)
             # Fix broken words from line wrapping (e.g., "Soft- ware" -> "Software")
             # Only join if both sides are >=2 chars to avoid mangling spaced-char leftovers
-            line = re.sub(r'(\w{2,})-\s+(\w{2,})', r'\1\2', line)
+            line = _HYPHEN_WRAP_RE.sub(r'\1\2', line)
             cleaned_lines.append(line.strip())
 
         text = '\n'.join(cleaned_lines)
 
         # Remove excessive blank lines (more than 2 consecutive)
-        text = re.sub(r'\n{3,}', '\n\n', text)
+        text = _MULTI_NEWLINE_RE.sub('\n\n', text)
 
         # Normalize dashes
         text = text.replace('\u2013', '-').replace('\u2014', '-').replace('\u2015', '-')
@@ -430,22 +455,22 @@ class ResumeParser:
             if is_mojibake(text, threshold=0.25):
                 logger.warning(f"Text still garbled after repair for {filename}")
         
-        # Strategy 1: Try LLM-powered extraction (100% accurate)
-        llm_result = await self._parse_with_llm(text)
-        if llm_result:
-            logger.info(f"Resume parsed with LLM: {llm_result.get('name', 'Unknown')}")
-            llm_result['raw_text'] = text[:8000]
-            return llm_result
-        
-        # Strategy 2: Try Gemini-powered extraction (production fallback)
+        # Strategy 1: Try Gemini-powered extraction (production — always available on Cloud Run)
         gemini_result = await self._parse_with_gemini(text)
         if gemini_result:
             logger.info(f"Resume parsed with Gemini: {gemini_result.get('name', 'Unknown')}")
             gemini_result['raw_text'] = text[:8000]
             return gemini_result
         
+        # Strategy 2: Try LLM/Ollama extraction (local dev fallback)
+        llm_result = await self._parse_with_llm(text)
+        if llm_result:
+            logger.info(f"Resume parsed with LLM: {llm_result.get('name', 'Unknown')}")
+            llm_result['raw_text'] = text[:8000]
+            return llm_result
+        
         # Strategy 3: Fallback to regex-based extraction
-        logger.info("LLM+Gemini unavailable, using regex-based extraction")
+        logger.info("Gemini+LLM unavailable, using regex-based extraction")
         name = self._extract_name(text)
         email = self._extract_email(text)
         phone = self._extract_phone(text)
@@ -678,9 +703,9 @@ class ResumeParser:
         if digit_count > 3:
             return False
         # Contains date patterns
-        if re.search(r'\d{4}\s*[-\u2013\u2014]\s*\d{4}', name.replace(' ', '')):
+        if _YEAR_RANGE_RE.search(name.replace(' ', '')):
             return False
-        if re.search(r'[0-9]\s+[0-9]\s+[0-9]\s+[0-9]', name):
+        if _SPACED_DIGITS_RE.search(name):
             return False
         # Is a common keyword
         garbage_keywords = ['resume', 'cv', 'curriculum', 'vitae', 'summary', 'professional', 
@@ -753,7 +778,7 @@ class ResumeParser:
     def _extract_phone(self, text: str) -> str:
         """Extract phone number (supports UAE +971 and international formats)"""
         # Strip CID artifacts before phone extraction
-        clean_text = re.sub(r'\(cid:\d+\)', '', text)
+        clean_text = _CID_RE.sub('', text)
         
         # UAE format: +971-XX-XXX-XXXX or variations
         uae_pattern = r'\+971[\s.-]?\d{1,2}[\s.-]?\d{3}[\s.-]?\d{4}'
@@ -794,16 +819,14 @@ class ResumeParser:
         return ""
     
     def _extract_skills(self, text: str) -> List[str]:
-        """Extract technical skills using word-boundary matching"""
+        """Extract technical skills using precompiled word-boundary patterns"""
         text_lower = text.lower()
         found_skills = []
-        
-        for skill in self.skill_keywords:
-            # Use word boundaries to prevent false positives
-            # e.g., 'go' shouldn't match 'going', 'r' shouldn't match 'required'
-            if re.search(r'\b' + re.escape(skill) + r'\b', text_lower):
+
+        for skill, pattern in self._skill_patterns.items():
+            if pattern.search(text_lower):
                 found_skills.append(skill.title())
-        
+
         return list(set(found_skills))[:30]  # Return up to 30 unique skills
     
     def _extract_experience(self, text: str) -> int:
@@ -941,13 +964,13 @@ class ResumeParser:
             
             if has_title and 5 < len(line) < 200:
                 # Extract year range from this line or the next
-                year_match = re.search(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|19\d{2})\s*[-\u2013\u2014to]+\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|[Pp]resent|[Cc]urrent|[Oo]ngoing)', line, re.IGNORECASE)
+                year_match = _DATE_RANGE_RE.search(line)
                 period = year_match.group(0).strip() if year_match else ''
-                
+
                 # If no period found on this line, check next line
                 if not period and i + 1 < len(lines):
                     next_line = lines[i + 1].strip()
-                    year_match = re.search(r'((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|19\d{2})\s*[-\u2013\u2014to]+\s*((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+)?\s*(20\d{2}|[Pp]resent|[Cc]urrent|[Oo]ngoing)', next_line, re.IGNORECASE)
+                    year_match = _DATE_RANGE_RE.search(next_line)
                     if year_match:
                         period = year_match.group(0).strip()
                 

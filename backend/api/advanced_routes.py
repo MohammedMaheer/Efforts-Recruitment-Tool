@@ -14,7 +14,7 @@ from models.advanced_schemas import (
     # Skill Extraction
     SkillExtractionRequest, SkillExtractionResponse, SkillGapRequest, SkillGapResponse,
     # Duplicate Detection
-    DuplicateCheckRequest, DuplicateCheckResponse, MergeCandidatesRequest,
+    DuplicateCheckRequest, DuplicateCheckResponse, DuplicateMatch, MergeCandidatesRequest,
     # Job Matching
     JobMatchRequest, JobMatchResponse, CandidateMatchRequest,
     # Predictive Analytics
@@ -52,6 +52,16 @@ logger = logging.getLogger(__name__)
 
 # Create router — all advanced endpoints require authentication
 router = APIRouter(prefix="/api/advanced", tags=["Advanced AI Services"], dependencies=[Depends(require_auth)])
+
+
+def _safe_error(prefix: str, e: Exception) -> str:
+    """Return a sanitized error message for API responses (no stack traces or internal paths)."""
+    msg = str(e)[:200]  # Truncate long error messages
+    # Strip file paths and internal details
+    for pattern in ['/app/', '/usr/', 'Traceback', 'File "']:
+        if pattern in msg:
+            return f"{prefix}: internal error"
+    return f"{prefix}: {msg}"
 
 
 # ============================================================================
@@ -111,7 +121,7 @@ async def rank_candidates(request: MLRankRequest):
         )
     except Exception as e:
         logger.error(f"ML ranking error: {e}")
-        raise HTTPException(500, f"Ranking failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Ranking failed", e))
 
 
 @router.post("/ml/record-decision")
@@ -144,7 +154,7 @@ async def record_hiring_decision(request: HiringDecisionRequest):
         }
     except Exception as e:
         logger.error(f"Record decision error: {e}")
-        raise HTTPException(500, f"Failed to record: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to record", e))
 
 
 @router.post("/ml/retrain")
@@ -159,7 +169,7 @@ async def retrain_ml_model():
             'training_samples': len(service.training_data)
         }
     except Exception as e:
-        raise HTTPException(500, f"Retrain failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Retrain failed", e))
 
 
 # ============================================================================
@@ -184,7 +194,7 @@ async def extract_skills(request: SkillExtractionRequest):
         )
     except Exception as e:
         logger.error(f"Skill extraction error: {e}")
-        raise HTTPException(500, f"Extraction failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Extraction failed", e))
 
 
 @router.post("/skills/gap-analysis", response_model=SkillGapResponse)
@@ -214,7 +224,7 @@ async def analyze_skill_gap(request: SkillGapRequest):
             gap_score=result.get('gap_score', 50)
         )
     except Exception as e:
-        raise HTTPException(500, f"Gap analysis failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Gap analysis failed", e))
 
 
 # ============================================================================
@@ -242,14 +252,26 @@ async def check_duplicates(request: DuplicateCheckRequest):
         all_candidates = db_service.get_candidates_paginated(1, 5000, {})
         
         duplicates = service.find_duplicates(candidate, all_candidates, request.threshold)
-        
+
+        # Map duplicates to response schema
+        duplicate_matches = [
+            DuplicateMatch(
+                candidate_id=str(d.get('id', '')),
+                candidate_name=d.get('name', 'Unknown'),
+                candidate_email=d.get('email', ''),
+                similarity_score=d.get('similarity', d.get('score', 0.0)),
+                match_reasons=d.get('reasons', d.get('match_reasons', []))
+            )
+            for d in duplicates
+        ]
+
         return DuplicateCheckResponse(
-            has_duplicates=len(duplicates) > 0,
-            duplicates=[],  # Map duplicates
+            has_duplicates=len(duplicate_matches) > 0,
+            duplicates=duplicate_matches,
             checked_candidate_id=request.candidate_id
         )
     except Exception as e:
-        raise HTTPException(500, f"Duplicate check failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Duplicate check failed", e))
 
 
 @router.post("/duplicates/merge")
@@ -280,7 +302,7 @@ async def merge_duplicates(request: MergeCandidatesRequest):
             'removed_ids': request.duplicate_candidate_ids
         }
     except Exception as e:
-        raise HTTPException(500, f"Merge failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Merge failed", e))
 
 
 # ============================================================================
@@ -313,7 +335,7 @@ async def match_candidate_to_jobs(request: JobMatchRequest):
             best_match=None
         )
     except Exception as e:
-        raise HTTPException(500, f"Matching failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Matching failed", e))
 
 
 @router.post("/matching/job-to-candidates")
@@ -345,7 +367,7 @@ async def match_job_to_candidates(request: CandidateMatchRequest):
             'total_candidates': len(candidates)
         }
     except Exception as e:
-        raise HTTPException(500, f"Matching failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Matching failed", e))
 
 
 # ============================================================================
@@ -384,7 +406,7 @@ async def predict_candidate_outcomes(request: PredictionRequest):
             }
         )
     except Exception as e:
-        raise HTTPException(500, f"Prediction failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Prediction failed", e))
 
 
 @router.get("/analytics/pipeline")
@@ -529,7 +551,7 @@ async def get_pipeline_analytics():
         }
     except Exception as e:
         logger.error(f"Analytics failed: {e}")
-        raise HTTPException(500, f"Analytics failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Analytics failed", e))
 
 
 # ============================================================================
@@ -565,7 +587,7 @@ async def analyze_resume_quality(request: ResumeQualityRequest):
             recommendations=result.get('recommendations', [])
         )
     except Exception as e:
-        raise HTTPException(500, f"Quality analysis failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Quality analysis failed", e))
 
 
 # ============================================================================
@@ -580,7 +602,7 @@ async def list_email_templates():
         templates = service.get_all_templates()
         return {'templates': list(templates.values())}
     except Exception as e:
-        raise HTTPException(500, f"Failed to get templates: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to get templates", e))
 
 
 @router.get("/templates/{template_id}")
@@ -595,7 +617,7 @@ async def get_email_template(template_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to get template: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to get template", e))
 
 
 @router.post("/templates")
@@ -614,7 +636,7 @@ async def create_email_template(request: EmailTemplateCreate):
         )
         return template
     except Exception as e:
-        raise HTTPException(500, f"Failed to create template: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to create template", e))
 
 
 @router.put("/templates/{template_id}")
@@ -626,7 +648,7 @@ async def update_email_template(template_id: str, request: EmailTemplateUpdate):
         template = service.update_template(template_id, updates)
         return template
     except Exception as e:
-        raise HTTPException(500, f"Failed to update template: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to update template", e))
 
 
 @router.delete("/templates/{template_id}")
@@ -641,7 +663,7 @@ async def delete_email_template(template_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to delete template: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to delete template", e))
 
 
 @router.post("/templates/render")
@@ -652,7 +674,7 @@ async def render_email_template(request: RenderTemplateRequest):
         result = service.render_template(request.template_id, request.variables)
         return result
     except Exception as e:
-        raise HTTPException(500, f"Failed to render template: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to render template", e))
 
 
 # ============================================================================
@@ -685,7 +707,7 @@ async def schedule_interview(request: ScheduleInterviewRequest):
         return ScheduleInterviewResponse(**result)
     except Exception as e:
         logger.error(f"Schedule interview error: {e}")
-        raise HTTPException(500, f"Scheduling failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Scheduling failed", e))
 
 
 @router.post("/calendar/availability", response_model=AvailabilityResponse)
@@ -709,7 +731,7 @@ async def get_availability(request: AvailabilityRequest):
             timezone="UTC"
         )
     except Exception as e:
-        raise HTTPException(500, f"Failed to get availability: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to get availability", e))
 
 
 # ============================================================================
@@ -742,7 +764,7 @@ async def send_sms(request: SendSMSRequest):
         return SendSMSResponse(**result)
     except Exception as e:
         logger.error(f"SMS send error: {e}")
-        raise HTTPException(500, f"SMS failed: {str(e)}")
+        raise HTTPException(500, _safe_error("SMS failed", e))
 
 
 @router.post("/sms/bulk", response_model=BulkSMSResponse)
@@ -762,7 +784,7 @@ async def send_bulk_sms(request: BulkSMSRequest):
         
         return BulkSMSResponse(**result)
     except Exception as e:
-        raise HTTPException(500, f"Bulk SMS failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Bulk SMS failed", e))
 
 
 @router.get("/sms/templates")
@@ -772,7 +794,7 @@ async def list_sms_templates():
         service = get_sms_service()
         return {'templates': service.templates}
     except Exception as e:
-        raise HTTPException(500, f"Failed to get templates: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to get templates", e))
 
 
 @router.post("/sms/webhook")
@@ -799,7 +821,7 @@ async def list_campaigns():
         campaigns = service.get_all_campaigns()
         return {'campaigns': list(campaigns.values())}
     except Exception as e:
-        raise HTTPException(500, f"Failed to get campaigns: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to get campaigns", e))
 
 
 @router.get("/campaigns/stats/{campaign_id}", response_model=CampaignStatsResponse)
@@ -829,7 +851,7 @@ async def get_campaign_stats(campaign_id: str):
             responded=row[4] or 0,
         )
     except Exception as e:
-        raise HTTPException(500, f"Failed to get stats: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to get stats", e))
 
 
 @router.get("/campaigns/stats")
@@ -878,7 +900,7 @@ async def get_all_campaign_stats():
             'campaigns': campaigns,
         }
     except Exception as e:
-        raise HTTPException(500, f"Failed to get stats: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to get stats", e))
 
 
 @router.get("/campaigns/{campaign_id}")
@@ -893,7 +915,7 @@ async def get_campaign(campaign_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to get campaign: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to get campaign", e))
 
 
 @router.post("/campaigns")
@@ -914,7 +936,7 @@ async def create_campaign(request: CampaignCreate):
         )
         return campaign
     except Exception as e:
-        raise HTTPException(500, f"Failed to create campaign: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to create campaign", e))
 
 
 @router.delete("/campaigns/{campaign_id}")
@@ -929,7 +951,7 @@ async def delete_campaign(campaign_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, f"Failed to delete campaign: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to delete campaign", e))
 
 
 @router.post("/campaigns/enroll", response_model=EnrollmentResponse)
@@ -951,7 +973,7 @@ async def enroll_in_campaign(request: EnrollCandidateRequest):
         
         return EnrollmentResponse(**result)
     except Exception as e:
-        raise HTTPException(500, f"Enrollment failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Enrollment failed", e))
 
 
 @router.post("/campaigns/unenroll")
@@ -968,7 +990,7 @@ async def unenroll_from_campaign(request: UnenrollRequest):
         
         return result
     except Exception as e:
-        raise HTTPException(500, f"Unenroll failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Unenroll failed", e))
 
 
 @router.post("/campaigns/mark-responded")
@@ -979,7 +1001,7 @@ async def mark_candidate_responded(candidate_id: str, campaign_id: Optional[str]
         service.mark_responded(candidate_id, campaign_id)
         return {'status': 'marked_responded', 'candidate_id': candidate_id}
     except Exception as e:
-        raise HTTPException(500, f"Failed to mark responded: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to mark responded", e))
 
 
 @router.get("/campaigns/enrollments/{candidate_id}")
@@ -990,7 +1012,7 @@ async def get_candidate_enrollments(candidate_id: str):
         enrollments = service.get_candidate_enrollments(candidate_id)
         return {'enrollments': enrollments}
     except Exception as e:
-        raise HTTPException(500, f"Failed to get enrollments: {str(e)}")
+        raise HTTPException(500, _safe_error("Failed to get enrollments", e))
 
 
 @router.post("/campaigns/process")
@@ -1001,4 +1023,4 @@ async def process_campaign_steps(background_tasks: BackgroundTasks):
         result = await service.process_due_steps()
         return result
     except Exception as e:
-        raise HTTPException(500, f"Processing failed: {str(e)}")
+        raise HTTPException(500, _safe_error("Processing failed", e))

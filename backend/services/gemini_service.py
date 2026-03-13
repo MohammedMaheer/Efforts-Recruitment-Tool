@@ -18,6 +18,8 @@ import re
 import time
 import asyncio
 import hashlib
+import threading
+from collections import OrderedDict
 from typing import Dict, List, Optional, Any, Union
 
 # ── Shared constants for pre-filter scoring (used by both chat() and rank_candidates_for_job()) ──
@@ -464,6 +466,10 @@ COUNT_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# Shared precompiled patterns used in post-processing AI output
+_CID_RE = re.compile(r'\(cid:\d+\)')
+_DIGITS_ONLY_RE = re.compile(r'\D')
+
 
 def _expand_location_terms(raw_terms: list, stop_words: frozenset = STOP_WORDS) -> set:
     """Expand location terms using aliases (bidirectional). Returns set of all matching terms."""
@@ -597,10 +603,40 @@ def _repair_json(text: str) -> Optional[Dict]:
     except json.JSONDecodeError:
         pass
 
-    # Extract largest {...} blob
-    m = re.search(r'\{[\s\S]*\}', text)
-    if m:
-        candidate = m.group()
+    # Extract outermost balanced {...} JSON object (balanced brace finder)
+    def _find_balanced_json(t: str) -> Optional[str]:
+        start = t.find('{')
+        if start == -1:
+            return None
+        depth = 0
+        in_str = False
+        esc = False
+        for i in range(start, len(t)):
+            ch = t[i]
+            if esc:
+                esc = False
+                continue
+            if ch == '\\' and in_str:
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+                if depth == 0:
+                    return t[start:i+1]
+        return None
+
+    candidate = _find_balanced_json(text)
+    if not candidate:
+        _m = re.search(r'\{[\s\S]*\}', text)
+        candidate = _m.group() if _m else None
+    if candidate:
         try:
             parsed = json.loads(candidate)
             result = _ensure_dict(parsed)
@@ -666,12 +702,19 @@ class GeminiService:
         self._total_time = 0.0
         self._error_count = 0
 
-        # Response cache
-        self._cache: Dict[str, Any] = {}
+        # Thread-safe response cache (OrderedDict for LRU eviction)
+        self._cache: OrderedDict = OrderedDict()
+        self._cache_lock = threading.Lock()
         self._cache_max_size = 500
-        self._cache_ttl = 3600  # 1 hour
+        self._cache_ttl = 14400  # 4 hours (structured extraction rarely changes)
 
-        # Daily budget tracking — prevents runaway costs
+        # Thread-safe search cache
+        self._search_cache: OrderedDict = OrderedDict()
+        self._search_cache_lock = threading.Lock()
+        self._search_cache_ttl = 900  # 15 minutes
+
+        # Thread-safe daily budget tracking — prevents runaway costs
+        self._budget_lock = threading.Lock()
         self._daily_call_count = 0
         self._daily_call_date = ''  # YYYY-MM-DD
         self._daily_call_limit = int(os.environ.get('GEMINI_DAILY_LIMIT', '2000'))  # Max API calls/day
@@ -701,19 +744,82 @@ class GeminiService:
         return f"gemini:{prefix}:{h}"
 
     def _get_cached(self, key: str) -> Optional[Any]:
-        if key in self._cache:
-            entry = self._cache[key]
-            if time.time() - entry['time'] < self._cache_ttl:
-                return entry['data']
-            del self._cache[key]
+        with self._cache_lock:
+            if key in self._cache:
+                entry = self._cache[key]
+                if time.time() - entry['time'] < self._cache_ttl:
+                    self._cache.move_to_end(key)  # LRU: mark as recently used
+                    return entry['data']
+                del self._cache[key]
         return None
 
     def _set_cache(self, key: str, data: Any):
-        if len(self._cache) >= self._cache_max_size:
-            oldest = sorted(self._cache, key=lambda k: self._cache[k]['time'])[:100]
-            for k in oldest:
-                del self._cache[k]
-        self._cache[key] = {'data': data, 'time': time.time()}
+        with self._cache_lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                self._cache[key] = {'data': data, 'time': time.time()}
+            else:
+                if len(self._cache) >= self._cache_max_size:
+                    # Evict oldest 20% (LRU) — O(1) per pop from OrderedDict
+                    for _ in range(self._cache_max_size // 5):
+                        if self._cache:
+                            self._cache.popitem(last=False)
+                self._cache[key] = {'data': data, 'time': time.time()}
+
+    def _get_search_cached(self, query: str, num_candidates: int, total: int) -> Optional[Any]:
+        """Check search cache using normalized query key. Thread-safe."""
+        normalized = self._normalize_query_for_cache(query)
+        key = f"search:{hashlib.sha256(f'{normalized}:{num_candidates}:{total}'.encode()).hexdigest()}"
+        with self._search_cache_lock:
+            if key in self._search_cache:
+                entry = self._search_cache[key]
+                ttl = entry.get('ttl', self._search_cache_ttl)
+                if time.time() - entry['time'] < ttl:
+                    self._search_cache.move_to_end(key)
+                    logger.info(f"Search cache HIT for: {query[:60]}")
+                    return entry['data']
+                del self._search_cache[key]
+        return None
+
+    def _set_search_cache(self, query: str, num_candidates: int, total: int, data: Any):
+        """Cache search result with adaptive TTL. Thread-safe.
+        - Rich results (many candidates returned): 15 min TTL
+        - Thin results (few/no candidates): 5 min TTL (pool may grow soon)
+        """
+        normalized = self._normalize_query_for_cache(query)
+        key = f"search:{hashlib.sha256(f'{normalized}:{num_candidates}:{total}'.encode()).hexdigest()}"
+        # Adaptive TTL: fewer results → shorter cache (candidate pool might grow)
+        result_count = num_candidates if isinstance(num_candidates, int) else 0
+        ttl = self._search_cache_ttl if result_count >= 5 else max(300, self._search_cache_ttl // 3)
+        with self._search_cache_lock:
+            if len(self._search_cache) >= 50:
+                for _ in range(20):
+                    if self._search_cache:
+                        self._search_cache.popitem(last=False)
+            self._search_cache[key] = {'data': data, 'time': time.time(), 'ttl': ttl}
+
+    @staticmethod
+    def _normalize_query_for_cache(query: str) -> str:
+        """Normalize query for better cache hit rate.
+        Strips filler phrases and normalizes whitespace/case so semantically
+        identical queries ("show me python devs" vs "list python developers") share a cache entry."""
+        q = query.lower().strip()
+        # Strip common filler prefixes that don't change search intent
+        filler_prefixes = [
+            r'^(please\s+)?(can\s+you\s+)?(could\s+you\s+)?',
+            r'^(show\s+me\s+|give\s+me\s+|find\s+me\s+|list\s+|get\s+me\s+)',
+            r'^(i\s+need\s+|i\s+want\s+|i\'m\s+looking\s+for\s+)',
+        ]
+        for prefix in filler_prefixes:
+            q = re.sub(prefix, '', q)
+        # Normalize synonyms for cache key
+        q = re.sub(r'\bdevelopers?\b', 'developer', q)
+        q = re.sub(r'\bengineers?\b', 'engineer', q)
+        q = re.sub(r'\banalysts?\b', 'analyst', q)
+        q = re.sub(r'\bmanagers?\b', 'manager', q)
+        q = re.sub(r'\bspecialists?\b', 'specialist', q)
+        q = re.sub(r'\s+', ' ', q).strip()
+        return q
 
     def _generate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024, thinking_budget: int = 0) -> str:
         """Synchronous text generation via Gemini.
@@ -725,16 +831,17 @@ class GeminiService:
         """
         if not self.available or not self._client:
             return ""
-        # ── Daily budget check ──
+        # ── Thread-safe daily budget check ──
         import datetime as _dt
         today = _dt.date.today().isoformat()
-        if self._daily_call_date != today:
-            self._daily_call_date = today
-            self._daily_call_count = 0
-        if self._daily_call_count >= self._daily_call_limit:
-            logger.warning(f"⚠️ Gemini daily limit reached ({self._daily_call_limit} calls). Skipping API call.")
-            raise RuntimeError(f"Gemini daily call limit reached ({self._daily_call_limit})")
-        self._daily_call_count += 1
+        with self._budget_lock:
+            if self._daily_call_date != today:
+                self._daily_call_date = today
+                self._daily_call_count = 0
+            if self._daily_call_count >= self._daily_call_limit:
+                logger.warning(f"Gemini daily limit reached ({self._daily_call_limit} calls). Skipping API call.")
+                raise RuntimeError(f"Gemini daily call limit reached ({self._daily_call_limit})")
+            self._daily_call_count += 1
         start = time.time()
         try:
             # Build config — disable thinking for extraction tasks to save ~70% cost
@@ -824,62 +931,70 @@ class GeminiService:
 
         from services.job_taxonomy import classify_job_title
 
-        # Gemini 2.5 Flash supports 1M tokens — send up to 10K chars for thorough extraction
-        prompt = f"""You are an expert resume/CV parser for a recruitment agency. Extract ALL information with maximum accuracy. Return ONLY valid JSON — no commentary.
+        # Gemini 2.5 Flash supports 1M tokens — send up to 12K chars for thorough extraction
+        prompt = f"""You are an expert resume parser. Extract structured data from the resume below. Return ONLY valid JSON — no commentary, no markdown.
 
-RESUME TEXT:
-{text[:10000]}
+════ RESUME ════
+{text[:12000]}
+════ END ════
 
 EXTRACTION RULES:
-1. Extract the EXACT name, email, phone, location as written — do not guess or infer.
-2. For experience_years: calculate from the earliest work start date to present. If stated explicitly (e.g., "10+ years"), use that number.
-3. For skills: extract ALL technical skills, tools, programming languages, frameworks, methodologies, soft skills, and domain expertise mentioned anywhere in the resume. Include certifications-related skills too. Do NOT cap the list.
-4. For work_history: extract ALL positions with full details. Include description with key responsibilities and achievements.
-5. For nationality/visa: only if explicitly mentioned (e.g., "Indian national", "UAE residence visa", "US citizen").
-6. For notice_period: look for phrases like "immediate joiner", "30 days notice", "available from [date]", "currently serving notice".
-7. For salary: look for "current salary", "expected salary", "CTC", "package" mentions.
-8. For source/portal: if the resume mentions where it was uploaded or forwarded from (Indeed, LinkedIn, Bayt, Naukri, GulfTalent etc.).
+• name: Full name exactly as written (First Last). Use the most prominent name at the top.
+• email: Exact email address. Leave empty if none found.
+• phone: Include country code if present (e.g., "+971 50 123 4567"). Leave empty if none.
+• location: "City, Country" or "City" format. Extract from address/header section.
+• nationality: ONLY if explicitly stated (e.g., "Indian national", "UAE citizen", "Pakistani"). Leave empty if not stated.
+• linkedin: Full URL or just the handle. Leave empty if none.
+• summary: Write a 3-4 sentence professional summary based on the resume content.
+• skills: Extract ALL technical skills, tools, frameworks, programming languages, platforms, methodologies, and domain expertise. Be exhaustive — missing a skill is worse than including a borderline one.
+• experience_years: Sum all work roles from dates. If explicitly stated (e.g., "8 years experience"), use that value. Round to 1 decimal. "Present" means current.
+• work_history: ALL job positions, newest first. Duration = calculated time in role ("2 years 3 months"). Description = 1-2 sentences of actual responsibilities.
+• education: Real academic degrees only (B.Tech, MBA, Ph.D, Diploma, B.Sc). NOT certifications, NOT training courses.
+• certifications: Professional certifications only (AWS Certified, PMP, CFA, CISSP, etc.). NOT degrees.
+• languages: As stated (e.g., "English - Fluent", "Arabic - Basic"). Leave empty array if not mentioned.
+• notice_period: Exact text as found: "Immediate", "30 days", "1 month", "2 months", "Serving notice", "3 months notice". Leave empty if not stated.
+• current_salary: As written in resume — keep original format: "12 LPA", "AED 15,000/month", "50K USD", "25,000 INR". Leave empty if not stated.
+• expected_salary: As written. Leave empty if not stated.
+• source_portal: Job portal if mentioned anywhere (Indeed, LinkedIn, Naukri, Bayt, GulfTalent). Leave empty if unclear.
+• job_applied_for: Position candidate is applying for if stated. Otherwise leave empty — do NOT guess from work history.
 
-Return JSON:
+Return EXACTLY this JSON structure (no extra fields, no missing fields):
 {{
-    "name": "Full name exactly as written",
-    "email": "email address",
-    "phone": "phone number with country code if present",
-    "location": "City, Country (as specific as possible)",
-    "nationality": "Nationality if explicitly stated, else empty",
-    "linkedin": "LinkedIn URL or empty",
-    "summary": "3-4 sentence professional summary capturing their expertise level and domain",
-    "skills": ["ALL skills, tools, languages, frameworks, methodologies, domain expertise — be comprehensive"],
+    "name": "",
+    "email": "",
+    "phone": "",
+    "location": "",
+    "nationality": "",
+    "linkedin": "",
+    "summary": "",
+    "skills": [],
     "experience_years": 0,
-    "work_history": [{{"title": "Job Title", "company": "Company Name", "period": "Start - End dates", "duration": "X years Y months", "description": "Key responsibilities and achievements in 2-3 sentences"}}],
-    "education": [{{"degree": "Degree", "field": "Field of Study", "institution": "Institution Name", "year": "Graduation Year"}}],
-    "certifications": ["certification names with issuing body if mentioned"],
-    "languages": ["languages with proficiency level if mentioned"],
-    "notice_period": "Notice period or availability if mentioned, else empty",
-    "current_salary": "Current salary/CTC if mentioned, else empty",
-    "expected_salary": "Expected salary if mentioned, else empty",
-    "source_portal": "Job portal source if identifiable, else empty",
-    "job_applied_for": "Specific job title they applied for if mentioned, else empty",
-    "job_title_applied": "Their most recent/current job title"
+    "work_history": [{{"title": "", "company": "", "period": "", "duration": "", "description": ""}}],
+    "education": [{{"degree": "", "field": "", "institution": "", "year": ""}}],
+    "certifications": [],
+    "languages": [],
+    "notice_period": "",
+    "current_salary": "",
+    "expected_salary": "",
+    "source_portal": "",
+    "job_applied_for": ""
 }}
 
-CRITICAL: Only extract data that is EXPLICITLY present in the resume. Never fabricate or hallucinate any information."""
+CRITICAL: NEVER fabricate data. Use empty string or empty array when data is absent. nationality/salary/notice_period must be empty unless EXPLICITLY written in the resume."""
 
-        result = await self._agenerate_json(prompt, temperature=0.05)
+        result = await self._agenerate_json(prompt, temperature=0.05, max_tokens=2048)
 
         if result:
             # ── Sanitize fields: strip CID artifacts and garbage from AI output ──
-            _cid_re = re.compile(r'\(cid:\d+\)')
             for field in ('phone', 'name', 'email', 'location', 'linkedin', 'summary'):
                 val = result.get(field, '')
                 if val and isinstance(val, str) and 'cid:' in val:
-                    cleaned = _cid_re.sub('', val).strip()
-                    result[field] = cleaned
-            
+                    result[field] = _CID_RE.sub('', val).strip()
+
             # ── Validate phone: must contain real digits, not garbage ──
             phone = result.get('phone', '')
             if phone:
-                digits = re.sub(r'\D', '', phone)
+                digits = _DIGITS_ONLY_RE.sub('', phone)
                 if len(digits) < 7 or len(digits) > 15 or 'cid' in phone.lower():
                     logger.warning(f"🚫 Rejected garbage phone: {phone[:50]}")
                     result['phone'] = ''
@@ -949,15 +1064,14 @@ CRITICAL: Only extract data that is EXPLICITLY present in the resume. Never fabr
         from services.job_taxonomy import classify_job_title, get_taxonomy_prompt_text
 
         # Build combined text — email body + resume if available
-        # Increased budget from 2.5K to 5K for richer extraction
-        body_section = body[:3500]
+        body_section = body[:4000]
         resume_section = ""
         if resume_text and len(resume_text.strip()) > 50:
-            resume_section = f"\n\nRESUME TEXT (from attached file):\n{resume_text[:5000]}"
+            resume_section = f"\n\nRESUME ATTACHMENT:\n{resume_text[:5000]}"
 
         taxonomy_text = get_taxonomy_prompt_text()
 
-        prompt = f"""You are an expert recruitment data extraction AI. Parse this job application email and extract ALL candidate information with maximum accuracy. Return ONLY valid JSON.
+        prompt = f"""You are a recruitment email parser. Extract candidate data as JSON. Return ONLY valid JSON — no commentary.
 
 SUBJECT: {subject}
 SENDER: {sender}
@@ -967,51 +1081,58 @@ EMAIL BODY:
 {body_section}
 {resume_section}
 
-JOB TAXONOMY (use these EXACT category/subcategory names):
+EXTRACTION RULES:
+• is_candidate_email: false if NOT a job application (newsletters, invoices, system notifications, internal emails). true otherwise.
+• name: Full name of the applicant. Extract from email signature, body, or resume.
+• email: Candidate's PERSONAL email only. NEVER use portal-generated addresses (cv@, resume@, careers@, apply@, recruitment@, noreply@, do-not-reply@). Leave empty if only portal address found.
+• phone: With country code if present. Leave empty if none.
+• location: "City, Country" from email or resume. Leave empty if not found.
+• nationality: Only if explicitly stated ("Indian national", "UAE citizen"). Leave empty if not stated.
+• skills: ALL technical skills, tools, frameworks, languages, platforms mentioned in email + resume. Be exhaustive.
+• experience_years: From stated value or sum of work dates. 0 if unknown.
+• summary: 2-3 sentence professional summary from email/resume content.
+• linkedin: URL or handle. Leave empty if none.
+• job_applied_for: Role mentioned in subject line or email body. Leave empty if unclear.
+• notice_period: As stated: "Immediate", "30 days", "1 month", "Serving notice". Leave empty if not mentioned.
+• current_salary: Keep original format: "12 LPA", "AED 15,000/month". Leave empty if not stated.
+• expected_salary: Keep original format. Leave empty if not stated.
+• work_history: Actual job positions only (NOT education). Newest first.
+• education: Real degrees only (B.Tech, MBA, Ph.D, Diploma). NOT certifications or training.
+• certifications: Professional certs (AWS, PMP, CFA). NOT degrees.
+• job_category + job_subcategory: Pick EXACT names from taxonomy below. Use "General" / "General Professional" if no match.
+• quality_score: 85-100=exceptional (10+yrs, leadership, rare skills) | 70-84=strong (5-10yrs, good skills) | 55-69=moderate (2-5yrs) | 40-54=developing | <40=weak. Score the actual candidate, never default to 50.
+
+TAXONOMY (use EXACT names):
 {taxonomy_text}
 
-Return ONLY valid JSON with this EXACT structure:
+Return EXACTLY this JSON:
 {{
-    "name": "Full name of the candidate",
-    "email": "Candidate email (NOT the portal noreply address)",
-    "phone": "Phone with country code or empty",
-    "location": "City, Country or empty",
-    "skills": ["Extract ALL technical and professional skills mentioned — be thorough"],
+    "name": "",
+    "email": "",
+    "phone": "",
+    "location": "",
+    "nationality": "",
+    "linkedin": "",
+    "summary": "",
+    "skills": [],
     "experience_years": 0,
-    "summary": "2-4 sentence professional summary based on actual content",
-    "linkedin": "LinkedIn URL or empty",
-    "job_applied_for": "Position title the candidate applied for",
+    "job_applied_for": "",
     "source": "{source}",
-    "nationality": "Nationality if mentioned or empty",
-    "notice_period": "Notice period if mentioned or empty",
-    "current_salary": "Current salary if mentioned or empty",
-    "expected_salary": "Expected salary if mentioned or empty",
-    "work_history": [
-        {{"title": "Job title", "company": "Company name", "period": "Date range", "description": "Key responsibilities/achievements"}}
-    ],
-    "education": [
-        {{"degree": "Degree type", "field": "Field of study", "institution": "University/College", "year": "Graduation year"}}
-    ],
-    "certifications": ["List any certifications mentioned"],
-    "languages": ["Languages spoken if mentioned"],
-    "job_category": "Best matching category from taxonomy",
-    "job_subcategory": "Specific role subcategory from taxonomy",
-    "quality_score": 65,
+    "notice_period": "",
+    "current_salary": "",
+    "expected_salary": "",
+    "work_history": [{{"title": "", "company": "", "period": "", "description": ""}}],
+    "education": [{{"degree": "", "field": "", "institution": "", "year": ""}}],
+    "certifications": [],
+    "languages": [],
+    "job_category": "",
+    "job_subcategory": "",
+    "quality_score": 50,
     "is_candidate_email": true
-}}
-
-CRITICAL RULES:
-- Set is_candidate_email to false if this is NOT a job application (e.g., newsletter, invoice, internal email)
-- Extract the candidate's ACTUAL email, not system/noreply addresses
-- For skills: include ALL technical skills, tools, frameworks, methodologies, and relevant soft skills
-- For work_history: extract EVERY position with title, company, dates, and description
-- For education: extract ALL degrees with institution name and field
-- NEVER fabricate data — use empty strings/arrays for missing fields
-- For experience_years: calculate from work history or use explicitly stated number
-- For quality_score: Rate 85-100 Exceptional (10+ yrs, strong skills, leadership), 70-84 Strong (5+ yrs, good skills), 55-69 Moderate (2-5 yrs, some skills), 40-54 Developing (entry-level), below 40 Weak. Be precise — do NOT default to 50 or 65."""
+}}"""
 
         try:
-            result = await self._agenerate_json(prompt, temperature=0.05)
+            result = await self._agenerate_json(prompt, temperature=0.05, max_tokens=2048)
         except Exception as gen_err:
             logger.warning(f"Gemini JSON generation error: {gen_err}")
             return None
@@ -1073,41 +1194,40 @@ No specific target role provided. Score based on OVERALL professional quality:
 - 40-54: Developing — Entry-level, limited skills, minimal experience
 - Below 40: Weak — Unclear background or very junior
 
-Be precise and differentiated. Do NOT default to 50 or 65. Assess the actual resume quality carefully.
-If the resume shows 10+ skills, clear experience, and education, score 75+.
-If sparse/generic, score 35-50."""
+Be precise and differentiated. Do NOT default to 25, 50, or 65. Assess the actual resume quality carefully.
+A resume with ANY meaningful skills or experience MUST score at least 40.
+If the resume shows 10+ skills, clear experience, and education, score 70-85.
+If 5-9 skills with 2+ years experience, score 55-70.
+If 3-4 skills and 1-2 years, score 45-55.
+If sparse/generic with minimal info, score 30-45.
+Only score below 30 if the resume is nearly empty or unintelligible."""
 
-        prompt = f"""You are an expert recruitment AI analyzing a candidate's resume/profile.
-Extract ALL structured information and provide an honest quality assessment.
+        prompt = f"""Recruitment AI: analyze resume, extract structured data, assess quality.
 {job_instruction}
 
-RESUME TEXT:
+RESUME:
 {text[:4000]}
 
-Return ONLY valid JSON with these exact fields:
+Return JSON:
 {{
-    "name": "Full Name from resume (if visible)",
-    "phone": "Phone number with country code if found",
-    "email": "Email address if found",
-    "location": "City, State/Country — extract from address, contact info, or any location mention",
-    "skills": ["Extract ALL technical and professional skills mentioned — be thorough, list 10+ if present"],
+    "name": "Full Name",
+    "phone": "Phone with country code",
+    "email": "PERSONAL email only (ignore cv@, resume@, careers@, jobs@, apply@)",
+    "location": "City, Country",
+    "skills": ["ALL technical/professional skills — be thorough"],
     "experience": 5,
-    "education": ["Highest degree — e.g. B.Tech in Computer Science, MBA, etc."],
-    "job_category": "MUST be exactly one of: Software Engineering, Data & Analytics, IT & Systems, Engineering, HR & Admin, Finance & Accounting, Sales, Operations, Consulting, Healthcare, Design & Creative, QA & Testing, Marketing, Customer Service, Insurance & Safety, Retail & Hospitality, Business Analyst, Education, Legal, General",
-    "job_subcategory": "Specific role title — e.g. Full Stack Developer, MEP Engineer, Data Scientist",
-    "quality_score": 72,
-    "summary": "2-3 sentence professional summary highlighting key strengths and experience level",
-    "certifications": ["Any certifications mentioned"],
-    "languages": ["Languages spoken if mentioned"],
-    "linkedin": "LinkedIn URL if found",
-    "work_history": ["Recent company/role if mentioned"]
+    "education": ["Highest degree e.g. B.Tech CS, MBA"],
+    "job_category": "One of: Software Engineering, Data & Analytics, IT & Systems, Engineering, HR & Admin, Finance & Accounting, Sales, Operations, Consulting, Healthcare, Design & Creative, QA & Testing, Marketing, Customer Service, Insurance & Safety, Retail & Hospitality, Business Analyst, Education, Legal, General",
+    "job_subcategory": "Specific role title",
+    "quality_score": "<integer 10-100>",
+    "summary": "2-3 sentence summary",
+    "certifications": ["certs"],
+    "languages": ["languages"],
+    "linkedin": "",
+    "work_history": ["Recent company/role"]
 }}
 
-IMPORTANT for quality_score:
-- Base it on: depth of experience, breadth of skills, education quality, certifications, career progression
-- A resume with 10+ skills, 5+ years exp, and a degree should score 70-80
-- A resume with 3-4 skills and 1-2 years should score 45-55
-- Score MUST reflect actual resume content — never default to 50 or 65"""
+quality_score rules: 10+ skills + 5+ yrs + degree = 70-85 | 5-9 skills + 2-5 yrs = 55-70 | 3-4 skills + 1-2 yrs = 45-55 | Nearly empty = below 30 | Any skills/experience = min 35. Never default to 25/50/65."""
 
         result = await self._agenerate_json(prompt, temperature=0.1)
 
@@ -1131,7 +1251,13 @@ IMPORTANT for quality_score:
                 logger.info(f"📊 Calculated fallback score: {score} (skills={skills_count}, exp={exp})")
             if isinstance(score, str):
                 nums = re.findall(r'\d+', score)
-                score = int(nums[0]) if nums else 40
+                if len(nums) >= 2:
+                    # Range like "50-75" → take average
+                    score = (int(nums[0]) + int(nums[1])) // 2
+                elif nums:
+                    score = int(nums[0])
+                else:
+                    score = 40
             try:
                 result['match_score'] = max(10, min(100, int(float(score))))
             except (TypeError, ValueError):
@@ -1141,6 +1267,85 @@ IMPORTANT for quality_score:
             result.setdefault('skills', [])
             result.setdefault('experience', 0)
             result.setdefault('summary', '')
+
+            # ── Post-AI score validation: enforce minimum floors based on extracted data ──
+            # Prevents AI from severely under-scoring candidates with strong profiles,
+            # but caps the boost to avoid overriding legitimate AI assessment (max +15 points).
+            ai_score = result['match_score']
+            skills_count = len(result.get('skills', []))
+            exp = result.get('experience', 0) or 0
+            has_edu = bool(result.get('education'))
+            has_certs = bool(result.get('certifications'))
+            data_score = 25
+            data_score += min(30, skills_count * 3)
+            data_score += min(25, exp * 3)
+            data_score += 10 if has_edu else 0
+            data_score += 5 if has_certs else 0
+            data_score = min(90, max(15, data_score))
+            if ai_score < data_score:
+                # Cap the boost: never override AI by more than 15 points
+                boosted = min(data_score, ai_score + 15)
+                result['match_score'] = boosted
+                result['quality_score'] = boosted
+                logger.info(f"📊 Score boosted: AI={ai_score} → floor={data_score}, capped={boosted} "
+                            f"(skills={skills_count}, exp={exp})")
+
+            # ── Reclassify General category using skills/subcategory ──
+            if result.get('job_category') == 'General':
+                sub = result.get('job_subcategory', '')
+                if sub:
+                    from services.job_taxonomy import classify_job_title
+                    cat, new_sub = classify_job_title(sub)
+                    if cat != 'General':
+                        result['job_category'] = cat
+                        result['job_subcategory'] = new_sub
+                if result.get('job_category') == 'General':
+                    # Try classifying from skills
+                    skills_lower = [s.lower() for s in result.get('skills', [])]
+                    tech_skills = {'python', 'java', 'javascript', 'react', 'angular', 'vue',
+                                   'node', 'django', 'flask', '.net', 'c#', 'c++', 'go', 'rust',
+                                   'typescript', 'php', 'ruby', 'swift', 'kotlin', 'flutter',
+                                   'html', 'css', 'sql', 'nosql', 'mongodb', 'postgresql',
+                                   'mysql', 'redis', 'docker', 'kubernetes', 'aws', 'azure',
+                                   'gcp', 'terraform', 'ci/cd', 'git', 'github', 'gitlab',
+                                   'microservices', 'rest', 'api', 'graphql', 'full-stack',
+                                   'frontend', 'backend', 'devops', 'cloud', 'bootstrap',
+                                   'spring', 'express', 'fastapi', 'nextjs', 'nuxt'}
+                    data_skills = {'power bi', 'tableau', 'pandas', 'numpy', 'tensorflow',
+                                   'pytorch', 'scikit-learn', 'machine learning', 'ai',
+                                   'data science', 'nlp', 'computer vision', 'spark',
+                                   'hadoop', 'etl', 'data warehouse', 'bi'}
+                    security_skills = {'penetration testing', 'soc', 'siem', 'firewall',
+                                       'cybersecurity', 'encryption', 'vulnerability',
+                                       'nmap', 'wireshark', 'burp suite'}
+                    marketing_skills = {'seo', 'sem', 'google ads', 'facebook ads',
+                                        'content marketing', 'hubspot', 'mailchimp',
+                                        'social media', 'branding', 'copywriting'}
+                    sales_skills = {'salesforce', 'crm', 'lead generation', 'cold calling',
+                                    'b2b', 'b2c', 'account management', 'pipeline'}
+                    finance_skills = {'accounting', 'audit', 'tax', 'financial analysis',
+                                      'budgeting', 'forecasting', 'gaap', 'ifrs', 'sap',
+                                      'quickbooks', 'erp'}
+                    skills_set = set(skills_lower)
+                    if len(skills_set & tech_skills) >= 3:
+                        result['job_category'] = 'Software Engineering'
+                        result['job_subcategory'] = result.get('job_subcategory') or 'Software Engineering'
+                    elif len(skills_set & data_skills) >= 2:
+                        result['job_category'] = 'Data & Analytics'
+                        result['job_subcategory'] = result.get('job_subcategory') or 'Data & Analytics'
+                    elif len(skills_set & security_skills) >= 2:
+                        result['job_category'] = 'Cybersecurity'
+                        result['job_subcategory'] = result.get('job_subcategory') or 'Cybersecurity'
+                    elif len(skills_set & marketing_skills) >= 2:
+                        result['job_category'] = 'Marketing'
+                        result['job_subcategory'] = result.get('job_subcategory') or 'Marketing'
+                    elif len(skills_set & sales_skills) >= 2:
+                        result['job_category'] = 'Sales'
+                        result['job_subcategory'] = result.get('job_subcategory') or 'Sales'
+                    elif len(skills_set & finance_skills) >= 2:
+                        result['job_category'] = 'Finance & Accounting'
+                        result['job_subcategory'] = result.get('job_subcategory') or 'Finance & Accounting'
+
             self._set_cache(cache_key, result)
             logger.info(f"📊 [Gemini] Analyzed candidate: score={result['match_score']}, category={result['job_category']}")
             return result
@@ -1164,35 +1369,79 @@ IMPORTANT for quality_score:
         education = candidate_data.get('education', [])
         work_history = candidate_data.get('work_history', candidate_data.get('workHistory', []))
         summary = candidate_data.get('summary', '')
+        resume_text = candidate_data.get('resume_text', '')
 
         work_text = ""
         if work_history:
-            for w in work_history[:4]:
+            for w in work_history[:6]:
                 if isinstance(w, dict):
-                    work_text += f"\n  - {w.get('title', '')} at {w.get('company', '')} ({w.get('period', '')})"
+                    title = w.get('title', w.get('position', ''))
+                    company = w.get('company', w.get('organization', ''))
+                    period = w.get('period', w.get('duration', w.get('years', '')))
+                    desc = w.get('description', w.get('responsibilities', ''))
+                    work_text += f"\n  - {title} at {company} ({period})"
+                    if desc:
+                        work_text += f" — {str(desc)[:150]}"
 
-        prompt = f"""You are a senior recruiter. Provide specific, data-driven candidate assessment. Return ONLY valid JSON.
+        edu_text = ""
+        if education:
+            for e in education[:4]:
+                if isinstance(e, dict):
+                    degree = e.get('degree', e.get('title', ''))
+                    field = e.get('field', '')
+                    inst = e.get('institution', e.get('school', ''))
+                    year = e.get('year', e.get('graduation_year', ''))
+                    edu_text += f"\n  - {degree}{' in ' + field if field else ''} — {inst} ({year})"
+                elif isinstance(e, str):
+                    edu_text += f"\n  - {e}"
 
-Name: {name}
+        # Include resume text for richer analysis if available
+        resume_section = ""
+        if resume_text:
+            resume_section = f"\n\nRESUME TEXT (raw — use for deeper analysis):\n{resume_text[:3000]}"
+
+        prompt = f"""You are a world-class senior recruiter with 20+ years experience. Analyze this candidate thoroughly and provide a detailed, data-driven assessment. Return ONLY valid JSON.
+
+CANDIDATE: {name}
 Experience: {experience} years
-Skills: {', '.join(skills[:20]) if skills else 'Not listed'}
-Education: {json.dumps(education[:3], default=str) if education else 'N/A'}
+Skills: {', '.join(skills[:25]) if skills else 'Not listed'}
+Education:{edu_text or ' N/A'}
 Work History:{work_text or ' N/A'}
-Summary: {summary[:300] if summary else 'N/A'}
+Summary: {summary[:500] if summary else 'N/A'}
+{resume_section}
 
-Return JSON:
+IMPORTANT EXTRACTION RULES:
+- For education: Extract REAL academic degrees only (B.Tech, MBA, M.Sc, etc.). Do NOT extract skills, certifications, or resume section headers as degrees.
+- If education data looks garbled or nonsensical (e.g. "Masters in Processes"), ignore it and try to extract from the resume text instead.
+- For work history: Extract actual job positions with title, company, and duration. Do NOT mix education sections with work history.
+- For the candidate's email: If resume text contains a personal email address (gmail, yahoo, hotmail, outlook, etc.), extract it. Do NOT use portal emails like cv@, jobs@, careers@, recruitment@, noreply@, apply@ addresses.
+
+Return JSON with ALL these fields:
 {{
-    "executive_summary": "2-3 sentence assessment",
-    "pros": ["pro 1", "pro 2", "pro 3"],
-    "cons": ["con 1", "con 2"],
-    "ideal_roles": ["Role 1", "Role 2"],
-    "interview_focus_areas": ["Topic 1", "Topic 2"],
-    "hiring_recommendation": "STRONGLY_RECOMMEND|RECOMMEND|CONSIDER|PASS",
-    "confidence_score": 85,
-    "overall_rating": "A|B+|B|C+|C|D",
-    "strengths": ["strength 1", "strength 2"],
-    "weaknesses": ["weakness 1"]
-}}"""
+    "executive_summary": "3-4 sentence thorough assessment covering experience level, key strengths, specialization, and overall hire-worthiness",
+    "technical_assessment": "2-3 sentences on technical capabilities, tools mastery, and technical depth",
+    "experience_assessment": "2-3 sentences analyzing career progression, tenure patterns, and industry experience",
+    "education_assessment": "1-2 sentences on educational background and relevance",
+    "career_trajectory": "2-3 sentences on career growth pattern and future potential",
+    "pros": ["Specific strength 1 with evidence", "Specific strength 2", "Specific strength 3", "Specific strength 4"],
+    "cons": ["Specific concern 1 with reasoning", "Specific concern 2"],
+    "ideal_roles": ["Best-fit role 1", "Best-fit role 2", "Best-fit role 3"],
+    "interview_focus_areas": ["Area 1 — why important", "Area 2 — why important", "Area 3"],
+    "hiring_recommendation": "STRONGLY_RECOMMEND or RECOMMEND or CONSIDER or PASS",
+    "hiring_recommendation_rationale": "2-3 sentences explaining the recommendation",
+    "confidence_score": 80,
+    "overall_rating": "A+ or A or A- or B+ or B or B- or C+ or C or D",
+    "candidate_email": "personal email from resume if found, otherwise empty string"
+}}
+
+SCORING GUIDELINES:
+- A+/A (STRONGLY_RECOMMEND): 8+ years, deep expertise, leadership, certifications, strong progression
+- A-/B+ (RECOMMEND): 5-8 years, solid skills, good education, clear growth
+- B/B- (CONSIDER): 2-5 years, relevant skills but gaps, developing career
+- C+/C (CONSIDER/PASS): Entry-level, limited skills, unclear trajectory
+- D (PASS): Misaligned background, significant gaps
+
+Be specific — reference actual skills, companies, and experience from the profile. Never be generic."""
 
         result = await self._agenerate_json(prompt, temperature=0.15)
 
@@ -1303,6 +1552,19 @@ Return JSON:
             if alias in jd_keywords:
                 expanded_keywords.update(expansions)
 
+        # Expand with skill synonyms: if JD mentions "react", also match "reactjs", "react.js"
+        synonym_additions = set()
+        for kw in jd_keywords:
+            syns = SKILL_SYNONYMS.get(kw, set())
+            if syns:
+                synonym_additions.update(syns)
+            # Also reverse-lookup: if kw is a synonym value, add the canonical key
+            for canonical, syn_set in SKILL_SYNONYMS.items():
+                if kw in syn_set:
+                    synonym_additions.add(canonical)
+                    synonym_additions.update(syn_set)
+        expanded_keywords.update(synonym_additions)
+
         # Detect explicit location requirement from JD
         raw_loc_terms = _extract_location_from_text(job_description)
         jd_location_terms = _expand_location_terms(raw_loc_terms)
@@ -1411,13 +1673,6 @@ Return JSON:
                         ck = self._cache_key("fast_match", f"{c.get('name','')}:{c.get('email','')}:{job_description[:200]}")
                         self._set_cache(ck, match_data)
                         batch_results_list.append({'candidate': c, 'match': match_data, 'score': match_data.get('match_score', 0)})
-                    else:
-                        ps = next((p for p, _, cc in pre_scored if cc is c), 0)
-                        batch_results_list.append({
-                            'candidate': c,
-                            'match': {'match_score': min(int(ps * 2), 100), 'strengths': ['Pre-filter matched'], 'gaps': ['Deep analysis pending']},
-                            'score': min(int(ps * 2), 100),
-                        })
             except Exception as e:
                 logger.warning(f"[Gemini] Batch match error: {e}")
                 for c in batch:
@@ -1443,17 +1698,23 @@ Return JSON:
         candidates_text = ""
         for i, c in enumerate(batch, 1):
             skills_str = ', '.join(c.get('skills', [])[:12]) or 'Not specified'
-            candidates_text += f"\nCANDIDATE {i}: {c.get('name', 'Unknown')}\n  Skills: {skills_str}\n  Experience: {c.get('experience', 0)} years\n  Summary: {c.get('summary', '')[:200]}\n"
+            exp = c.get('experience', 0)
+            loc = c.get('location', 'N/A')
+            candidates_text += f"\nCANDIDATE {i}: {c.get('name', 'Unknown')}\n  Skills: {skills_str}\n  Experience: {exp} years\n  Location: {loc}\n  Summary: {c.get('summary', '')[:200]}\n"
 
         n = len(batch)
-        prompt = f"""Score each candidate against the job. Return ONLY valid JSON with a "candidates" array of exactly {n} objects.
+        prompt = f"""Score each candidate against the job description. Return ONLY valid JSON with a "candidates" array of EXACTLY {n} objects — one per candidate, in the SAME order.
 
 {candidates_text}
 
-JOB:
+JOB DESCRIPTION:
 {job_description[:1500]}
 
-Return: {{"candidates": [{{"match_score": 75, "matched_skills": ["Python"], "missing_skills": ["Go"], "strengths": ["Strong backend"], "gaps": ["No cloud"], "recommendation": "Good fit"}}]}}"""
+Each object must have: match_score (0-100 integer — be precise, no defaults), matched_skills (array), missing_skills (array), strengths (array), gaps (array), recommendation (string).
+
+Score guidelines: 85-100 Excellent fit, 70-84 Strong fit, 55-69 Moderate, 40-54 Weak match, <40 Poor match. Assess each candidate INDIVIDUALLY.
+
+Return: {{"candidates": [...]}}"""
 
         result = await self._agenerate_json(prompt, temperature=0.1)
         if not result:
@@ -1473,6 +1734,21 @@ Return: {{"candidates": [{{"match_score": 75, "matched_skills": ["Python"], "mis
                 score = int(nums[0]) if nums else 50
             item['match_score'] = max(0, min(100, int(score)))
             normalized.append(item)
+
+        # If Gemini returned fewer items than batch size, score remaining individually
+        if len(normalized) < n:
+            logger.warning(f"[Gemini] Batch returned {len(normalized)}/{n} — scoring remaining individually")
+            for idx in range(len(normalized), n):
+                try:
+                    match = await self.match_candidate_to_job(batch[idx], job_description)
+                    normalized.append(match)
+                except Exception as e:
+                    logger.warning(f"[Gemini] Individual match failed for batch idx {idx}: {e}")
+                    normalized.append({
+                        'match_score': 30, 'matched_skills': [],
+                        'missing_skills': [], 'strengths': ['Needs review'],
+                        'gaps': ['Batch scoring incomplete'], 'recommendation': 'Manual review needed'
+                    })
 
         return normalized
 
@@ -1527,51 +1803,61 @@ Return JSON:
         if len(msg.split()) <= 4 and any(w in msg for w in ['yes', 'no', 'more', 'next', 'sure', 'go ahead', 'continue', 'elaborate', 'explain', 'details', 'again']):
             return 'followup'
 
-        # Analytics / statistics queries
-        analytics_signals = [
-            'how many', 'count', 'total', 'statistics', 'stats', 'average', 'breakdown',
-            'distribution', 'percentage', 'ratio', 'trend', 'report', 'summary of',
-            'overview', 'dashboard', 'analyze the database', 'analyze our', 'number of',
-            'pie chart', 'bar chart', 'graph', 'metric', 'kpi',
+        # Analytics / statistics queries — use word-boundary matching to avoid
+        # false positives (e.g. "count" matching inside "accountant")
+        analytics_phrases = [
+            'how many', 'summary of', 'analyze the database', 'analyze our',
+            'number of', 'pie chart', 'bar chart',
         ]
-        if any(sig in msg for sig in analytics_signals):
+        analytics_words = {
+            'count', 'total', 'statistics', 'stats', 'average', 'breakdown',
+            'distribution', 'percentage', 'ratio', 'trend', 'report',
+            'overview', 'dashboard', 'graph', 'metric', 'kpi',
+        }
+        # Build word set early (reused later for search signals)
+        msg_word_set = set(re.sub(r'[^\w\s]', ' ', msg).split())
+        has_analytics = bool(msg_word_set & analytics_words) or any(p in msg for p in analytics_phrases)
+        if has_analytics:
             return 'analytics'
 
-        # Comparison queries
-        if any(w in msg for w in ['compare', 'comparison', 'versus', 'vs', 'better between',
-                                   'side by side', 'which one', 'who is better', 'rank these',
-                                   'difference between']):
+        # Comparison queries — word-boundary for short words like "vs"
+        comparison_phrases = ['better between', 'side by side', 'which one',
+                              'who is better', 'rank these', 'difference between']
+        comparison_words = {'compare', 'comparison', 'versus'}
+        if bool(msg_word_set & comparison_words) or \
+           any(p in msg for p in comparison_phrases) or \
+           bool(re.search(r'\bvs\b', msg)):
             return 'comparison'
 
         # ── Search signal detection (expanded) ──
-        search_overrides = [
-            'find', 'show', 'list', 'get', 'candidates', 'shortlist', 'search',
-            'filter', 'locate', 'identify', 'recruit', 'who', 'look for', 'fetch',
+        # Multi-word phrases: safe to use substring matching
+        search_phrases = [
+            'based in', 'look for', 'with skills', 'proficient in',
+            'who knows', 'who has', 'who can', 'working in', 'worked in',
+            'certified in', 'immediate joiner', 'notice period',
+            'it company', 'it service', 'banking sector',
+        ]
+        # Single words: use word-boundary set to avoid false substring matches
+        search_words = {
+            'find', 'show', 'list', 'candidates', 'shortlist', 'search',
+            'filter', 'locate', 'identify', 'recruit', 'who', 'fetch',
             'cvs', 'profiles', 'resumes', 'applicants', 'people',
-            'experience', 'years', 'location', 'based in', 'skills', 'developer',
+            'experience', 'years', 'location', 'skills', 'developer',
             'engineer', 'manager', 'designer', 'analyst', 'consultant', 'accountant',
             'administrator', 'coordinator', 'specialist', 'architect', 'director',
             'nurse', 'doctor', 'teacher', 'driver', 'technician', 'executive',
-            'available', 'immediate joiner', 'with skills', 'proficient in',
-            'who knows', 'who has', 'who can', 'working in', 'worked in',
-            'having', 'holding', 'certified in', 'speaks', 'speaking',
-            'nationality', 'passport', 'visa', 'notice period',
-            # Extended role titles for better classification
+            'available', 'having', 'holding', 'speaks', 'speaking',
+            'nationality', 'passport', 'visa',
             'sales', 'marketing', 'finance', 'accounting', 'hr',
             'recruiter', 'programmer', 'tester', 'qa', 'devops', 'data',
             'product', 'project', 'operations', 'logistics', 'procurement',
             'auditor', 'receptionist', 'secretary', 'clerk', 'pharmacist',
             'chef', 'electrician', 'plumber', 'mechanic', 'welder',
             'intern', 'trainee', 'fresher', 'graduate',
-            # Industry terms that imply candidate search
-            'it company', 'it service', 'banking sector', 'healthcare',
-            'manufacturing', 'retail', 'ecommerce', 'startup',
-        ]
-        has_search_signal = any(w in msg for w in search_overrides)
-        
-        # Build word set once for all signal checks
-        msg_word_set = set(re.sub(r'[^\w\s]', ' ', msg).split())
-        
+            'healthcare', 'manufacturing', 'retail', 'ecommerce', 'startup',
+        }
+        has_search_signal = bool(msg_word_set & search_words) or any(p in msg for p in search_phrases)
+
         # Check if any known ROLE TITLE is mentioned — strong search signal
         has_role_signal = bool(msg_word_set & ROLE_TITLES) or any(r in msg for r in ROLE_TITLES if ' ' in r)
         
@@ -1660,6 +1946,12 @@ Return JSON:
         query_type = self._classify_query(message)
         logger.info(f"🧠 Query classified as: {query_type} | Message: {message[:80]}")
         
+        # ── Search Cache Check — instant results for repeated queries ──
+        if query_type == 'search' and return_candidates:
+            cached_result = self._get_search_cached(message, num_candidates, total)
+            if cached_result is not None:
+                return cached_result
+
         # Track selected candidates for returning alongside response
         _selected_candidates = []
 
@@ -2383,20 +2675,20 @@ Return JSON:
             # Sort by relevance and take top candidates (idx as tiebreaker to avoid dict comparison)
             scored_candidates.sort(key=lambda x: x[0], reverse=True)
             
-            # Dynamic pool size — optimized for Gemini 2.5 Flash throughput
-            # Compact profiles: 15 candidates keeps prompt well within 120s timeout
+            # Dynamic pool size — balance accuracy with speed
+            # More candidates = better accuracy, but slower Gemini processing
             has_specific_keywords = len(keywords) >= 2
             has_many_keywords = len(keywords) >= 4
             
             if has_many_keywords:
-                MAX_CANDIDATES_TO_GEMINI = 20  # Complex query — enough for thorough ranking
+                MAX_CANDIDATES_TO_GEMINI = 16  # Complex query — pre-filter is strong, fewer needed
             elif has_specific_keywords:
-                MAX_CANDIDATES_TO_GEMINI = 25  # Moderate query
+                MAX_CANDIDATES_TO_GEMINI = 20  # Moderate query — pre-filter handles most ranking
             else:
-                MAX_CANDIDATES_TO_GEMINI = 30  # Broad/simple query
+                MAX_CANDIDATES_TO_GEMINI = 25  # Broad/simple query — wider pool needed
             
             # Ensure we request at least enough for the user's num_candidates
-            MAX_CANDIDATES_TO_GEMINI = max(MAX_CANDIDATES_TO_GEMINI, min(num_candidates + 5, 35))
+            MAX_CANDIDATES_TO_GEMINI = max(MAX_CANDIDATES_TO_GEMINI, min(num_candidates + 5, 30))
             
             if has_specific_keywords:
                 relevant = [(score, idx, c) for score, idx, c in scored_candidates if score > 0]
@@ -2423,74 +2715,64 @@ Return JSON:
             # Store selected candidates for frontend matching
             _selected_candidates = [c for (_score, _idx, c) in selected[:MAX_CANDIDATES_TO_GEMINI]]
             
-            # Build context — lean format for fast Gemini processing
-            # Focus on essential info: name, skills, work titles, location, experience
+            # Build context — rich format for accurate matching
+            # Each candidate includes summary for deeper Gemini analysis
             candidates_context = f"\n\nCANDIDATES ({relevant_count} pre-filtered from {total_scanned}):\n"
             for i, (rel_score, _idx, c) in enumerate(selected[:MAX_CANDIDATES_TO_GEMINI]):
                 skills_raw = c.get('skills', [])
-                skills_str = ', '.join(skills_raw[:25]) if isinstance(skills_raw, list) else str(skills_raw or '')
+                skills_str = ', '.join(skills_raw[:12]) if isinstance(skills_raw, list) else str(skills_raw or '')
                 work = c.get('workHistory', c.get('work_history', []))
                 if isinstance(work, list):
                     work_entries = []
-                    for w in work[:4]:  # Show up to 4 positions for better context
+                    for w in work[:3]:  # Top 3 positions, no descriptions
                         if isinstance(w, dict):
                             entry = f"{w.get('title', 'N/A')} @ {w.get('company', 'N/A')}"
                             dur = w.get('duration', w.get('period', ''))
                             if dur:
                                 entry += f" ({dur})"
-                            desc = w.get('description', '')
-                            if desc and len(str(desc)) > 10:
-                                entry += f" — {str(desc)[:120]}"
                             work_entries.append(entry)
                     work_str = '; '.join(work_entries) or 'N/A'
                 else:
-                    work_str = str(work)[:200] if work else 'N/A'
+                    work_str = str(work)[:150] if work else 'N/A'
                 edu = c.get('education', [])
-                edu_parts = []
-                if isinstance(edu, list):
-                    for ed in edu[:3]:
-                        if isinstance(ed, dict):
-                            edu_parts.append(' - '.join(p for p in [ed.get('degree', ''), ed.get('field', ''), ed.get('institution', ''), ed.get('year', '')] if p))
-                edu_str = '; '.join(edu_parts) if edu_parts else 'N/A'
+                edu_str = 'N/A'
+                if isinstance(edu, list) and edu:
+                    top_edu = edu[0]
+                    if isinstance(top_edu, dict):
+                        edu_str = ' - '.join(p for p in [top_edu.get('degree', ''), top_edu.get('field', ''), top_edu.get('institution', '')] if p) or 'N/A'
                 
                 candidates_context += (
                     f"[{i+1}] {c.get('name', 'Unknown')} | {c.get('matchScore', 0)}% | "
                     f"{c.get('jobCategory', c.get('job_category', 'General'))} | "
-                    f"Exp: {c.get('experience', 0)}yrs | {c.get('location', 'N/A')} | "
-                    f"Status: {c.get('status', 'New')}\n"
+                    f"Exp: {c.get('experience', 0)}yrs | {c.get('location', 'N/A')}\n"
                     f"   Skills: {skills_str}\n"
                     f"   Work: {work_str}\n"
                     f"   Edu: {edu_str}\n"
                     f"   Contact: {c.get('email', 'N/A')} | {c.get('phone', 'N/A')}\n"
                 )
-                # Add summary for richer context
-                _summary = c.get('summary', '')
-                if _summary and len(str(_summary)) > 10:
-                    candidates_context += f"   Summary: {str(_summary)[:200]}\n"
-                # Append enriched fields only when they have meaningful values
-                _extra_lines = []
+                # Add summary/profile for deeper analysis
+                _summary = c.get('summary', c.get('profile_summary', ''))
+                if _summary:
+                    candidates_context += f"   Profile: {str(_summary)[:150]}\n"
+                # Compact extras — only high-value fields on one line
+                _extras = []
                 _nat = c.get('nationality', '')
                 _notice = c.get('notice_period', '')
-                _salary = c.get('current_salary', '') or c.get('expected_salary', '')
-                _portal = c.get('source_portal', '')
                 _job_app = c.get('job_applied_for', '')
-                _certs = c.get('certifications', [])
                 _langs = c.get('languages', [])
-                if _nat: _extra_lines.append(f"Nationality: {_nat}")
-                if _notice: _extra_lines.append(f"Notice: {_notice}")
-                if _salary: _extra_lines.append(f"Salary: {c.get('current_salary', '')} → {c.get('expected_salary', '')}")
-                if _portal and _portal != 'Direct': _extra_lines.append(f"Source: {_portal}")
-                if _job_app: _extra_lines.append(f"Applied for: {_job_app}")
-                if isinstance(_certs, list) and _certs: _extra_lines.append(f"Certs: {', '.join(str(x) for x in _certs[:5])}")
-                if isinstance(_langs, list) and _langs: _extra_lines.append(f"Languages: {', '.join(str(x) for x in _langs[:5])}")
-                if _extra_lines:
-                    candidates_context += f"   {' | '.join(_extra_lines)}\n"
+                if _nat: _extras.append(f"Nat: {_nat}")
+                if _notice: _extras.append(f"Notice: {_notice}")
+                if _job_app: _extras.append(f"Applied: {_job_app}")
+                if isinstance(_langs, list) and _langs: _extras.append(f"Lang: {', '.join(str(x) for x in _langs[:3])}")
+                if _extras:
+                    candidates_context += f"   {' | '.join(_extras)}\n"
 
-        # Build conversation context
+        # Build conversation context — keep minimal for speed
         history_text = ""
         if conversation_history:
-            # Keep last 8 messages, prioritize recent full context
-            for msg in conversation_history[-8:]:
+            # Keep last 4 messages for search, 8 for other types
+            hist_limit = 4 if query_type == 'search' else 8
+            for msg in conversation_history[-hist_limit:]:
                 role = msg.get('role', 'user')
                 content = msg.get('content', '')[:400]
                 history_text += f"\n{role}: {content}"
@@ -2500,22 +2782,22 @@ Return JSON:
         # Build dynamic constraint sections
         constraints = []
         if detected_roles:
-            constraints.append(f"TARGET ROLE(S) (HIGH PRIORITY): The user is looking for: {', '.join(detected_roles)}. Candidates whose job titles or categories match these roles MUST be ranked highest. Candidates with completely different roles should be ranked very low or excluded.")
+            constraints.append(f"ROLE: Looking for {', '.join(detected_roles)} — rank matching titles highest, exclude wrong roles.")
         if or_alternatives:
-            constraints.append(f"OR-ALTERNATIVE ROLES: The user accepts ANY of these: {', '.join(or_alternatives)}. A candidate matching ANY one of these alternatives is a valid match.")
+            constraints.append(f"OR-ALTERNATIVES: Accept ANY of: {', '.join(or_alternatives)}")
         if detected_industries:
-            constraints.append(f"INDUSTRY/DOMAIN FILTER: The user wants candidates from the {', '.join(detected_industries)} industry/sector. Prioritize candidates whose work history shows experience in these domains. Candidates from completely unrelated industries should be ranked lower.")
+            constraints.append(f"INDUSTRY: {', '.join(detected_industries)} sector — prioritize matching work history.")
         if has_location_requirement:
             loc_str = ', '.join(required_location_terms)
-            constraints.append(f"LOCATION FILTER (MANDATORY): Candidates in/near {loc_str} MUST be ranked first. Only include non-local candidates if fewer than {num_candidates} match locally. Flag non-local candidates clearly.")
+            constraints.append(f"LOCATION (MANDATORY): {loc_str} — rank local first, flag non-local with ⚠️.")
         if required_max_experience < 999:
-            constraints.append(f"EXPERIENCE RANGE FILTER (STRICT): Only {required_min_experience}-{required_max_experience} years. EXCLUDE any candidate with more than {required_max_experience} years of experience — this is a hard requirement, not a preference.")
+            constraints.append(f"EXPERIENCE (STRICT): {required_min_experience}-{required_max_experience} years only. Hard filter.")
         elif required_min_experience > 0:
-            constraints.append(f"EXPERIENCE FILTER: Minimum {required_min_experience}+ years. Flag candidates below this threshold.")
+            constraints.append(f"EXPERIENCE: {required_min_experience}+ years minimum.")
         if negative_terms:
-            constraints.append(f"EXCLUSION FILTER (STRICT): EXCLUDE candidates matching: {', '.join(negative_terms)}. This is a hard filter — do NOT include any candidate whose skills, category, role, or background matches these terms.")
+            constraints.append(f"EXCLUDE (STRICT): {', '.join(negative_terms)} — zero tolerance.")
         if required_seniority:
-            constraints.append(f"SENIORITY FILTER: Target seniority level is '{required_seniority}'. Prioritize candidates whose experience level matches this seniority.")
+            constraints.append(f"SENIORITY: Target '{required_seniority}' level.")
         
         constraints_text = "\n".join(f"• {c}" for c in constraints) if constraints else "No special filters."
 
@@ -2550,42 +2832,17 @@ What would you like to explore?"""
 
         elif query_type == 'advice':
             # ── Recruitment expertise prompt — no candidate data needed ──
-            prompt = f"""You are a world-class Senior Recruitment Strategist and HR Expert for Efforts Solutions, a recruitment agency. You have 20+ years of experience across tech, finance, healthcare, engineering, and executive hiring.
+            prompt = f"""Senior Recruitment Strategist for Efforts Solutions (20+ yrs experience across tech, finance, healthcare, engineering, executive hiring). Expert in: talent acquisition, interview design, compensation, employer branding, DEI, ATS, labor markets (GCC/India/US/UK/EU).
 
-You have deep expertise in:
-- Talent acquisition strategy & sourcing methodologies
-- Interview design, behavioral & competency-based questioning
-- Compensation benchmarking & offer negotiation
-- Employer branding & candidate experience
-- Diversity, equity & inclusion in hiring
-- Applicant tracking systems & recruitment technology
-- Labor market trends across GCC, India, US, UK, Europe
-- Industry-specific hiring (IT, finance, engineering, healthcare, sales, operations)
-- Remote/hybrid workforce management
-- Onboarding best practices
+DATABASE: {total} candidates | Categories: {cat_list}
 
-DATABASE CONTEXT: You have access to a database of {total} candidates across these categories: {cat_list}
+HISTORY:{history_text}
 
-CONVERSATION HISTORY:{history_text}
+QUESTION: {message}
 
-USER QUESTION:
-{message}
+Respond with actionable, expert advice. Use headers, bullets, examples. Reference industry standards. Include pro tips and pitfalls. End with specific next step. Markdown format."""
 
-─── RESPONSE GUIDELINES ───
-1. Provide actionable, expert-level advice grounded in real recruitment best practices
-2. Use specific examples, frameworks, or methodologies where relevant
-3. Reference industry standards (e.g., SHRM, LinkedIn Talent Insights, Glassdoor data)
-4. Structure your response with clear headers, bullet points, and numbered steps
-5. If the question relates to roles in the database, reference the candidate pool size
-6. Include pro tips, common pitfalls to avoid, and red/green flags
-7. Be concise but thorough — aim for comprehensive yet scannable responses
-8. Use bold text for key terms and headers for structure
-9. When discussing salaries/compensation, acknowledge regional variations (GCC vs India vs US/UK)
-10. End with a specific actionable recommendation or next step
-
-Write in a professional, confident, and helpful tone. Format with markdown."""
-
-            result = await self._agenerate(prompt, temperature=0.3, max_tokens=4000, thinking_budget=4096)
+            result = await self._agenerate(prompt, temperature=0.3, max_tokens=4000, thinking_budget=2048)
             text_response = result or "I'd be happy to help with recruitment advice. Could you provide more details about your question?"
 
         elif query_type == 'analytics':
@@ -2623,28 +2880,18 @@ Write in a professional, confident, and helpful tone. Format with markdown."""
                     else: exp_buckets['10+ yrs'] += 1
                 stats_detail += "\n\nExperience Distribution:\n" + "\n".join(f"  • {k}: {v}" for k, v in exp_buckets.items())
 
-            prompt = f"""You are an expert Recruitment Analytics Advisor for Efforts Solutions. Analyze the data and provide clear, insightful answers with specific numbers.
+            prompt = f"""Recruitment Analytics Advisor for Efforts Solutions. Analyze data, provide insightful answers with specific numbers.
 
 {stats_detail}
 
-CONVERSATION HISTORY:{history_text}
+HISTORY:{history_text}
 
-USER QUESTION:
-{message}
+QUESTION: {message}
 
-─── RESPONSE GUIDELINES ───
-1. Lead with the specific numbers and data the user asked about
-2. Present data in clear tables or bullet lists with bold labels
-3. Provide context and insights — don't just state numbers, explain what they mean
-4. Highlight trends, strengths, and gaps in the talent pool
-5. Compare against industry benchmarks where possible
-6. Suggest actionable steps based on the data (e.g., "You have a gap in senior DevOps — consider posting on specialized job boards")
-7. Use percentages and ratios for clearer understanding
-8. If the user asks about something not in the data, say so clearly and suggest alternatives
-9. Format with markdown headers, bold labels, and organized structure
-10. Keep it data-driven and precise — recruiters need facts, not fluff"""
+Lead with numbers. Use tables/bullets. Explain what data means. Highlight trends and gaps. Suggest actionable steps. Use markdown."""
 
-            result = await self._agenerate(prompt, temperature=0.15, max_tokens=4000, thinking_budget=4096)
+            # Analytics: thinking disabled — data-driven, no complex reasoning needed
+            result = await self._agenerate(prompt, temperature=0.15, max_tokens=4000, thinking_budget=0)
             text_response = result or f"We have **{total} candidates** in the database. Could you clarify what analytics you'd like to see?"
 
         elif query_type == 'followup':
@@ -2663,115 +2910,73 @@ USER FOLLOW-UP:
 Respond naturally to the follow-up. If they're asking for more candidates, different criteria, or clarification, provide it. If they're acknowledging or confirming, respond appropriately.
 Keep the same format and quality as the previous response. Use markdown formatting."""
 
-            result = await self._agenerate(prompt, temperature=0.2, max_tokens=6000, thinking_budget=4096)
+            result = await self._agenerate(prompt, temperature=0.2, max_tokens=4000, thinking_budget=0)
             text_response = result or "Could you provide more details about what you'd like me to do next?"
 
         else:
             # ══════════════════════════════════════════════════════════
-            # CANDIDATE SEARCH — Optimized prompt for speed + quality
+            # CANDIDATE SEARCH — precision-first, sub-5s response
             # ══════════════════════════════════════════════════════════
 
-            prompt = f"""You are an expert AI Recruitment Specialist for Efforts Solutions. Your task is to analyze the candidate pool and return the BEST matches for the user's query with surgical precision.
+            prompt = f"""You are the AI Recruiter for Efforts Solutions. Your job: return EXACTLY the right candidates — no padding, no guessing.
 
-DATABASE: {total} candidates total | {strong} strong matches (70%+) | Categories: {cat_list}
+═══ DATABASE SNAPSHOT ═══
+Total: {total} candidates | Strong (70%+): {strong} | Avg Score: {avg_score:.0f}% | Categories: {cat_list}
 
-ACTIVE FILTERS:
+═══ ACTIVE FILTERS (HARD CONSTRAINTS) ═══
 {constraints_text}
 
-PRE-FILTER INTELLIGENCE:
-• Detected roles: {', '.join(detected_roles) if detected_roles else 'Not specified'}
-• OR alternatives: {', '.join(or_alternatives) if or_alternatives else 'None'}
-• Industries: {', '.join(detected_industries) if detected_industries else 'Not specified'}
-• Key phrases: {', '.join(list(query_phrases)[:8]) if query_phrases else 'None'}
+═══ QUERY INTELLIGENCE ═══
+Detected Roles: {', '.join(detected_roles) if detected_roles else 'any/unspecified'}
+OR-Alternatives: {', '.join(or_alternatives) if or_alternatives else 'none — AND-logic applies'}
+Industries: {', '.join(detected_industries) if detected_industries else 'any'}
+Keywords: {', '.join(sorted(query_tokens - STOP_WORDS)[:20]) if query_tokens else 'see query'}
 
+═══ CANDIDATE POOL ({relevant_count} pre-scored from {total_scanned}) ═══
 {candidates_context}
 
-CONVERSATION:{history_text}
+═══ CONVERSATION HISTORY ═══{history_text if history_text else ' (none)'}
 
-USER QUERY: {message}
+═══ USER QUERY ═══
+{message}
 
-═══════════════════════════════════════
-STEP 1 — QUERY DECOMPOSITION (do this internally before ranking)
-═══════════════════════════════════════
-Parse the user's COMPLETE intent. Users write in natural language — interpret their full meaning:
-• ROLE/TITLE: What job role(s)? Handle OR alternatives ("sales or account manager" = either role is valid). Check the "Detected roles" and "OR alternatives" above.
-• MUST-HAVE SKILLS: Non-negotiable technical/professional skills
-• NICE-TO-HAVE SKILLS: Preferred but not mandatory
-• LOCATION: Required city/country/region (if specified). Handle OR locations ("uae or india" = either is valid).
-• EXPERIENCE: Exact range or minimum (if specified)  
-• SENIORITY: Junior/Mid/Senior/Lead/Director (if implied or stated)
-• INDUSTRY/DOMAIN: Industry vertical (e.g. "IT service company" = must have IT/software industry background). Check "Industries" above.
-• EXCLUSIONS: What to explicitly exclude
-• LANGUAGE/NATIONALITY: If mentioned
-• AVAILABILITY: Notice period / urgency (if mentioned)
+═══ MATCHING RULES (follow strictly) ═══
+R1. ROLE FIRST — Work History job title is the #1 signal. "Java developer" → only candidates whose titles include Java/Software/Backend. Skills alone are insufficient if role doesn't match.
+R2. HARD FILTERS — If LOCATION, EXPERIENCE RANGE, or EXCLUSIONS are specified, violations = immediate removal. No exceptions.
+R3. OR LOGIC — If user says "X or Y" both qualify equally. Rank the best examples of each.
+R4. SKILL ALIASES — Treat as equivalent:
+    React = ReactJS = React.js | Node = NodeJS = Node.js | Python ≈ Django/Flask/FastAPI
+    Java ≈ Spring Boot/Hibernate | C# = .NET = DotNet | AWS = Amazon Web Services
+    ML = Machine Learning = AI | DevOps ≈ CI/CD + Docker + Kubernetes | SQL ≈ PostgreSQL/MySQL
+    Power BI ≈ Tableau ≈ Looker | Salesforce ≈ CRM | SAP ≈ ERP
+    HR = Human Resources = Talent Acquisition = Recruitment | Finance ≈ Accounting ≈ CA/CPA
+R5. SENIORITY — "Senior/Lead/Principal" → 7+ yrs preferred. "Junior/Entry/Fresher" → 0-2 yrs. "Mid" → 3-6 yrs.
+R6. COMPOSITE QUERIES — "Python dev with 5+ years in Dubai who speaks Arabic" = ALL conditions must be met simultaneously.
+R7. NEVER INVENT — Only use data shown. If a field is N/A, don't assume it.
+R8. QUALITY > QUANTITY — 3 perfect matches beat 10 wrong ones. If pool is thin, say so honestly.
+R9. CERTIFICATIONS & LANGUAGES — If user mentions specific certs (PMP, CPA, CISA, AWS-SAA) or languages (Arabic, Hindi, French), these are strong signals — check the candidate's cert/langs fields.
+R10. NOTICE PERIOD — "Immediate/ASAP" → prioritize candidates with "Immediate" or ≤15 days notice.
 
-═══════════════════════════════════════
-STEP 2 — STRICT MATCHING RULES (MANDATORY)
-═══════════════════════════════════════
-1. ROLE MATCH: If the user asks for a specific role (e.g. "account manager"), the candidate's ACTUAL job title or category MUST match. A "software developer" does NOT qualify as an "account manager". Check their Work History titles — this is the strongest signal.
-2. LOCATION: If the user specifies a location, ONLY return candidates from that exact location (city-level match). If user says "X or Y", candidates from EITHER location qualify. If you cannot find enough, expand to the same country but ALWAYS flag non-local candidates with "⚠️ Not in [city]".
-3. EXPERIENCE: Enforce the exact range. "5+ years" means >= 5. "1-5 years" means >= 1 AND <= 5. Do NOT bend this rule.
-4. INDUSTRY: If the user mentions an industry (e.g. "IT service company", "banking sector"), prioritize candidates whose work history shows companies in that industry.
-5. CORE SKILLS: The candidate MUST have the primary skill or role mentioned in the query. A Java developer does NOT qualify for a sales manager role. Do NOT return role/skill mismatches.
-6. EXCLUSIONS: "exclude", "not", "no", "without", "ONLY" = absolute deal-breakers. Zero tolerance.
-7. OR CONDITIONS: "X or Y" means the candidate can match EITHER X or Y — they don't need both.
-8. VERIFICATION: Before including ANY candidate, mentally verify they pass ALL hard filters. If they fail even ONE, DROP them. It is BETTER to return fewer but accurate results than to pad the list with mismatches.
+═══ OUTPUT FORMAT ═══
+For EACH matched candidate (up to {num_candidates}):
 
-Skill equivalence map:
-React=ReactJS=React.js | Node=NodeJS=Node.js | Vue=VueJS=Vue.js | Angular=AngularJS
-Python≈Django/Flask/FastAPI | Java≈Spring Boot | C#=.NET=ASP.NET | Go=Golang
-AWS=Amazon Web Services | GCP=Google Cloud | Azure=Microsoft Cloud | K8s=Kubernetes
-ML=Machine Learning | AI=Artificial Intelligence | NLP=Natural Language Processing
-SQL≈PostgreSQL/MySQL/Oracle | MongoDB=Mongo | NoSQL≈Redis/Cassandra/DynamoDB
-DevOps≈CI/CD+Docker+Kubernetes | Agile=Scrum | RPA=UiPath/BluePrism/Automation Anywhere
+**#N. [Full Name]** | [Score]% | [Category] | [X] yrs exp | [Location]
+- **Why match:** 2-3 sentences citing SPECIFIC evidence (title, company, skill, worked on X)
+- **Key Skills:** highlight the ones matching the query (bold them)
+- **Work:** last 2 roles: "Title @ Company (duration)"
+- **Fit:** ⭐⭐⭐⭐⭐ Excellent / ⭐⭐⭐⭐ Strong / ⭐⭐⭐ Good / ⭐⭐ Marginal
+- **Contact:** email | phone{f"{chr(10)}- **Notice Period:** [value if available]" if any(w in query_lower for w in ['immediate', 'urgent', 'asap', 'notice', 'joining']) else ""}
 
-Role equivalence map:
-Sales Manager≈Business Development Manager≈Revenue Manager
-Account Manager≈Key Account Manager≈Client Manager≈Relationship Manager
-Project Manager≈Program Manager≈Delivery Manager
-HR Manager≈People Manager≈Talent Manager
-Marketing Manager≈Brand Manager≈Growth Manager
+---
+**📊 Results Summary**
+- Query understood as: [restate in your own words what you searched for]
+- Pool: {relevant_count} pre-filtered → X qualified shown
+- Quality signal: [Excellent/Strong/Moderate/Weak pool for this requirement]
+- **Top 3 recommendations for immediate interview:** [names]
+{f'- **⚠️ Gap:** [honest note if pool is thin or key criteria had few matches]' if relevant_count < num_candidates * 2 else ''}"""
 
-═══════════════════════════════════════
-STEP 3 — SCORING MATRIX (for ranking qualified candidates)
-═══════════════════════════════════════
-Weight each dimension:
-• Role/Title Match (30%): Does the candidate's ACTUAL job title match the requested role? Check work history titles. This is the STRONGEST signal.
-• Core Skill Match (25%): Does the candidate have the exact skills requested? Check skills list AND work history.
-• Experience Fit (20%): Do their years and seniority level match? Is their career trajectory aligned?
-• Location Match (15%): Exact city > same country > same region. Heavily penalize wrong locations when location is specified. 
-• Domain/Industry Fit (10%): Same industry or transferable domain experience.
-
-═══════════════════════════════════════
-OUTPUT FORMAT — Return up to {num_candidates} candidates (or fewer if not enough qualify)
-═══════════════════════════════════════
-IMPORTANT: If fewer than {num_candidates} candidates genuinely match, return only those that match. Do NOT pad with irrelevant candidates just to fill the count. Quality > Quantity.
-
-**#N. Full Name** | Score: X% | Category | Exp: X yrs | Location
-- **Key Skills:** list relevant skills (BOLD the ones that match the query)
-- **Work History:** most recent 2-3 roles with company names and key achievements
-- **Why This Candidate:** 3-4 sentences — reference SPECIFIC skills and experience from their profile that match the query. Be honest about any gaps. Mention transferable experience.
-- **Risk Level:** Low/Medium/High — explain briefly (e.g., "Low — exact stack match, right seniority, same city")
-- **Fit:** ⭐⭐⭐⭐⭐ Excellent / ⭐⭐⭐⭐ Strong / ⭐⭐⭐ Good / ⭐⭐ Partial
-- **Contact:** email, phone
-{f"- **Notice Period:** notice period if available" if any(w in query_lower for w in ['immediate', 'urgent', 'asap', 'available', 'notice']) else ""}
-
-═══════════════════════════════════════
-FOOTER (ALWAYS include)
-═══════════════════════════════════════
-**📊 Search Intelligence**
-- Query interpretation: [what you understood from the query]
-- Filters applied: [location, experience, skills, exclusions]
-- Pool: {relevant_count} pre-filtered → X qualified → {num_candidates} returned
-- Pool quality: [Strong/Moderate/Weak] for this role
-
-**💡 Recommendations**
-- Interview priority order (top 3 by rank)
-- Key screening questions for the top candidates  
-- If pool is thin: suggest criteria to relax or alternative job titles
-- If pool is strong: suggest additional differentiators to narrow down"""
-
-            result = await self._agenerate(prompt, temperature=0.15, max_tokens=6000, thinking_budget=8192)
+            # Search: no thinking budget — pre-filter already ranked; Gemini just validates and formats
+            result = await self._agenerate(prompt, temperature=0.1, max_tokens=4500, thinking_budget=0)
             text_response = result or f"I'm here to help! We have **{total} candidates** in the database. What would you like to know?"
         
         if return_candidates:
@@ -2862,10 +3067,14 @@ FOOTER (ALWAYS include)
                         'hasResume': c.get('hasResume', False),
                     })
             
-            return {
+            result_dict = {
                 'response': text_response,
                 'candidates_lookup': candidates_lookup
             }
+            # Cache search results for fast repeat queries
+            if query_type == 'search':
+                self._set_search_cache(message, num_candidates, total, result_dict)
+            return result_dict
         
         return text_response
 

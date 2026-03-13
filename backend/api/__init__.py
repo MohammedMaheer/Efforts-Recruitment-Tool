@@ -1,3 +1,1 @@
-# API module
-
-__all__ = []
+"""API route modules for the AI Recruitment Platform."""

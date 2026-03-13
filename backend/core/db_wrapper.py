@@ -244,8 +244,17 @@ class PgCursorWrapper:
     
     @property
     def lastrowid(self):
+        """Return last inserted row ID. For PostgreSQL, only works after INSERT ... RETURNING id."""
         try:
-            return self._cursor.fetchone()[0] if self._cursor.description else None
+            # psycopg2 exposes lastrowid directly on the cursor for INSERT statements
+            raw_id = getattr(self._cursor, 'lastrowid', None)
+            if raw_id:
+                return raw_id
+            # Fallback: if the query used RETURNING, fetch the value
+            if self._cursor.description:
+                row = self._cursor.fetchone()
+                return row[0] if row else None
+            return None
         except Exception:
             return None
     
@@ -386,7 +395,9 @@ def init_pg_schema(conn):
     """Create all tables and indexes in PostgreSQL (idempotent)."""
     from core.pg_compat import ALL_PG_SCHEMAS, PG_INDEXES
     
+    # Use a generous timeout for DDL — Cloud SQL during cold start can be slow
     cursor = conn.cursor()
+    cursor.execute("SET statement_timeout = '120s'")
     for ddl in ALL_PG_SCHEMAS:
         cursor.execute(ddl)
     for idx_sql in PG_INDEXES:
@@ -394,11 +405,17 @@ def init_pg_schema(conn):
     conn.commit()
     
     # Migration: add columns that may be missing from older schema versions
-    # Use raw psycopg2 connection with autocommit to avoid aborted-transaction cascade
-    raw_conn = conn._conn
-    old_autocommit = raw_conn.autocommit
+    # Use raw psycopg2 connection with autocommit so each DDL is independent
+    raw_conn = conn._conn  # underlying psycopg2 connection (clean after commit above)
     raw_conn.autocommit = True
     raw_cursor = raw_conn.cursor()
+    # Check existing columns first (read-only — no locks, avoids ALTER TABLE if unneeded)
+    raw_cursor.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name = 'candidates'"
+    )
+    existing_cols = {row[0] for row in raw_cursor.fetchall()}
+    raw_cursor.execute("SET statement_timeout = '10s'")
+    raw_cursor.execute("SET lock_timeout = '5s'")
     _migration_columns = [
         ("candidates", "shortlisted_at", "TEXT"),
         ("candidates", "nationality", "TEXT"),
@@ -409,18 +426,23 @@ def init_pg_schema(conn):
         ("candidates", "job_applied_for", "TEXT"),
     ]
     for table, col, coltype in _migration_columns:
+        if col in existing_cols:
+            continue  # column already exists — skip ALTER TABLE
         try:
             raw_cursor.execute(f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} {coltype}")
-            logger.info(f"✅ Migration: {table}.{col} ensured")
+            logger.info(f"✅ Migration: added {table}.{col}")
         except Exception as e:
             logger.warning(f"Migration {table}.{col}: {e}")
+    raw_cursor.execute("SET statement_timeout = '30s'")
+    raw_cursor.execute("SET lock_timeout = '0'")
     raw_cursor.close()
-    raw_conn.autocommit = old_autocommit
+    raw_conn.autocommit = False
     
-    # Ensure hr@effortz.com is admin
+    # Ensure configurable admin email gets admin role
+    admin_email = os.getenv('ADMIN_EMAIL', 'hr@effortz.com')
     try:
         cursor = conn.cursor()
-        cursor.execute("UPDATE users SET role = 'admin' WHERE email = 'hr@effortz.com' AND role != 'admin'")
+        cursor.execute("UPDATE users SET role = 'admin' WHERE email = %s AND role != 'admin'", (admin_email,))
         conn.commit()
     except Exception as e:
         logger.debug(f"Admin promotion migration: {e}")

@@ -298,3 +298,73 @@ class ErrorResponse(BaseModel):
     error_code: str
     message: str
     details: Dict[str, Any] = Field(default_factory=dict)
+
+
+# ============================================================================
+# Inline Models (extracted from main_legacy.py)
+# ============================================================================
+
+class LinkedInProfileImport(BaseModel):
+    """LinkedIn profile data from browser extension"""
+    name: str
+    email: str
+    phone: Optional[str] = ""
+    location: Optional[str] = ""
+    linkedin: str
+    source: str = "linkedin_extension"
+    job_category: Optional[str] = "General"
+    skills: Optional[List[str]] = []
+    experience: Optional[float] = 0
+    resume_text: Optional[str] = ""
+    profile_image: Optional[str] = ""
+    headline: Optional[str] = ""
+    education: Optional[List[dict]] = []
+    work_experience: Optional[List[dict]] = []
+    certifications: Optional[List[dict]] = []
+    languages: Optional[List[dict]] = []
+    scraped_at: Optional[str] = None
+
+
+class CandidateStatusUpdate(BaseModel):
+    """Update candidate status"""
+    status: str
+
+
+class BulkShortlistRequest(BaseModel):
+    """Bulk shortlist candidates"""
+    candidate_ids: List[str]
+    email_subject: Optional[str] = None
+    email_body: Optional[str] = None
+    send_emails: bool = True
+
+
+class GenerateEmailRequest(BaseModel):
+    """AI email generation request"""
+    candidate_ids: List[str]
+    job_title: Optional[str] = None
+    tone: Optional[str] = "professional"
+    custom_instructions: Optional[str] = None
+
+
+class ChatMessage(BaseModel):
+    """AI chat message"""
+    message: str
+    context: Optional[str] = None
+
+
+class AnalyzeMatchRequest(BaseModel):
+    """Job-candidate match analysis request"""
+    candidate: dict
+    job_description: dict
+
+
+class InterviewQuestionsRequest(BaseModel):
+    """AI interview questions request"""
+    candidate: dict
+    job_description: dict
+    num_questions: int = 5
+
+
+class SummarizeResumeRequest(BaseModel):
+    """Resume summarization request"""
+    resume_text: str

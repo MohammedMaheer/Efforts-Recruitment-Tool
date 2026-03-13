@@ -611,11 +611,13 @@ function drawScoreCards(
         : `With ${cand.experience || 0} years of professional experience, ${cand.name || 'the candidate'} demonstrates significant industry tenure. Further details about career progression should be explored in interview.`,
     },
     {
-      title: 'Collaboration',
+      title: 'Career & Growth',
       score: scores.collaboration,
-      text: analysis?.culture_fit_notes
-        ? sanitizeForHelvetica(analysis.culture_fit_notes)
-        : `Collaboration and teamwork skills are evident based on the candidate's profile and professional background.`,
+      text: analysis?.career_trajectory
+        ? sanitizeForHelvetica(analysis.career_trajectory)
+        : analysis?.education_assessment
+        ? sanitizeForHelvetica(analysis.education_assessment)
+        : `Career trajectory and growth potential are assessed based on the candidate's profile and professional background.`,
     },
   ]
 
@@ -679,13 +681,24 @@ function drawCareerTimeline(
   const jobs = (cand.workHistory || []).slice(0, 6)
   if (jobs.length === 0) return y
 
-  const skills = cand.skills || []
-  let skillIdx = 0
   const timelineX = ml + 6  // vertical line x position
 
   for (let ji = 0; ji < jobs.length; ji++) {
     const job = jobs[ji]
-    const entryH = 28 // approximate
+    const jobTitle = sanitizeForHelvetica(job.title || 'Position')
+    const jobCompany = sanitizeForHelvetica(job.company || '')
+    const jobDuration = sanitizeForHelvetica(job.duration || '')
+    const jobDesc = sanitizeForHelvetica(job.description || '')
+
+    // Calculate dynamic entry height based on description
+    const descMaxW = cw - 20
+    let descLines: string[] = []
+    if (jobDesc.length > 5) {
+      doc.setFontSize(6.5)
+      doc.setFont('helvetica', 'normal')
+      descLines = doc.splitTextToSize(jobDesc, descMaxW).slice(0, 3)
+    }
+    const entryH = 18 + descLines.length * 3
 
     // Page break check
     if (y + entryH > ph - 22) {
@@ -711,52 +724,37 @@ function drawCareerTimeline(
     doc.setFont('helvetica', 'bold')
     setT(doc, C.black)
     const titleX = timelineX + 8
-    doc.text(job.title || 'Position', titleX, y + 5)
+    doc.text(jobTitle, titleX, y + 5)
 
     // Date range on right
-    if (job.duration) {
+    if (jobDuration) {
       doc.setFontSize(7)
       doc.setFont('helvetica', 'normal')
       setT(doc, C.gray)
-      doc.text(job.duration, ml + cw, y + 5, { align: 'right' })
+      doc.text(jobDuration, ml + cw, y + 5, { align: 'right' })
     }
 
     // Company
     doc.setFontSize(7.5)
     doc.setFont('helvetica', 'normal')
     setT(doc, C.gray)
-    doc.text(job.company || '', titleX, y + 10)
+    doc.text(jobCompany, titleX, y + 10)
 
-    // Skill badges for this job
-    const badgeCount = Math.min(5, skills.length - skillIdx > 0 ? 5 : skills.length)
-    const jobSkills = skills.slice(skillIdx, skillIdx + badgeCount)
-    skillIdx = (skillIdx + badgeCount) % Math.max(skills.length, 1)
-
-    let bx = titleX
-    const badgeY = y + 14
-    for (const sk of jobSkills) {
-      doc.setFontSize(5.5)
+    // Job description (replaces misleading round-robin skill badges)
+    if (descLines.length > 0) {
+      doc.setFontSize(6.5)
       doc.setFont('helvetica', 'normal')
-      const tw = doc.getTextWidth(sk) + 4
-      const bw = Math.max(tw, 8)
-
-      if (bx + bw > ml + cw - 5) break // don't overflow
-
-      // Badge background
-      fillR(doc, bx, badgeY, bw, 4.5, C.calloutBg, 2)
-      // Badge border
-      doc.setDrawColor(C.cyanLight[0], C.cyanLight[1], C.cyanLight[2])
-      doc.setLineWidth(0.15)
-      doc.roundedRect(bx, badgeY, bw, 4.5, 2, 2, 'S')
-
-      setT(doc, C.heroBlue)
-      doc.text(sk, bx + 2, badgeY + 3.2)
-      bx += bw + 2
+      setT(doc, C.grayDark)
+      let dy = y + 14
+      for (const dl of descLines) {
+        doc.text(dl, titleX, dy)
+        dy += 3
+      }
     }
 
     // Thin separator line between entries
     if (ji < jobs.length - 1) {
-      lineH(doc, titleX, y + entryH - 4, ml + cw, [235, 238, 245] as C3, 0.1)
+      lineH(doc, titleX, y + entryH - 2, ml + cw, [235, 238, 245] as C3, 0.1)
     }
 
     y += entryH
@@ -861,7 +859,7 @@ function drawFooter(doc: jsPDF, pw: number, ph: number, pageNum: number) {
   doc.text('Efforts Solutions IT', 25, fy + 5)
   doc.setFontSize(7)
   setT(doc, C.gray)
-  doc.text('https://effortz.com', pw - 25, fy + 5, { align: 'right' })
+  doc.text('https://effortz.com', pw - 45, fy + 5, { align: 'right' })
   doc.setFontSize(6.5)
   setT(doc, C.gray)
   doc.text(
@@ -1115,7 +1113,7 @@ export async function generateCandidatePDF(
   // Add match score context
   const matchS = candidate.matchScore ?? 0
   if (matchS > 0) {
-    summaryParts.push(`With a match score of ${matchS.toFixed(1)}%, they show ${matchS >= 80 ? 'strong' : matchS >= 60 ? 'moderate' : 'developing'} alignment for the target role. ${norm?.hiring_recommendation ? 'Hiring recommendation: ' + norm.hiring_recommendation + '.' : ''} Based on the available profile data, they are ${matchS >= 80 ? 'a strong' : matchS >= 60 ? 'a promising' : 'a potential'} candidate.`)
+    summaryParts.push(`With a match score of ${matchS.toFixed(0)}%, they show ${matchS >= 80 ? 'strong' : matchS >= 60 ? 'moderate' : 'developing'} alignment for the target role. ${norm?.hiring_recommendation ? 'Hiring recommendation: ' + norm.hiring_recommendation + '.' : ''} Based on the available profile data, they are ${matchS >= 80 ? 'a strong' : matchS >= 60 ? 'a promising' : 'a potential'} candidate.`)
   }
   const summaryText = summaryParts.join(' ')
 
@@ -1270,15 +1268,27 @@ export async function generateCandidatePDF(
       y += 2
     }
     for (const edu of candidate.education.slice(0, 5)) {
+      // Skip garbled/invalid education entries
+      const degreeText = sanitizeForHelvetica(edu.degree || '').trim()
+      if (!degreeText || degreeText.length < 2) continue
+      // Skip entries that look like section headers or garbled extraction
+      const loDeg = degreeText.toLowerCase()
+      if (/^(education|skills|experience|summary|objective|profile|references|projects|hobbies|interests)$/i.test(loDeg)) continue
+      if (loDeg.split(' ').length > 12) continue // suspiciously long "degree"
+
       y = pgBreak(doc, y, 8, pw, ph, pn, cn)
       doc.setFontSize(8)
       doc.setFont('helvetica', 'bold')
       setT(doc, C.black)
-      doc.text(sanitizeForHelvetica(`${edu.degree}${edu.field ? ' in ' + edu.field : ''}`), ml + 8, y)
+      const fieldText = edu.field ? sanitizeForHelvetica(edu.field).trim() : ''
+      const degreeDisplay = fieldText && fieldText.length > 2 ? `${degreeText} in ${fieldText}` : degreeText
+      doc.text(degreeDisplay, ml + 8, y)
       doc.setFontSize(7)
       doc.setFont('helvetica', 'normal')
       setT(doc, C.gray)
-      doc.text(sanitizeForHelvetica(`${edu.institution || 'N/A'}${edu.year ? '  ·  ' + edu.year : ''}`), ml + 8, y + 4)
+      const instText = sanitizeForHelvetica(edu.institution || '').trim()
+      const yearText = sanitizeForHelvetica(edu.year || '').trim()
+      doc.text(`${instText || 'N/A'}${yearText ? '  ·  ' + yearText : ''}`, ml + 8, y + 4)
       y += 8
     }
     y += 2
