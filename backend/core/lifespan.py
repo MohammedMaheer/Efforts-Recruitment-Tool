@@ -523,7 +523,7 @@ async def auto_sync_emails():
                                 if not candidate or not candidate.get('email'):
                                     return 'no-candidate'
 
-                                if db_service.is_blocked_email(candidate['email']):
+                                if await asyncio.to_thread(db_service.is_blocked_email, candidate['email']):
                                     logger.debug(f"Blocked Indeed relay candidate: {candidate['email'][:50]}")
                                     if msg_id:
                                         try:
@@ -562,7 +562,7 @@ async def auto_sync_emails():
                                     needs_ai = True
                                     new_count += 1
                                 else:
-                                    candidate = db_service.smart_merge_candidate(existing, candidate)
+                                    candidate = await asyncio.to_thread(db_service.smart_merge_candidate, existing, candidate)
                                     existing_score = existing.get('matchScore') or existing.get('match_score') or 0
                                     if (not existing.get('ai_analysis')
                                             or existing_score <= 0):
@@ -1061,7 +1061,7 @@ async def _background_process_candidates(interval_minutes: int = 5):
 
     while True:
         try:
-            has_bg_lease = await _acquire_distributed_lease('lease:bg_process', ttl_seconds=300)
+            has_bg_lease = await _acquire_distributed_lease('lease:bg_process', ttl_seconds=900)
             if not has_bg_lease:
                 await asyncio.sleep(interval_minutes * 60)
                 continue

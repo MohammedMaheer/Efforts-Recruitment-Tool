@@ -1364,6 +1364,8 @@ class DatabaseService:
                     'notice_period': row[21] if len(row) > 21 else '',
                     'job_applied_for': row[22] if len(row) > 22 else '',
                     'resume_text': (row[23] or '')[:2000] if len(row) > 23 else '',  # Truncate for memory
+                    'current_salary': row[24] if len(row) > 24 else '',
+                    'expected_salary': row[25] if len(row) > 25 else '',
                 })
             return results
         finally:
@@ -1898,6 +1900,10 @@ class DatabaseService:
             return deleted
         except Exception as e:
             logger.error(f"Failed to clear processing log since {since_date}: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             raise
         finally:
             self.return_connection(conn)
@@ -1914,6 +1920,10 @@ class DatabaseService:
             return deleted
         except Exception as e:
             logger.error(f"Failed to clear no-candidate entries: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             raise
         finally:
             self.return_connection(conn)
@@ -1933,6 +1943,10 @@ class DatabaseService:
             return deleted
         except Exception as e:
             logger.error(f"Failed to clear blocked entries: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             raise
         finally:
             self.return_connection(conn)
@@ -1958,6 +1972,10 @@ class DatabaseService:
             return deleted
         except Exception as e:
             logger.error(f"Failed to clear orphaned processing entries: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             raise
         finally:
             self.return_connection(conn)
@@ -2428,6 +2446,10 @@ class DatabaseService:
             return cursor.rowcount > 0
         except Exception as e:
             logger.error(f"Error deleting search entry {entry_id}: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
             return False
         finally:
             self.return_connection(conn)
@@ -2440,6 +2462,10 @@ class DatabaseService:
             conn.commit()
         except Exception as e:
             logger.error(f"Error clearing search history: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         finally:
             self.return_connection(conn)
 
@@ -2466,9 +2492,12 @@ class DatabaseService:
 
 # Singleton
 _db_service = None
+_db_service_lock = Lock()
 
 def get_db_service():
     global _db_service
     if _db_service is None:
-        _db_service = DatabaseService()
+        with _db_service_lock:
+            if _db_service is None:
+                _db_service = DatabaseService()
     return _db_service

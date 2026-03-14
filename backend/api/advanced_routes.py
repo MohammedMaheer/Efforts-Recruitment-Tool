@@ -79,25 +79,28 @@ async def rank_candidates(request: MLRankRequest):
         db_service = get_db_service()
         
         # Get candidates from database
-        candidates = []
-        for cid in request.candidate_ids:
-            candidate = db_service.get_candidate_by_id(cid)
-            if candidate:
-                candidates.append({
-                    'id': cid,
-                    'skills': candidate.get('skills', []),
-                    'experience': candidate.get('experience', 0),
-                    'education': candidate.get('education', []),
-                    'location': candidate.get('location', ''),
-                })
-            else:
-                candidates.append({
-                    'id': cid,
-                    'skills': [],
-                    'experience': 0,
-                    'education': [],
-                    'location': '',
-                })
+        def _fetch_candidates_for_ranking():
+            rows = []
+            for cid in request.candidate_ids:
+                candidate = db_service.get_candidate_by_id(cid)
+                if candidate:
+                    rows.append({
+                        'id': cid,
+                        'skills': candidate.get('skills', []),
+                        'experience': candidate.get('experience', 0),
+                        'education': candidate.get('education', []),
+                        'location': candidate.get('location', ''),
+                    })
+                else:
+                    rows.append({
+                        'id': cid,
+                        'skills': [],
+                        'experience': 0,
+                        'education': [],
+                        'location': '',
+                    })
+            return rows
+        candidates = await asyncio.to_thread(_fetch_candidates_for_ranking)
         
         job = {'id': request.job_id} if request.job_id else None
         
@@ -135,7 +138,7 @@ async def record_hiring_decision(request: HiringDecisionRequest, current_user: d
         db_service = get_db_service()
         
         # Get candidate features from database
-        db_candidate = db_service.get_candidate_by_id(request.candidate_id)
+        db_candidate = await asyncio.to_thread(db_service.get_candidate_by_id, request.candidate_id)
         candidate = {
             'id': request.candidate_id,
             'skills': db_candidate.get('skills', []) if db_candidate else [],
@@ -208,7 +211,7 @@ async def analyze_skill_gap(request: SkillGapRequest):
         db_service = get_db_service()
         
         # Fetch candidate skills from database
-        candidate_data = db_service.get_candidate_by_id(request.candidate_id) if request.candidate_id else None
+        candidate_data = await asyncio.to_thread(db_service.get_candidate_by_id, request.candidate_id) if request.candidate_id else None
         candidate_skills = candidate_data.get('skills', []) if candidate_data else []
         job = {'required_skills': [], 'preferred_skills': []}
         
@@ -249,7 +252,7 @@ async def check_duplicates(request: DuplicateCheckRequest):
         
         # Get all candidates from database for comparison
         db_service = get_db_service()
-        all_candidates, _ = db_service.get_candidates_paginated(1, 5000, {})
+        all_candidates, _ = await asyncio.to_thread(db_service.get_candidates_paginated, 1, 5000, {})
 
         duplicates = service.find_duplicates(candidate, all_candidates, request.threshold)
 
@@ -285,15 +288,18 @@ async def merge_duplicates(request: MergeCandidatesRequest, current_user: dict =
         db_service = get_db_service()
         
         # Get candidates from database
-        primary = db_service.get_candidate_by_id(request.primary_candidate_id) or {'id': request.primary_candidate_id}
-        duplicates = []
-        for did in request.duplicate_candidate_ids:
-            dup = db_service.get_candidate_by_id(did)
-            if dup:
-                duplicates.append(dup)
-            else:
-                duplicates.append({'id': did})
-        
+        def _fetch_candidates_for_merge():
+            _primary = db_service.get_candidate_by_id(request.primary_candidate_id) or {'id': request.primary_candidate_id}
+            _dups = []
+            for did in request.duplicate_candidate_ids:
+                dup = db_service.get_candidate_by_id(did)
+                if dup:
+                    _dups.append(dup)
+                else:
+                    _dups.append({'id': did})
+            return _primary, _dups
+        primary, duplicates = await asyncio.to_thread(_fetch_candidates_for_merge)
+
         merged = service.merge_candidates(primary, duplicates)
         
         return {
@@ -320,7 +326,7 @@ async def match_candidate_to_jobs(request: JobMatchRequest):
         db_service = get_db_service()
         
         # Get candidate from database
-        candidate = db_service.get_candidate_by_id(request.candidate_id) or {'id': request.candidate_id, 'name': 'Unknown'}
+        candidate = await asyncio.to_thread(db_service.get_candidate_by_id, request.candidate_id) or {'id': request.candidate_id, 'name': 'Unknown'}
         jobs = [{'id': jid} for jid in request.job_ids] if request.job_ids else []
         
         matches = []
@@ -350,7 +356,7 @@ async def match_job_to_candidates(request: CandidateMatchRequest):
         
         # Get job and candidates from database
         job = {'id': request.job_id}
-        all_candidates, _ = db_service.get_candidates_paginated(1, 1000, {})
+        all_candidates, _ = await asyncio.to_thread(db_service.get_candidates_paginated, 1, 1000, {})
         candidates = all_candidates
         
         matches = []

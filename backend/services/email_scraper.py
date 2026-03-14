@@ -1559,8 +1559,12 @@ class EmailScraperService:
                         resume_data[field] = job_portal_data[field]
                 
                 # quality_score from LLM parse
-                if job_portal_data.get('quality_score') and int(job_portal_data.get('quality_score', 0)) > 0:
-                    resume_data['quality_score'] = int(job_portal_data['quality_score'])
+                try:
+                    qs = job_portal_data.get('quality_score', 0)
+                    if qs and int(float(str(qs))) > 0:
+                        resume_data['quality_score'] = int(float(str(qs)))
+                except (ValueError, TypeError):
+                    pass
             
 
 
@@ -1686,7 +1690,7 @@ class EmailScraperService:
                 'education': education,
                 'summary': summary,
                 'resume_text': raw_text,  # For AI analysis
-                'workHistory': work_history_json,
+                'work_history': work_history_json,
                 'linkedin': resume_data.get('linkedin', ''),
                 'status': 'New',
                 'matchScore': resume_data.get('quality_score', 0),  # From LLM parse or 0 for AI scoring later

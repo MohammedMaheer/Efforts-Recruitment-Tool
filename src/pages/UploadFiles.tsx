@@ -3,6 +3,7 @@ import { useState, useRef, useCallback, useEffect } from 'react'
 import { authFetch } from '@/lib/authFetch'
 import config from '@/config'
 import { useCandidates } from '@/hooks/useCandidates'
+import { useAuthStore } from '@/store/authStore'
 import {
   Upload, CheckCircle, AlertCircle, Loader2,
   Files, CheckCircle2, XCircle, Mail, Folder,
@@ -14,6 +15,8 @@ import { toast } from '@/components/ui/Toast'
 
 export default function UploadFiles() {
   const { refetch } = useCandidates({ autoFetch: false })
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
   const [activeTab, setActiveTab] = useState<'upload' | 'email'>('upload')
   const [isUploading, setIsUploading] = useState(false)
   const [uploadResults, setUploadResults] = useState<{ status: string; message?: string; filename?: string; candidate_name?: string; job_category?: string; ai_score?: number }[]>([])
@@ -124,8 +127,8 @@ export default function UploadFiles() {
 
       {/* Tabs */}
       <div className="flex gap-2 border-b border-gray-200">
-        {(['upload', 'email'] as const).map((tab) => (
-          <button key={tab} onClick={() => setActiveTab(tab)}
+        {(['upload', ...(isAdmin ? ['email'] : [])] as const).map((tab) => (
+          <button key={tab} onClick={() => setActiveTab(tab as 'upload' | 'email')}
             className={`px-5 py-3 text-sm font-medium border-b-2 transition-colors flex items-center gap-2 ${activeTab === tab ? 'border-sky-500 text-sky-600' : 'border-transparent text-gray-500 hover:text-gray-700'}`}
           >
             {tab === 'upload' ? <><Folder className="w-4 h-4" /> File Upload</> : <><Mail className="w-4 h-4" /> Email Scraping</>}

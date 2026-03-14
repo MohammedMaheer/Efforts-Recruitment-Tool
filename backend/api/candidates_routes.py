@@ -704,7 +704,7 @@ async def fix_garbage_summaries(current_user: dict = Depends(require_admin)):
 
 
 @router.post("/api/candidates/reprocess-scores")
-async def reprocess_candidate_scores(current_user: dict = Depends(require_auth)):
+async def reprocess_candidate_scores(current_user: dict = Depends(require_admin)):
     """
     Reprocess all candidates with match_score = 0 to calculate proper AI scores.
     This fixes candidates that were imported before AI scoring was properly connected.
@@ -1519,7 +1519,8 @@ async def download_resume(candidate_id: str, current_user: dict = Depends(requir
 async def upload_resume_for_candidate(candidate_id: str, file: UploadFile = File(...), current_user: dict = Depends(require_auth)):
     """Upload a resume file for an existing candidate. Also re-parses the resume and updates candidate data."""
     try:
-        filename = file.filename or "resume.pdf"
+        filename = os.path.basename(file.filename or "resume.pdf")
+        filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename) or "resume.pdf"
         ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
         if ext not in ('pdf', 'docx', 'doc'):
             raise HTTPException(400, "Only PDF and DOCX files are supported.")

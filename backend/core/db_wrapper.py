@@ -136,20 +136,40 @@ def _convert_sqlite_functions(sql: str) -> str:
 
 
 def _convert_insert_or_replace(sql: str) -> str:
-    """Convert INSERT OR REPLACE INTO to PostgreSQL ON CONFLICT DO UPDATE."""
-    match = re.match(
-        r"INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*\(([^)]+)\)",
-        sql.strip(),
-        re.IGNORECASE | re.DOTALL
+    """Convert INSERT OR REPLACE INTO to PostgreSQL ON CONFLICT DO UPDATE.
+    Uses a balanced-paren scanner to handle nested function calls in VALUES."""
+    stripped = sql.strip()
+    # Match up to VALUES keyword (column list uses simple regex since it has no nested parens)
+    header_match = re.match(
+        r"INSERT\s+OR\s+REPLACE\s+INTO\s+(\w+)\s*\(([^)]+)\)\s*VALUES\s*",
+        stripped,
+        re.IGNORECASE | re.DOTALL,
     )
-    if not match:
+    if not header_match:
         return sql
-    
-    table = match.group(1)
-    columns_str = match.group(2)
-    values_str = match.group(3)
+
+    table = header_match.group(1)
+    columns_str = header_match.group(2)
     columns = [c.strip() for c in columns_str.split(',')]
-    
+
+    # Balanced-paren scan for VALUES (...)
+    values_start = header_match.end()
+    if values_start >= len(stripped) or stripped[values_start] != '(':
+        return sql
+    depth = 0
+    values_end = values_start
+    for i in range(values_start, len(stripped)):
+        if stripped[i] == '(':
+            depth += 1
+        elif stripped[i] == ')':
+            depth -= 1
+            if depth == 0:
+                values_end = i
+                break
+    if depth != 0:
+        return sql
+    values_str = stripped[values_start + 1:values_end]
+
     # Determine conflict column based on known schema
     conflict_map = {
         'candidates': 'id',
@@ -163,14 +183,15 @@ def _convert_insert_or_replace(sql: str) -> str:
     }
     conflict_col = conflict_map.get(table, columns[0])
     conflict_cols_list = [c.strip() for c in conflict_col.split(',')]
-    
     update_cols = [c for c in columns if c not in conflict_cols_list]
-    
+
     if update_cols:
         update_set = ', '.join(f"{c} = EXCLUDED.{c}" for c in update_cols)
-        return f"INSERT INTO {table} ({columns_str}) VALUES ({values_str}) ON CONFLICT ({conflict_col}) DO UPDATE SET {update_set}"
+        return (f"INSERT INTO {table} ({columns_str}) VALUES ({values_str})"
+                f" ON CONFLICT ({conflict_col}) DO UPDATE SET {update_set}")
     else:
-        return f"INSERT INTO {table} ({columns_str}) VALUES ({values_str}) ON CONFLICT ({conflict_col}) DO NOTHING"
+        return (f"INSERT INTO {table} ({columns_str}) VALUES ({values_str})"
+                f" ON CONFLICT ({conflict_col}) DO NOTHING")
 
 
 def convert_sql(sql: str) -> Optional[str]:

@@ -667,7 +667,7 @@ export default function Candidates() {
                               <TableCell className="w-[90px]">
                                 <div className="space-y-1">
                                   <p className={`text-sm font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
-                                    {(candidate.matchScore ?? 50).toFixed(0)}%
+                                    {(candidate.matchScore ?? 0).toFixed(0)}%
                                   </p>
                                   <Progress
                                     value={candidate.matchScore}
@@ -943,14 +943,14 @@ export default function Candidates() {
                     <TableCell className="w-[100px]">
                       <div className="space-y-1">
                         <p className={`text-base font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
-                          {(candidate.matchScore ?? 50).toFixed(0)}%
+                          {(candidate.matchScore ?? 0).toFixed(0)}%
                         </p>
                         <Progress
-                          value={candidate.matchScore ?? 50}
+                          value={candidate.matchScore ?? 0}
                           className="w-16 h-1.5"
                           indicatorClassName={
-                            (candidate.matchScore ?? 50) >= 70 ? 'bg-emerald-500' :
-                            (candidate.matchScore ?? 50) >= 40 ? 'bg-amber-500' : 'bg-red-500'
+                            (candidate.matchScore ?? 0) >= 70 ? 'bg-emerald-500' :
+                            (candidate.matchScore ?? 0) >= 40 ? 'bg-amber-500' : 'bg-red-500'
                           }
                         />
                       </div>

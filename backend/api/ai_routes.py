@@ -122,36 +122,38 @@ async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
             candidate_for_analysis['resume_text'] = resume_text[:4000]
 
         analysis = None
+        # TIER 0 — Gemini (primary)
         try:
-            from services.llm_service import get_llm_service
-            llm_svc = await get_llm_service()
-            if llm_svc and llm_svc.available:
+            from services.gemini_service import get_gemini_service
+            gemini_svc = get_gemini_service()
+            if gemini_svc and gemini_svc.available:
                 analysis = await asyncio.wait_for(
-                    llm_svc.analyze_candidate_deep(candidate_for_analysis),
-                    timeout=_deps().AI_ANALYSIS_TIMEOUT
+                    gemini_svc.analyze_candidate_deep(candidate_for_analysis),
+                    timeout=15.0
                 )
                 if analysis:
-                    analysis['source'] = 'local_llm'
+                    analysis['source'] = 'gemini'
         except asyncio.TimeoutError:
-            logger.warning(f"LLM deep analysis timeout for {candidate_id}")
-        except Exception as llm_err:
-            logger.warning(f"LLM deep analysis error: {llm_err}")
+            logger.warning(f"Gemini deep analysis timeout for {candidate_id}")
+        except Exception as gemini_err:
+            logger.warning(f"Gemini deep analysis error: {gemini_err}")
 
+        # TIER 1 — Local LLM (fallback)
         if not analysis:
             try:
-                from services.gemini_service import get_gemini_service
-                gemini_svc = get_gemini_service()
-                if gemini_svc and gemini_svc.available:
+                from services.llm_service import get_llm_service
+                llm_svc = await get_llm_service()
+                if llm_svc and llm_svc.available:
                     analysis = await asyncio.wait_for(
-                        gemini_svc.analyze_candidate_deep(candidate_for_analysis),
+                        llm_svc.analyze_candidate_deep(candidate_for_analysis),
                         timeout=_deps().AI_ANALYSIS_TIMEOUT
                     )
                     if analysis:
-                        analysis['source'] = 'gemini'
+                        analysis['source'] = 'local_llm'
             except asyncio.TimeoutError:
-                logger.warning(f"Gemini deep analysis timeout for {candidate_id}")
-            except Exception as gemini_err:
-                logger.warning(f"Gemini deep analysis error: {gemini_err}")
+                logger.warning(f"LLM deep analysis timeout for {candidate_id}")
+            except Exception as llm_err:
+                logger.warning(f"LLM deep analysis error: {llm_err}")
 
         if not analysis:
             skills = candidate_for_analysis.get('skills', [])
@@ -1368,31 +1370,50 @@ async def analyze_match(request: AnalyzeMatchRequest, current_user: dict = Depen
             cached['from_cache'] = True
             return cached
         
-        # Run AI analysis in thread pool (non-blocking)
-        loop = asyncio.get_running_loop()
-        
+        result = None
+        # TIER 0 — Gemini (primary)
         try:
-            result = await asyncio.wait_for(
-                loop.run_in_executor(
-                    _ai_executor,
-                    _ai().analyze_candidate_match,
-                    request.candidate,
-                    request.job_description
-                ),
-                timeout=_deps().AI_ANALYSIS_TIMEOUT
-            )
-            result['source'] = 'local_ai'
-            logger.info("✅ Local AI analysis completed")
-            
+            from services.gemini_service import get_gemini_service
+            _ai_gemini = get_gemini_service()
+            if _ai_gemini and _ai_gemini.available:
+                jd_text = json.dumps(request.job_description)
+                result = await asyncio.wait_for(
+                    _ai_gemini.match_candidate_to_job(request.candidate, jd_text),
+                    timeout=15.0
+                )
+                if result:
+                    result['source'] = 'gemini'
+                    logger.info("✅ Gemini match analysis completed")
         except asyncio.TimeoutError:
-            logger.warning(f"⏱️ Local AI timeout (>{_deps().AI_ANALYSIS_TIMEOUT}s)")
-            result = _quick_fallback_analysis(request.candidate, request.job_description)
-            result['source'] = 'fallback_timeout'
-                
-        except Exception as local_error:
-            logger.warning(f"⚠️ Local AI error: {local_error}")
-            result = _quick_fallback_analysis(request.candidate, request.job_description)
-            result['source'] = 'fallback_error'
+            logger.warning("⏱️ Gemini analyze-match timeout")
+        except Exception as gemini_err:
+            logger.warning(f"⚠️ Gemini analyze-match error: {gemini_err}")
+
+        # TIER 1 — Local AI (fallback)
+        if not result:
+            loop = asyncio.get_running_loop()
+            try:
+                result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        _ai_executor,
+                        _ai().analyze_candidate_match,
+                        request.candidate,
+                        request.job_description
+                    ),
+                    timeout=_deps().AI_ANALYSIS_TIMEOUT
+                )
+                result['source'] = 'local_ai'
+                logger.info("✅ Local AI analysis completed")
+
+            except asyncio.TimeoutError:
+                logger.warning(f"⏱️ Local AI timeout (>{_deps().AI_ANALYSIS_TIMEOUT}s)")
+                result = _quick_fallback_analysis(request.candidate, request.job_description)
+                result['source'] = 'fallback_timeout'
+
+            except Exception as local_error:
+                logger.warning(f"⚠️ Local AI error: {local_error}")
+                result = _quick_fallback_analysis(request.candidate, request.job_description)
+                result['source'] = 'fallback_error'
         
         # Cache result in background (non-blocking)
         result['from_cache'] = False
@@ -1414,10 +1435,29 @@ async def analyze_match(request: AnalyzeMatchRequest, current_user: dict = Depen
 async def generate_interview_questions(request: InterviewQuestionsRequest, current_user: dict = Depends(require_auth)):
     """
     Generate AI-powered interview questions
-    3-TIER FALLBACK: Local AI -> Gemini -> Rule-based
+    3-TIER FALLBACK: Gemini -> Local AI -> Rule-based
     """
     try:
-        # TIER 1: Try Local AI first (FREE)
+        # TIER 0: Try Gemini first (primary)
+        try:
+            from services.gemini_service import get_gemini_service
+            _ai_gemini = get_gemini_service()
+            if _ai_gemini and _ai_gemini.available:
+                jd_str = json.dumps(request.job_description)
+                questions = await asyncio.wait_for(
+                    _ai_gemini.generate_interview_questions(
+                        request.candidate,
+                        jd_str,
+                        request.num_questions
+                    ),
+                    timeout=15.0
+                )
+                if questions:
+                    return {"questions": questions, "source": "gemini"}
+        except Exception as gemini_err:
+            logger.warning(f"⚠️ Gemini interview questions failed: {gemini_err}")
+
+        # TIER 1: Try Local AI (FREE)
         try:
             questions = _ai().generate_interview_questions(
                 request.candidate,
@@ -1428,7 +1468,7 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
                 return {"questions": questions, "source": "local_ai"}
         except Exception as local_error:
             logger.warning(f"⚠️ Local AI interview questions failed: {local_error}")
-        
+
         # TIER 2: Rule-based fallback
         candidate_skills = request.candidate.get('skills', [])
         job_title = request.job_description.get('title', 'the position')
@@ -1442,7 +1482,7 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
         if candidate_skills:
             skill_q = f"Can you describe your experience with {', '.join(candidate_skills[:3])}?"
             default_questions[1] = skill_q
-        
+
         return {
             "questions": default_questions[:request.num_questions],
             "source": "rule_based",
@@ -1458,6 +1498,7 @@ async def summarize_resume(request: SummarizeResumeRequest, current_user: dict =
     """
     Generate AI summary of resume
     3-TIER FALLBACK: Local AI -> Gemini -> Rule-based
+    TODO: Add Gemini TIER 0 once GeminiService.summarize_resume() is implemented.
     """
     try:
         # TIER 1: Try Local AI first (FREE)
@@ -1467,7 +1508,7 @@ async def summarize_resume(request: SummarizeResumeRequest, current_user: dict =
                 return {"summary": summary, "source": "local_ai"}
         except Exception as local_error:
             logger.warning(f"⚠️ Local AI summarize failed: {local_error}")
-        
+
         # TIER 2: Rule-based fallback
         text = request.resume_text[:500]
         return {
@@ -1524,14 +1565,14 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
                         if _ai_gemini and _ai_gemini.available:
                             gemini_result = await asyncio.wait_for(
                                 _ai_gemini.analyze_candidate(analysis_text, job_context=_job_ctx),
-                                timeout=15.0
+                                timeout=_deps().AI_ANALYSIS_TIMEOUT
                             )
                             if gemini_result and gemini_result.get('quality_score', 0) > 0:
                                 result = gemini_result
                                 engine = 'gemini'
                                 gemini_count += 1
-                    except Exception:
-                        pass  # fall through to local AI
+                    except Exception as e:
+                        logger.debug(f"Gemini batch analyze skipped for {analysis_text[:50]}: {e}")
 
                 if result is None:
                     # Run CPU-bound Local AI analysis in thread pool to avoid blocking event loop

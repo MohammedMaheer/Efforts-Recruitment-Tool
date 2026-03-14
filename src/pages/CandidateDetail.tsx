@@ -189,7 +189,7 @@ export default function CandidateDetail() {
       location: fullCandidateData.location || '',
       skills: fullCandidateData.skills || [],
       experience: fullCandidateData.experience || 0,
-      matchScore: fullCandidateData.matchScore || 50,
+      matchScore: fullCandidateData.matchScore ?? 0,
       status: fullCandidateData.status || 'New',
       jobCategory: fullCandidateData.jobCategory || fullCandidateData.job_category || 'General',
       jobSubcategory: fullCandidateData.jobSubcategory || fullCandidateData.job_subcategory || '',
@@ -308,7 +308,7 @@ export default function CandidateDetail() {
         cons: ['Detailed AI analysis unavailable - manual review recommended'],
         hiring_recommendation: fbRec,
         hiring_recommendation_rationale: fallbackScore >= 80 ? 'Strong candidate profile. Interview recommended to confirm fit.' : fallbackScore >= 60 ? 'Promising candidate. Further assessment recommended.' : 'Automated analysis was limited. A manual review is recommended.',
-        confidence_score: fallbackScore || 50,
+        confidence_score: fallbackScore ?? 0,
         overall_rating: fbRating,
         source: 'profile-based',
         isFallback: true

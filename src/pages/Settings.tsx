@@ -18,7 +18,7 @@ export default function Settings() {
   const [firstName, setFirstName] = useState(user?.name?.split(' ')[0] || '')
   const [lastName, setLastName] = useState(user?.name?.split(' ').slice(1).join(' ') || '')
   const [email, setEmail] = useState(user?.email || '')
-  const [company, setCompany] = useState('')
+  const [company, setCompany] = useState(user?.company || '')
   const [isSaving, setIsSaving] = useState(false)
   const [currentPassword, setCurrentPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')

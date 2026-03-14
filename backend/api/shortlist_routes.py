@@ -163,7 +163,8 @@ async def _send_rejection_email(candidate: Dict):
             if token_data and token_data.get('access_token') and not token_data.get('is_expired'):
                 graph.access_token = token_data['access_token']
                 graph.auth_type = token_data.get('auth_type', 'delegated')
-                graph.token_expiry = datetime.now() + timedelta(hours=1)
+                expires_str = (token_data.get('expires_at') or '').replace('Z', '+00:00')
+                graph.token_expiry = datetime.fromisoformat(expires_str) if expires_str else datetime.utcnow() + timedelta(hours=1)
                 authenticated = True
 
         if not authenticated:
@@ -318,7 +319,8 @@ async def _send_shortlist_email(candidate: Dict):
             if token_data and token_data.get('access_token') and not token_data.get('is_expired'):
                 graph.access_token = token_data['access_token']
                 graph.auth_type = token_data.get('auth_type', 'delegated')
-                graph.token_expiry = datetime.now() + timedelta(hours=1)
+                expires_str = (token_data.get('expires_at') or '').replace('Z', '+00:00')
+                graph.token_expiry = datetime.fromisoformat(expires_str) if expires_str else datetime.utcnow() + timedelta(hours=1)
                 authenticated = True
 
         if not authenticated:
@@ -425,7 +427,7 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
 
 
 @router.post("/api/email/test-send")
-async def test_email_send(current_user: dict = Depends(require_auth)):
+async def test_email_send(current_user: dict = Depends(require_admin)):
     """
     Test email sending via Microsoft Graph.
     Sends a test email from hr@effortz.com to the logged-in user's email.

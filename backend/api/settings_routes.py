@@ -174,7 +174,7 @@ async def verify_setup(current_user: dict = Depends(require_auth)):
 
 
 @router.get("/api/setup/status")
-async def get_setup_status(current_user: dict = Depends(require_auth)):
+async def get_setup_status(current_user: dict = Depends(require_admin)):
     """
     Get quick setup status summary
     """
@@ -399,7 +399,7 @@ async def stop_scraper(current_user: dict = Depends(require_admin)):
 
 
 @router.get("/api/scraper/status")
-async def scraper_status(current_user: dict = Depends(require_auth)):
+async def scraper_status(current_user: dict = Depends(require_admin)):
     """Get scraper status for all accounts"""
     accounts_status = []
     for account in _scraper().email_accounts:
@@ -577,7 +577,7 @@ async def clear_search_history(current_user: dict = Depends(require_auth)):
         return {"status": "success", "message": "Search history cleared"}
     except Exception as e:
         logger.error(f"Clear search history error: {e}")
-        return {"status": "error", "message": "Failed to clear search history"}
+        raise HTTPException(status_code=500, detail="Failed to clear search history")
 
 
 
@@ -614,7 +614,7 @@ async def get_pipeline_stats(current_user: dict = Depends(require_auth)):
         }
     except Exception as e:
         logger.error(f"Pipeline stats error: {e}")
-        return {"selected": 0, "rejected": 0, "shortlisted": 0, "interviewed": 0, "new": 0, "total": 0}
+        raise HTTPException(status_code=500, detail="Failed to retrieve pipeline statistics")
 
 
 
@@ -645,14 +645,7 @@ async def get_stats(current_user: dict = Depends(require_auth)):
         }
     except Exception as e:
         logger.error(f"Stats error: {e}")
-        return {
-            "total_candidates": 0,
-            "categories": {},
-            "recent_24h": 0,
-            "job_categories": 0,
-            "average_match_score": 0,
-            "ai_cache": {}
-        }
+        raise HTTPException(status_code=500, detail="Failed to retrieve statistics")
 
 
 

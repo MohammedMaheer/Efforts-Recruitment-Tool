@@ -1396,7 +1396,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
           return local ? { ...local, location: cleanLocation(local.location) } : {
             id: entry.id as string,
             name: (entry.name as string) || 'Unknown',
-            matchScore: (entry.matchScore as number) ?? 50,
+            matchScore: (entry.matchScore as number) ?? 0,
             location: cleanLocation(entry.location as string),
             jobCategory: normalizeCategory((entry.jobCategory as string) || 'General'),
             experience: (entry.experience as number) || 0,
@@ -1570,7 +1570,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
             const id = ranking.candidate_id
             const c = candidates.find(cand => cand.id === id)
             const score = ranking.job_fit_score ?? 0
-            if (c) return score ? { ...c, matchScore: score } : c
+            if (c) return { ...c, matchScore: score }
             // Candidate not yet in local store — build lightweight object from ranking data
             return {
               id,
@@ -1579,7 +1579,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
               matchScore: score,
               skills: ranking.matched_skills || [],
               jobCategory: 'General',
-              status: 'new',
+              status: 'New',
               experience: 0,
               education: [],
               location: '',
@@ -2168,9 +2168,9 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                       </div>
                     </div>
                     <div className="flex flex-col items-end gap-1.5 flex-shrink-0">
-                      <span className="text-base font-bold text-gray-900">{(candidate.matchScore ?? 50).toFixed(0)}%</span>
-                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${getFitLabel(candidate.matchScore ?? 50).cls}`}>
-                        {getFitLabel(candidate.matchScore ?? 50).text}
+                      <span className="text-base font-bold text-gray-900">{(candidate.matchScore ?? 0).toFixed(0)}%</span>
+                      <span className={`text-[10px] font-semibold px-2 py-0.5 rounded ${getFitLabel(candidate.matchScore ?? 0).cls}`}>
+                        {getFitLabel(candidate.matchScore ?? 0).text}
                       </span>
                       {candidate.status === 'Shortlisted' ? (
                         <span className="text-[10px] text-green-600 font-medium">✓ Shortlisted</span>
@@ -2249,10 +2249,10 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                       transition={{ delay: 0.2, duration: 0.4, type: 'spring', stiffness: 200 }}
                       className="flex-shrink-0"
                     >
-                      <ScoreRing score={resultDetailCandidate.matchScore ?? 50} size={72} />
+                      <ScoreRing score={resultDetailCandidate.matchScore ?? 0} size={72} />
                       <div className="text-center mt-1">
-                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${getFitLabel(resultDetailCandidate.matchScore ?? 50).cls}`}>
-                          {getFitLabel(resultDetailCandidate.matchScore ?? 50).text}
+                        <span className={`text-[11px] font-semibold px-2 py-0.5 rounded ${getFitLabel(resultDetailCandidate.matchScore ?? 0).cls}`}>
+                          {getFitLabel(resultDetailCandidate.matchScore ?? 0).text}
                         </span>
                       </div>
                     </motion.div>
@@ -2810,11 +2810,11 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                         </p>
                                       </div>
                                       <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-                                        <p className={`text-lg font-bold ${getScoreColor(candidate.matchScore ?? 50)}`}>
-                                          {(candidate.matchScore ?? 50).toFixed(0)}%
+                                        <p className={`text-lg font-bold ${getScoreColor(candidate.matchScore ?? 0)}`}>
+                                          {(candidate.matchScore ?? 0).toFixed(0)}%
                                         </p>
-                                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ${getFitLabel(candidate.matchScore ?? 50).cls}`}>
-                                          {getFitLabel(candidate.matchScore ?? 50).text}
+                                        <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ${getFitLabel(candidate.matchScore ?? 0).cls}`}>
+                                          {getFitLabel(candidate.matchScore ?? 0).text}
                                         </span>
                                         <motion.button
                                           whileHover={{ scale: 1.1 }}
@@ -2986,8 +2986,8 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                 <p className="text-xs text-gray-500 flex items-center gap-1 truncate"><MapPin className="w-3 h-3 flex-shrink-0" /><span className="truncate">{cleanLocation(candidate.location) || 'N/A'}</span></p>
                               </div>
                               <div className="flex items-center gap-2 flex-shrink-0 ml-auto">
-                                <p className={`text-lg font-bold ${getScoreColor(candidate.matchScore ?? 50)}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</p>
-                                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ${getFitLabel(candidate.matchScore ?? 50).cls}`}>{getFitLabel(candidate.matchScore ?? 50).text}</span>
+                                <p className={`text-lg font-bold ${getScoreColor(candidate.matchScore ?? 0)}`}>{(candidate.matchScore ?? 0).toFixed(0)}%</p>
+                                <span className={`text-[10px] font-medium px-1.5 py-0.5 rounded whitespace-nowrap ${getFitLabel(candidate.matchScore ?? 0).cls}`}>{getFitLabel(candidate.matchScore ?? 0).text}</span>
                                 <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); handlePreviewCandidate(candidate) }} className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><Eye className="w-3 h-3" />Preview</motion.button>
                                 <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }} className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><ExternalLink className="w-3 h-3" />Open</motion.button>
                                 {candidate.status !== 'Shortlisted' ? (
@@ -3244,9 +3244,9 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className="text-3xl font-bold text-white">{Math.round(previewCandidate.matchScore ?? 50)}%</div>
-                    <span className={`text-[11px] font-medium px-2 py-0.5 rounded mt-1 inline-block ${getFitLabel(previewCandidate.matchScore ?? 50).cls}`}>
-                      {getFitLabel(previewCandidate.matchScore ?? 50).text}
+                    <div className="text-3xl font-bold text-white">{Math.round(previewCandidate.matchScore ?? 0)}%</div>
+                    <span className={`text-[11px] font-medium px-2 py-0.5 rounded mt-1 inline-block ${getFitLabel(previewCandidate.matchScore ?? 0).cls}`}>
+                      {getFitLabel(previewCandidate.matchScore ?? 0).text}
                     </span>
                   </div>
                 </div>

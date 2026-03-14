@@ -419,7 +419,8 @@ async def relookup_garbled_from_email(current_user: dict = Depends(require_admin
         
         graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=primary_email)
         graph_service.access_token = token_data['access_token']
-        graph_service.token_expiry = datetime.fromisoformat(token_data['expires_at'])
+        expires_str = (token_data.get('expires_at') or '').replace('Z', '+00:00')
+        graph_service.token_expiry = datetime.fromisoformat(expires_str) if expires_str else None
         
         fixed_count = 0
         errors = 0

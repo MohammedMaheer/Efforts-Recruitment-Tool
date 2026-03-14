@@ -128,7 +128,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
         if not token_expired:
             try:
                 expires_at = datetime.fromisoformat(token_data['expires_at'])
-                if expires_at < datetime.now() + timedelta(minutes=5):
+                if expires_at < datetime.utcnow() + timedelta(minutes=5):
                     token_expired = True
             except Exception:
                 token_expired = True
@@ -208,6 +208,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
             max_pages=scan_max_pages
         ):
             total_fetched += len(page)
+            ids_before_page = set(processed_ids)
 
             for msg in page:
                 try:
@@ -421,7 +422,8 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
                     error_count += 1
                     logger.warning(f"Cross-verify error: {str(e)[:100]}")
 
-            page_seen = sum(1 for _ in [m for m in page if (m.get('id', '') or m.get('internetMessageId', '')) in processed_ids])
+            page_seen = sum(1 for m in page
+                if (m.get('id', '') or m.get('internetMessageId', '')) in ids_before_page)
             if page_seen == len(page):
                 consecutive_all_seen += 1
                 if incremental and consecutive_all_seen >= 3:
@@ -1355,7 +1357,7 @@ async def cross_verify_inbox(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/email/backfill-resumes")
-async def backfill_resumes(current_user: dict = Depends(require_auth)):
+async def backfill_resumes(current_user: dict = Depends(require_admin)):
     """
     Scan inbox for emails with attachments and store resume files
     for existing candidates that don't have resumes yet.
@@ -1418,7 +1420,8 @@ async def backfill_debug(current_user: dict = Depends(require_admin)):
     graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=email_address)
     graph_service.access_token = token_data['access_token']
     graph_service.auth_type = token_data.get('auth_type', 'delegated')
-    graph_service.token_expiry = datetime.fromisoformat(token_data['expires_at'])
+    expires_str = (token_data.get('expires_at') or '').replace('Z', '+00:00')
+    graph_service.token_expiry = datetime.fromisoformat(expires_str) if expires_str else None
     results["auth_type"] = graph_service.auth_type
     results["token_prefix"] = (token_data['access_token'] or '')[:20] + "..."
 
@@ -1734,10 +1737,14 @@ async def process_single_email(message_id: str, graph_service):
                 logger.warning(f"Failed to save webhook resume for {candidate.get('id', '')}: {e}")
 
         try:
-            _db().save_ai_analysis(candidate.get('id', ''), {
-                'score': candidate.get('matchScore', 0),
-                'category': candidate.get('job_category', 'General'),
-            })
+            await asyncio.to_thread(
+                _db().save_ai_analysis,
+                candidate.get('id', ''),
+                {
+                    'score': candidate.get('matchScore', 0),
+                    'category': candidate.get('job_category', 'General'),
+                }
+            )
         except Exception:
             pass
         try:
@@ -1778,7 +1785,7 @@ async def email_webhook(request: Request):
             # Validate clientState using constant-time comparison to prevent timing attacks
             expected_state = os.getenv('WEBHOOK_CLIENT_STATE', 'recruitment-tool-secret')
             client_state = notification.get('clientState') or ''
-            if not hmac.compare_digest(client_state, expected_state):
+            if not expected_state or not hmac.compare_digest(client_state, expected_state):
                 logger.warning(f"Invalid clientState in webhook notification — ignoring")
                 continue
             

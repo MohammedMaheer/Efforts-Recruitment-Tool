@@ -262,6 +262,8 @@ class ResumeParser:
     
     async def extract_text(self, content: bytes, filename: str) -> str:
         """Extract text from PDF or DOCX file"""
+        if not content:
+            return ''
         if filename.lower().endswith('.pdf'):
             return await asyncio.to_thread(self._extract_from_pdf, content)
         elif filename.lower().endswith('.docx'):

@@ -1475,7 +1475,7 @@ SCORING GUIDELINES:
 
 Be specific — reference actual skills, companies, and experience from the profile. Never be generic."""
 
-        result = await self._agenerate_json(prompt, temperature=0.15, max_tokens=2048)
+        result = await self._agenerate_json(prompt, temperature=0.0, max_tokens=2048)
 
         if result:
             result.setdefault('overall_assessment', result.get('executive_summary', ''))
@@ -1538,7 +1538,7 @@ Return JSON:
     "risk_factors": ["risk1"]
 }}"""
 
-        result = await self._agenerate_json(prompt, temperature=0.15, max_tokens=2048)
+        result = await self._agenerate_json(prompt, temperature=0.0, max_tokens=2048)
 
         if result:
             score = result.get('match_score', 50)
@@ -1942,8 +1942,8 @@ Return: {{"candidates": [...]}}"""
             raise ValueError("Empty Gemini batch response")
 
         batch_results = result.get('candidates', [])
-        if isinstance(result, list):
-            batch_results = result
+        if not isinstance(batch_results, list):
+            batch_results = []
 
         normalized = []
         for item in batch_results:
