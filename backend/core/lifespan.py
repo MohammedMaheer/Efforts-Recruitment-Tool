@@ -58,7 +58,8 @@ async def _acquire_distributed_lease(key: str, ttl_seconds: int = 120) -> bool:
     def _acquire() -> bool:
         with db_service.get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT value FROM sync_metadata WHERE key = ?", [key])
+            ph = '%s' if IS_POSTGRES else '?'
+            cursor.execute(f"SELECT value FROM sync_metadata WHERE key = {ph}", [key])
             row = cursor.fetchone()
 
             if row and row[0]:
@@ -70,10 +71,17 @@ async def _acquire_distributed_lease(key: str, ttl_seconds: int = 120) -> bool:
                 except Exception:
                     pass
 
-            cursor.execute(
-                "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)",
-                [key, f"{instance_id}|{expires_epoch}"]
-            )
+            if IS_POSTGRES:
+                cursor.execute(
+                    "INSERT INTO sync_metadata (key, value) VALUES (%s, %s) "
+                    "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value",
+                    [key, f"{instance_id}|{expires_epoch}"]
+                )
+            else:
+                cursor.execute(
+                    "INSERT OR REPLACE INTO sync_metadata (key, value) VALUES (?, ?)",
+                    [key, f"{instance_id}|{expires_epoch}"]
+                )
             conn.commit()
             return True
 
@@ -201,7 +209,7 @@ async def periodic_db_backup(interval_minutes: int = 30):
     while True:
         try:
             await asyncio.sleep(interval_minutes * 60)
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, backup_db_to_gcs)
         except asyncio.CancelledError:
             break
@@ -911,7 +919,7 @@ async def _background_seed_from_json():
         import tempfile
         tmp_path = tempfile.mktemp(suffix='.json')
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, json_blob.download_to_filename, tmp_path)
         file_size = os.path.getsize(tmp_path) / (1024*1024)
         logger.info(f"[BG] Downloaded JSON backup ({file_size:.1f} MB)")
@@ -1019,6 +1027,7 @@ async def _background_process_candidates(interval_minutes: int = 5):
     Checks ALL candidates with missing ai_analysis or low match_score,
     processes them using Gemini, runs every 5 minutes.
     """
+    from api.deps import AI_ANALYSIS_TIMEOUT
     await asyncio.sleep(60)
     db_service = get_db_service()
 
@@ -1029,7 +1038,7 @@ async def _background_process_candidates(interval_minutes: int = 5):
                 await asyncio.sleep(interval_minutes * 60)
                 continue
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
 
             def _get_unprocessed():
                 with db_service.get_connection() as conn:
@@ -1077,7 +1086,7 @@ async def _background_process_candidates(interval_minutes: int = 5):
 
                             result = await asyncio.wait_for(
                                 ai_service.analyze_candidate(analysis_text),
-                                timeout=60
+                                timeout=AI_ANALYSIS_TIMEOUT
                             )
 
                             if result:
@@ -1378,6 +1387,8 @@ async def lifespan(app):
     if _seed_needed:
         logger.info("Launching background JSON seed task...")
         _seed_task = asyncio.create_task(_background_seed_from_json())
+        _persistent_tasks.add(_seed_task)
+        _seed_task.add_done_callback(_persistent_tasks.discard)
 
     # Launch background candidate processing
     _process_task = asyncio.create_task(_background_process_candidates(interval_minutes=5))

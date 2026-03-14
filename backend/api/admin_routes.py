@@ -144,7 +144,7 @@ async def cleanup_gibberish_profiles(current_user: dict = Depends(require_admin)
             try:
                 _results = repair_database(conn)
             finally:
-                conn.close()
+                _db().return_connection(conn)
             # Flush connection pool so subsequent reads see the repaired data
             try:
                 with _db().connection_lock:
@@ -203,7 +203,7 @@ async def database_audit_report(current_user: dict = Depends(require_admin)):
             try:
                 return audit_database(conn)
             finally:
-                conn.close()
+                _db().return_connection(conn)
         report = await asyncio.to_thread(_audit_db)
         return {"status": "success", **report}
     except Exception as e:
@@ -228,7 +228,7 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
             try:
                 return repair_database(conn)
             finally:
-                conn.close()
+                _db().return_connection(conn)
         repair_results = await asyncio.to_thread(_phase1_repair)
         
         # Phase 2: Re-score all candidates that need it (0, NULL, or 50 default)
@@ -332,7 +332,7 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
             try:
                 return quick_health_check(conn3)
             finally:
-                conn3.close()
+                _db().return_connection(conn3)
         post_audit = await asyncio.to_thread(_phase3_audit)
         
         # Phase 4: Backup repaired DB to GCS
@@ -393,7 +393,7 @@ async def relookup_garbled_from_email(current_user: dict = Depends(require_admin
                 cols = [d[0] for d in cursor.description]
                 return [dict(zip(cols, r)) for r in rows]
             finally:
-                conn.close()
+                _db().return_connection(conn)
         candidates_to_fix = await asyncio.to_thread(_fetch_garbled_candidates)
         
         if not candidates_to_fix:
@@ -584,7 +584,7 @@ async def admin_update_candidate(candidate_id: str, request: Request, current_us
                 conn.commit()
                 return True
             finally:
-                conn.close()
+                _db().return_connection(conn)
         result = await asyncio.to_thread(_admin_update_db, filtered, candidate_id)
         if result is None:
             raise HTTPException(404, "Candidate not found")

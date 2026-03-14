@@ -1029,6 +1029,7 @@ async def rescore_single_candidate(candidate_id: str, current_user: dict = Depen
         # Use Gemini (preferred) or fallback AI service
         rescore_ai = _ai()
         try:
+            from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()
             if gemini_svc and gemini_svc.available:
                 rescore_ai = gemini_svc
@@ -1480,7 +1481,7 @@ async def ai_smart_search(
             if gemini_svc and gemini_svc.available:
                 ranked = await asyncio.wait_for(
                     gemini_svc.rank_candidates_for_job(candidates, query, top_n),
-                    timeout=45
+                    timeout=_deps().AI_ANALYSIS_TIMEOUT
                 )
                 if ranked:
                     formatted = _format_search_results(ranked, candidates)
@@ -1492,7 +1493,7 @@ async def ai_smart_search(
                         "message": f"Found {len(formatted)} matches using Gemini AI search"
                     }
         except asyncio.TimeoutError:
-            logger.warning("Gemini smart search timed out after 45s")
+            logger.warning(f"Gemini smart search timed out after {_deps().AI_ANALYSIS_TIMEOUT}s")
         except Exception as gemini_err:
             logger.warning(f"Gemini smart search failed: {gemini_err}")
 
@@ -1503,7 +1504,7 @@ async def ai_smart_search(
             if llm_svc and llm_svc.available:
                 ranked = await asyncio.wait_for(
                     llm_svc.rank_candidates_for_job(candidates, query, top_n),
-                    timeout=30
+                    timeout=_deps().AI_ANALYSIS_TIMEOUT
                 )
                 formatted = _format_search_results(ranked, candidates)
                 return {
@@ -1514,7 +1515,7 @@ async def ai_smart_search(
                     "message": f"Found {len(formatted)} matches using AI search"
                 }
         except asyncio.TimeoutError:
-            logger.warning("LLM smart search timed out after 30s")
+            logger.warning(f"LLM smart search timed out after {_deps().AI_ANALYSIS_TIMEOUT}s")
         except Exception as llm_err:
             logger.warning(f"LLM smart search failed: {llm_err}")
 
@@ -1522,7 +1523,7 @@ async def ai_smart_search(
         try:
             results = await asyncio.wait_for(
                 _matching_engine().match_candidates(query, candidates, top_n),
-                timeout=20
+                timeout=_deps().AI_ANALYSIS_TIMEOUT
             )
             formatted = _format_search_results(results, candidates)
             return {

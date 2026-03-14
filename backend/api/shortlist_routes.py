@@ -5,6 +5,8 @@ import asyncio
 import logging
 import time
 from core.lifespan import backup_db_to_gcs
+from services.microsoft_graph import MicrosoftGraphService
+from services.token_storage import get_token_storage
 import re
 import hashlib
 from typing import Dict, List, Optional, Any
@@ -18,6 +20,8 @@ from models.schemas import CandidateStatusUpdate, BulkShortlistRequest, Generate
 
 logger = logging.getLogger(__name__)
 _settings = get_settings()
+
+VALID_CANDIDATE_STATUSES = {'New', 'Reviewed', 'Shortlisted', 'Interviewing', 'Offered', 'Hired', 'Rejected', 'Withdrawn', 'Strong', 'Partial', 'Reject'}
 
 router = APIRouter(tags=["shortlist"])
 

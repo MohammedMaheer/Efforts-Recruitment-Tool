@@ -434,7 +434,7 @@ async def trigger_manual_scrape(process_all: bool = False, current_user: dict = 
         
         for account in _scraper().email_accounts:
             try:
-                mail = _scraper().connect_to_inbox(account)
+                mail = await asyncio.to_thread(_scraper().connect_to_inbox, account)
                 if not mail:
                     results_by_account.append({
                         "account": account.name,
@@ -457,7 +457,7 @@ async def trigger_manual_scrape(process_all: bool = False, current_user: dict = 
                         else:
                             await asyncio.to_thread(_db().insert_candidate, candidate)
                 
-                mail.logout()
+                await asyncio.to_thread(mail.logout)
                 
                 total_emails += len(emails)
                 total_candidates += len(candidates)

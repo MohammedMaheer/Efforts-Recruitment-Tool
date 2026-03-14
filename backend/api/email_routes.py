@@ -6,7 +6,6 @@ import hmac
 import logging
 import time
 from core.lifespan import backup_db_to_gcs
-from core.db_wrapper import IS_POSTGRES
 import re
 import hashlib
 from typing import Dict, List, Optional, Any
@@ -879,9 +878,9 @@ async def sync_email_applications(request: EmailSyncRequest, current_user: dict 
                     'email': candidate.get('from_email', ''),
                     'phone': candidate.get('extracted_info', {}).get('phone', ''),
                     'location': candidate.get('extracted_info', {}).get('location', ''),
-                    'experience': candidate.get('extracted_info', {}).get('experience', ''),
-                    'skills': candidate.get('extracted_info', {}).get('skills', ''),
-                    'education': candidate.get('extracted_info', {}).get('education', ''),
+                    'experience': candidate.get('extracted_info', {}).get('experience', 0),
+                    'skills': candidate.get('extracted_info', {}).get('skills', []),
+                    'education': candidate.get('extracted_info', {}).get('education', []),
                     'resume_text': candidate.get('body', ''),
                     'source': f"Email - {request.provider}",
                     'application_date': candidate.get('date', ''),
@@ -2409,7 +2408,7 @@ async def smart_email_refetch(current_user: dict = Depends(require_auth)):
                         try:
                             ai_analysis = await asyncio.wait_for(
                                 _ai().analyze_candidate(analysis_text[:5000]),
-                                timeout=45
+                                timeout=_deps().AI_ANALYSIS_TIMEOUT
                             )
                             if ai_analysis and ai_analysis.get('quality_score', 0) > 0:
                                 score = ai_analysis.get('quality_score')

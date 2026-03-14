@@ -110,7 +110,7 @@ Format as clean text with section headers. Be specific and compelling."""
             if gemini_svc and gemini_svc.available:
                 result = await asyncio.wait_for(
                     gemini_svc.chat(prompt, None),
-                    timeout=30
+                    timeout=_deps().AI_ANALYSIS_TIMEOUT
                 )
                 if result:
                     result_text = result

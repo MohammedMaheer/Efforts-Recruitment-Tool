@@ -285,18 +285,18 @@ class EmailParser:
                 imap_server = config['imap_server']
                 imap_port = config['imap_port']
             
-            # Connect to IMAP server
-            mail = imaplib.IMAP4_SSL(imap_server, imap_port)
-            
-            # Authenticate
-            if access_token:
-                # OAuth2 authentication (for Outlook/Gmail)
-                auth_string = self._generate_oauth2_string(email_address, access_token)
-                mail.authenticate('XOAUTH2', lambda x: auth_string)
-            else:
-                # Standard password authentication
-                mail.login(email_address, password)
-            
+            # Connect to IMAP server (blocking I/O — run in thread)
+            def _do_connect():
+                m = imaplib.IMAP4_SSL(imap_server, imap_port)
+                if access_token:
+                    auth_string = self._generate_oauth2_string(email_address, access_token)
+                    m.authenticate('XOAUTH2', lambda x: auth_string)
+                else:
+                    m.login(email_address, password)
+                return m
+
+            mail = await asyncio.to_thread(_do_connect)
+
             return {
                 'status': 'connected',
                 'email': email_address,

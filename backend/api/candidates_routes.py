@@ -5,8 +5,9 @@ import asyncio
 import logging
 import time
 from core.lifespan import backup_db_to_gcs
-from core.db_wrapper import IS_POSTGRES
 from services.gemini_service import get_gemini_service
+from services.microsoft_graph import MicrosoftGraphService
+from services.token_storage import get_token_storage
 import re
 import hashlib
 from typing import Dict, List, Optional, Any
@@ -346,9 +347,9 @@ async def get_candidates(
     cache_key = f"candidates_p{page}_l{limit}_c{job_category}_s{min_score}_q{search}_st{status}_f{fields}"
     
     # Check cache first
-    if cache_key in response_cache:
+    if cache_key in _cache():
         logger.info("Cache hit for candidates")
-        cached_result = response_cache[cache_key]
+        cached_result = _cache()[cache_key]
         cached_result["from_cache"] = True
         return cached_result
     
@@ -389,7 +390,7 @@ async def get_candidates(
         }
         
         # Cache result
-        response_cache[cache_key] = result
+        _cache()[cache_key] = result
         
         return result
     except Exception as e:
@@ -437,8 +438,8 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_admi
         
         # Step 1: Run gibberish cleanup
         try:
-            # Create a mock user for internal call
-            cleanup_result = await cleanup_gibberish_profiles(current_user)
+            from api.admin_routes import cleanup_gibberish_profiles as _cleanup_fn
+            cleanup_result = await _cleanup_fn(current_user)
             results['cleaned'] = cleanup_result.get('deleted_count', 0)
             results['encoding_fixed'] = cleanup_result.get('encoding_fixed_count', 0)
         except Exception as ce:
@@ -608,7 +609,7 @@ async def fix_garbage_summaries(current_user: dict = Depends(require_auth)):
                 try:
                     ai_result = await asyncio.wait_for(
                         ai_svc.analyze_candidate(resume_text),
-                        timeout=30
+                        timeout=_deps().AI_ANALYSIS_TIMEOUT
                     )
                     if ai_result:
                         ai_summary = ai_result.get('summary', '')
@@ -655,12 +656,8 @@ async def fix_garbage_summaries(current_user: dict = Depends(require_auth)):
         # Backup to GCS if we made changes
         if garbage_count > 0:
             try:
-                from google.cloud import storage
-                gcs_client = storage.Client()
-                bucket = gcs_client.bucket(GCS_BUCKET_NAME)
-                blob = bucket.blob('db/recruitment.db')
-                blob.upload_from_filename('/app/data/recruitment.db')
-                logger.info("☁️ Database backed up to GCS after summary fix")
+                await asyncio.to_thread(backup_db_to_gcs)
+                logger.info("Database backed up to GCS after summary fix")
             except Exception as e:
                 logger.warning(f"GCS backup after summary fix failed: {e}")
         
@@ -1317,7 +1314,7 @@ async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_
                 # Call Gemini for analysis
                 result = await asyncio.wait_for(
                     gemini_svc.analyze_candidate(analysis_text),
-                    timeout=60
+                    timeout=_deps().AI_ANALYSIS_TIMEOUT
                 )
                 
                 if result:
@@ -1415,6 +1412,33 @@ async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_
         raise HTTPException(500, "Error")
 
 
+
+
+@router.get("/api/candidates/stream")
+async def stream_all_candidates(batch_size: int = 100, current_user: dict = Depends(require_auth)):
+    """
+    Stream all candidates for large exports (10,000+)
+    Returns JSON array streamed in batches
+    """
+    from fastapi.responses import StreamingResponse
+
+    async def generate():
+        yield "["
+        first = True
+        all_batches = await asyncio.to_thread(lambda: list(_db().get_candidates_stream(min(batch_size, 500))))
+        for batch in all_batches:
+            for candidate in batch:
+                if not first:
+                    yield ","
+                yield json.dumps(candidate)
+                first = False
+        yield "]"
+
+    return StreamingResponse(
+        generate(),
+        media_type="application/json",
+        headers={"X-Stream-Type": "batch"}
+    )
 
 
 @router.get("/api/candidates/{candidate_id}")
@@ -1726,35 +1750,6 @@ async def import_linkedin_profile(profile: LinkedInProfileImport, current_user: 
     except Exception as e:
         logger.error(f"LinkedIn import error: {e}")
         raise HTTPException(500, "Failed to import LinkedIn profile")
-
-
-
-@router.get("/api/candidates/stream")
-async def stream_all_candidates(batch_size: int = 100, current_user: dict = Depends(require_auth)):
-    """
-    Stream all candidates for large exports (10,000+)
-    Returns JSON array streamed in batches
-    """
-    from fastapi.responses import StreamingResponse
-    
-    async def generate():
-        yield "["
-        first = True
-        all_batches = await asyncio.to_thread(lambda: list(_db().get_candidates_stream(min(batch_size, 500))))
-        for batch in all_batches:
-            for candidate in batch:
-                if not first:
-                    yield ","
-                yield json.dumps(candidate)
-                first = False
-        yield "]"
-    
-    return StreamingResponse(
-        generate(),
-        media_type="application/json",
-        headers={"X-Stream-Type": "batch"}
-    )
-
 
 
 @router.post("/api/candidates/deduplicate")
