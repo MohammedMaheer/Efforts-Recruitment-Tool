@@ -165,7 +165,7 @@ steps:
 
 substitutions:
   _REGION: 'us-central1'
-  _GCS_BUCKET: 'efforts-recruitment-ai-data'
+  _GCS_BUCKET: 'effortz-recruitment-ai-data'
   _CORS_ORIGINS: 'http://localhost:3000'
   _EMAIL_ADDRESS: 'hr@effortz.com'
   _MICROSOFT_REDIRECT_URI: 'https://efforts-recruitment-ai.web.app/auth/callback'
