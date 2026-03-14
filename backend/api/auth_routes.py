@@ -87,7 +87,7 @@ async def register(request: RegisterRequest):
     Registration can be disabled via REGISTRATION_ENABLED=false env var.
     """
     try:
-        reg_enabled = os.getenv('REGISTRATION_ENABLED', 'true').lower() == 'true'
+        reg_enabled = os.getenv('REGISTRATION_ENABLED', 'false').lower() == 'true'
         if not reg_enabled:
             raise HTTPException(403, "Registration is disabled. Contact an administrator.")
 

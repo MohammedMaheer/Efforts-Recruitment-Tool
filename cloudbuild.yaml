@@ -135,6 +135,8 @@ steps:
       - '3000'
       - '--allow-unauthenticated'
       - '--http-startup-probe-path=/'
+      - '--http-startup-probe-failure-threshold=10'
+      - '--http-startup-probe-initial-delay-seconds=5'
     id: 'deploy-frontend'
     waitFor: ['push-frontend']
 

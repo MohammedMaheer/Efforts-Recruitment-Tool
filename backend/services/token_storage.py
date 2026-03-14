@@ -138,17 +138,21 @@ class TokenStorage:
     
     def get_token(self, email: str) -> Optional[Dict]:
         """Get OAuth2 token for an email account, with expiry status. Thread-safe."""
+        # Determine if a one-time GCS restore is needed — fast check under lock
+        need_restore = False
+        with self._lock:
+            if not self._gcs_restored and not self._load_tokens().get(email):
+                self._gcs_restored = True  # Mark before releasing to prevent concurrent restores
+                need_restore = True
+
+        # GCS restore runs OUTSIDE the lock — avoids blocking all concurrent token reads
+        if need_restore:
+            self._restore_from_gcs()
+
         with self._lock:
             try:
                 tokens = self._load_tokens()
                 token_data = tokens.get(email)
-
-                # If no local token, try GCS restore (instance may have restarted)
-                if not token_data and not self._gcs_restored:
-                    if self._restore_from_gcs():
-                        tokens = self._load_tokens()
-                        token_data = tokens.get(email)
-                    self._gcs_restored = True  # Only try once per instance lifetime
 
                 if not token_data:
                     return None
