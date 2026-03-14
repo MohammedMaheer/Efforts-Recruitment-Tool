@@ -69,9 +69,9 @@ steps:
       - '--http-startup-probe-initial-delay-seconds=10'
       - '--http-liveness-probe-path=/health'
       - '--set-env-vars'
-      - 'ENVIRONMENT=production,DEBUG=false,HOST=0.0.0.0,PORT=8000,SYNC_INTERVAL_MINUTES=30,MAX_EMAILS_PER_SYNC=500,AI_TIMEOUT=60,AI_ANALYSIS_TIMEOUT=90,GEMINI_MODEL=gemini-2.5-flash,GCS_BUCKET_NAME=${_GCS_BUCKET},CORS_ORIGINS=${_CORS_ORIGINS},EMAIL_ADDRESS=${_EMAIL_ADDRESS},OAUTH_REDIRECT_URI=${_OAUTH_REDIRECT_URI}'
+      - 'ENVIRONMENT=production,DEBUG=false,HOST=0.0.0.0,PORT=8000,SYNC_INTERVAL_MINUTES=30,MAX_EMAILS_PER_SYNC=500,AI_TIMEOUT=60,AI_ANALYSIS_TIMEOUT=90,GEMINI_MODEL=gemini-2.5-flash,GCS_BUCKET_NAME=${_GCS_BUCKET},CORS_ORIGINS=${_CORS_ORIGINS},EMAIL_ADDRESS=${_EMAIL_ADDRESS},MICROSOFT_REDIRECT_URI=${_MICROSOFT_REDIRECT_URI}'
       - '--update-secrets'
-      - 'GEMINI_API_KEY=GEMINI_API_KEY:latest,JWT_SECRET_KEY=JWT_SECRET_KEY:latest,MICROSOFT_CLIENT_ID=MICROSOFT_CLIENT_ID:latest,MICROSOFT_CLIENT_SECRET=MICROSOFT_CLIENT_SECRET:latest,MICROSOFT_TENANT_ID=MICROSOFT_TENANT_ID:latest,ADMIN_PASSWORD=ADMIN_PASSWORD:latest,ADMIN_EMAIL=ADMIN_EMAIL:latest'
+      - 'GEMINI_API_KEY=GEMINI_API_KEY:latest,JWT_SECRET_KEY=JWT_SECRET_KEY:latest,MICROSOFT_CLIENT_ID=MICROSOFT_CLIENT_ID:latest,MICROSOFT_CLIENT_SECRET=MICROSOFT_CLIENT_SECRET:latest,MICROSOFT_TENANT_ID=MICROSOFT_TENANT_ID:latest,ADMIN_PASSWORD=ADMIN_PASSWORD:latest,ADMIN_EMAIL=ADMIN_EMAIL:latest,EMAIL_PASSWORD=EMAIL_PASSWORD:latest'
     id: 'deploy-backend'
     waitFor: ['push-backend']
 
@@ -140,12 +140,35 @@ steps:
     id: 'deploy-frontend'
     waitFor: ['push-frontend']
 
+  # Step 8: Patch backend CORS + print URLs for Azure AD registration
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: bash
+    args:
+      - '-c'
+      - |
+        BACKEND_URL=$(cat /workspace/backend_url.txt)
+        FRONTEND_URL=$(gcloud run services describe recruitment-frontend \
+          --region=${_REGION} --format='value(status.url)')
+        echo "============================================"
+        echo "Backend  URL : ${BACKEND_URL}"
+        echo "Frontend URL : ${FRONTEND_URL}"
+        echo "============================================"
+        echo "ACTION REQUIRED: Add this redirect URI to Azure AD app registration:"
+        echo "  ${FRONTEND_URL}/auth/callback"
+        echo "============================================"
+        gcloud run services update recruitment-backend \
+          --region=${_REGION} \
+          --update-env-vars="CORS_ORIGINS=${FRONTEND_URL},http://localhost:3000,MICROSOFT_REDIRECT_URI=${FRONTEND_URL}/auth/callback"
+        echo "CORS and MICROSOFT_REDIRECT_URI updated on backend."
+    id: 'patch-cors-and-print-urls'
+    waitFor: ['deploy-frontend']
+
 substitutions:
   _REGION: 'us-central1'
-  _GCS_BUCKET: 'efforts-recruitment-data'
-  _CORS_ORIGINS: 'https://efforts-recruitment-ai.web.app,https://efforts-recruitment-ai.firebaseapp.com'
-  _EMAIL_ADDRESS: ''
-  _OAUTH_REDIRECT_URI: 'https://efforts-recruitment-ai.web.app/auth/callback'
+  _GCS_BUCKET: 'efforts-recruitment-ai-data'
+  _CORS_ORIGINS: 'http://localhost:3000'
+  _EMAIL_ADDRESS: 'hr@effortz.com'
+  _MICROSOFT_REDIRECT_URI: 'https://efforts-recruitment-ai.web.app/auth/callback'
 
 images:
   - 'gcr.io/${PROJECT_ID}/recruitment-backend:${SHORT_SHA}'
