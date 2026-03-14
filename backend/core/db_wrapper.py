@@ -117,8 +117,11 @@ def _convert_sqlite_functions(sql: str) -> str:
     # AUTOINCREMENT → remove
     sql = re.sub(r'\bAUTOINCREMENT\b', '', sql, flags=re.IGNORECASE)
     
-    # LIKE → ILIKE for case-insensitive matching (SQLite LIKE is case-insensitive)
-    sql = re.sub(r'\bLIKE\b', 'ILIKE', sql, flags=re.IGNORECASE)
+    # LIKE → ILIKE for case-insensitive matching (SQLite LIKE is case-insensitive by default).
+    # Use alternation to skip occurrences inside single-quoted string literals.
+    sql = re.sub(r"('(?:[^'\\]|\\.)*')|(\bLIKE\b)",
+                 lambda m: m.group(1) if m.group(1) else 'ILIKE',
+                 sql, flags=re.IGNORECASE)
     
     # GROUP_CONCAT(col) → string_agg(col::text, ',')
     sql = re.sub(r'\bGROUP_CONCAT\((\w+)\)', r"string_agg(\1::text, ',')", sql, flags=re.IGNORECASE)

@@ -1010,7 +1010,7 @@ async def _background_seed_from_json():
                         json.dumps(c.get('workHistory', c.get('work_history', []))),
                         c.get('linkedin', ''),
                         c.get('status', 'New'),
-                        c.get('matchScore', c.get('match_score', 45)),
+                        c.get('matchScore', c.get('match_score', 0)),
                         c.get('job_category', c.get('jobCategory', 'General')),
                         c.get('job_subcategory', c.get('jobSubcategory', '')),
                         c.get('appliedDate', c.get('applied_date', '')),

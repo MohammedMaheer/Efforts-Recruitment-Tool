@@ -470,6 +470,21 @@ COUNT_PATTERN = re.compile(
 _CID_RE = re.compile(r'\(cid:\d+\)')
 _DIGITS_ONLY_RE = re.compile(r'\D')
 
+# Query normalization patterns — precompiled once at module load for _normalize_query_for_cache
+_QN_FILLER = [
+    re.compile(r'^(?:please\s+)?(?:can\s+you\s+)?(?:could\s+you\s+)?', re.IGNORECASE),
+    re.compile(r'^(?:show\s+me\s+|give\s+me\s+|find\s+me\s+|list\s+|get\s+me\s+)', re.IGNORECASE),
+    re.compile(r'^(?:i\s+need\s+|i\s+want\s+|i\'m\s+looking\s+for\s+)', re.IGNORECASE),
+]
+_QN_SYNONYMS = [
+    (re.compile(r'\bdevelopers?\b', re.IGNORECASE), 'developer'),
+    (re.compile(r'\bengineers?\b', re.IGNORECASE), 'engineer'),
+    (re.compile(r'\banalysts?\b', re.IGNORECASE), 'analyst'),
+    (re.compile(r'\bmanagers?\b', re.IGNORECASE), 'manager'),
+    (re.compile(r'\bspecialists?\b', re.IGNORECASE), 'specialist'),
+]
+_QN_WHITESPACE = re.compile(r'\s+')
+
 
 def _expand_location_terms(raw_terms: list, stop_words: frozenset = STOP_WORDS) -> set:
     """Expand location terms using aliases (bidirectional). Returns set of all matching terms."""
@@ -804,22 +819,11 @@ class GeminiService:
         Strips filler phrases and normalizes whitespace/case so semantically
         identical queries ("show me python devs" vs "list python developers") share a cache entry."""
         q = query.lower().strip()
-        # Strip common filler prefixes that don't change search intent
-        filler_prefixes = [
-            r'^(please\s+)?(can\s+you\s+)?(could\s+you\s+)?',
-            r'^(show\s+me\s+|give\s+me\s+|find\s+me\s+|list\s+|get\s+me\s+)',
-            r'^(i\s+need\s+|i\s+want\s+|i\'m\s+looking\s+for\s+)',
-        ]
-        for prefix in filler_prefixes:
-            q = re.sub(prefix, '', q)
-        # Normalize synonyms for cache key
-        q = re.sub(r'\bdevelopers?\b', 'developer', q)
-        q = re.sub(r'\bengineers?\b', 'engineer', q)
-        q = re.sub(r'\banalysts?\b', 'analyst', q)
-        q = re.sub(r'\bmanagers?\b', 'manager', q)
-        q = re.sub(r'\bspecialists?\b', 'specialist', q)
-        q = re.sub(r'\s+', ' ', q).strip()
-        return q
+        for pattern in _QN_FILLER:
+            q = pattern.sub('', q)
+        for pattern, replacement in _QN_SYNONYMS:
+            q = pattern.sub(replacement, q)
+        return _QN_WHITESPACE.sub(' ', q).strip()
 
     def _generate(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1024, thinking_budget: int = 0) -> str:
         """Synchronous text generation via Gemini.
