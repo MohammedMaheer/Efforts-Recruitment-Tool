@@ -322,7 +322,12 @@ async def reset_and_reparse_all_emails(current_user: dict = Depends(require_admi
                 logger.info(f"📊 Progress: {min(i+BATCH_SIZE, len(messages))}/{len(messages)} emails processed, {new_count} candidates...")
         
         logger.info(f"✅ Re-parse complete: {new_count} candidates from {len(messages)} emails, {ai_analyzed_count} AI-analyzed")
-        
+
+        try:
+            asyncio.create_task(asyncio.to_thread(backup_db_to_gcs))
+        except Exception:
+            pass
+
         return {
             "status": "success",
             "message": "All emails re-parsed successfully",
@@ -573,7 +578,8 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_admi
 
 
 @router.post("/api/candidates/fix-summaries")
-async def fix_garbage_summaries(current_user: dict = Depends(require_admin)):    """
+async def fix_garbage_summaries(current_user: dict = Depends(require_admin)):
+    """
     Find all candidates with garbage summaries (raw email body text like 'Dear HR...')
     and regenerate proper summaries using Gemini AI or structured field generation.
     """

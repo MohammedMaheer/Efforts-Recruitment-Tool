@@ -1534,8 +1534,8 @@ export async function generateQuickProfilePDF(candidate: CandidateData): Promise
           ...candidate,
           hasResume: full.hasResume ?? candidate.hasResume,
           summary: full.summary || candidate.summary || '',
-          education: full.education || [],
-          workHistory: (full.workHistory || []).map((j: Record<string, string>) => ({
+          education: full.education || (full as any).education_list || [],
+          workHistory: (full.workHistory || (full as any).work_history || []).map((j: Record<string, string>) => ({
             title: j.title || j.position || '',
             company: j.company || j.organization || '',
             duration: j.duration || j.period || '',

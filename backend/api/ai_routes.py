@@ -407,7 +407,29 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
             cached = _cache()[cache_key]
             cached['from_cache'] = True
             return cached
-        
+
+        # TIER 0 — Gemini
+        try:
+            from services.gemini_service import get_gemini_service
+            gemini_svc = get_gemini_service()
+            if gemini_svc and gemini_svc.available:
+                analysis = await asyncio.wait_for(
+                    gemini_svc.analyze_candidate_deep(candidate),
+                    timeout=30.0
+                )
+                if analysis and analysis.get('overall_rating'):
+                    result = {
+                        "candidate_id": candidate_id,
+                        "candidate_name": candidate['name'],
+                        **analysis,
+                        "ai_powered": True,
+                        "source": "gemini"
+                    }
+                    _cache()[cache_key] = result
+                    return result
+        except Exception as gemini_err:
+            logger.warning(f"Gemini deep analysis failed: {gemini_err}")
+
         # TIER 1: Try Local LLM (Ollama) — Free
         try:
             from services.llm_service import get_llm_service
@@ -888,6 +910,33 @@ async def compare_candidates(
         if len(candidates) < 2:
             raise HTTPException(404, "Could not find enough candidates to compare")
         
+        # TIER 0 — Gemini
+        try:
+            from services.gemini_service import get_gemini_service
+            gemini_svc = get_gemini_service()
+            if gemini_svc and gemini_svc.available:
+                jd_part = f" against this job: {job_description[:500]}" if job_description else ""
+                cand_summaries = [
+                    f"{c.get('name','?')}: {c.get('experience',0)}yr exp, skills: {', '.join(c.get('skills',[])[:5])}"
+                    for c in candidates
+                ]
+                query = f"Compare and rank these candidates{jd_part}. Candidates: {'; '.join(cand_summaries)}"
+                gemini_result = await asyncio.wait_for(
+                    gemini_svc.chat(query, None, candidates_data=candidates),
+                    timeout=30.0
+                )
+                if gemini_result:
+                    response_text = gemini_result.get('response', '') if isinstance(gemini_result, dict) else str(gemini_result)
+                    if response_text:
+                        return {
+                            "comparison_summary": response_text,
+                            "candidates": [c.get('name', 'Unknown') for c in candidates],
+                            "ai_powered": True,
+                            "source": "gemini"
+                        }
+        except Exception as gemini_err:
+            logger.warning(f"Gemini comparison failed: {gemini_err}")
+
         # TIER 1: Try Local LLM — Free
         try:
             from services.llm_service import get_llm_service
@@ -1156,9 +1205,10 @@ async def rescore_single_candidate(candidate_id: str, current_user: dict = Depen
         new_skills = None
         new_experience = None
 
+        _job_ctx = old_category or None
         try:
             ai_result = await asyncio.wait_for(
-                rescore_ai.analyze_candidate(analysis_text),
+                rescore_ai.analyze_candidate(analysis_text, job_context=_job_ctx),
                 timeout=_deps().AI_ANALYSIS_TIMEOUT,
             )
             if ai_result:
@@ -1453,28 +1503,55 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
         analyzed_count = 0
         failed_count = 0
         fallback_used = 0
-        
+        gemini_count = 0
+
         # Process batch_size candidates at a time (default 50 for high throughput)
         batch = new_candidates[:batch_size]
-        
+
         async def analyze_one(candidate):
-            nonlocal analyzed_count, failed_count, fallback_used
+            nonlocal analyzed_count, failed_count, fallback_used, gemini_count
             try:
-                # Run CPU-bound Local AI analysis in thread pool to avoid blocking event loop
-                result = await asyncio.to_thread(
-                    _ai().analyze_candidate_match,
-                    candidate,
-                    {"id": job_id, "title": "General Position", "required_skills": []}
-                )
+                _job_ctx = candidate.get('job_applied_for') or candidate.get('job_category') or None
+                analysis_text = candidate.get('resume_text', '') or candidate.get('summary', '')
+                result = None
+                engine = 'local_ai'
+
+                # TIER 0 — Gemini
+                if analysis_text:
+                    try:
+                        from services.gemini_service import get_gemini_service
+                        _ai_gemini = get_gemini_service()
+                        if _ai_gemini and _ai_gemini.available:
+                            gemini_result = await asyncio.wait_for(
+                                _ai_gemini.analyze_candidate(analysis_text, job_context=_job_ctx),
+                                timeout=15.0
+                            )
+                            if gemini_result and gemini_result.get('quality_score', 0) > 0:
+                                result = gemini_result
+                                engine = 'gemini'
+                                gemini_count += 1
+                    except Exception:
+                        pass  # fall through to local AI
+
+                if result is None:
+                    # Run CPU-bound Local AI analysis in thread pool to avoid blocking event loop
+                    result = await asyncio.to_thread(
+                        _ai().analyze_candidate_match,
+                        candidate,
+                        {"id": job_id, "title": "General Position", "required_skills": []}
+                    )
+
+                if result:
+                    result['ai_engine'] = engine
                 await asyncio.to_thread(_db().cache_ai_score, candidate['id'], job_id, result)
                 analyzed_count += 1
             except Exception as local_error:
                 logger.error(f"AI analysis failed for {candidate['id']}: {local_error}")
                 failed_count += 1
-        
+
         # Execute all analyses concurrently (Local AI can handle 100+ parallel)
         await asyncio.gather(*[analyze_one(c) for c in batch], return_exceptions=True)
-        
+
         return {
             "message": "Batch analysis complete",
             "total_candidates": len(new_candidates),
@@ -1482,7 +1559,7 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
             "analyzed_count": analyzed_count,
             "failed_count": failed_count,
             "fallback_used": fallback_used,
-            "ai_engine": "local_ai",
+            "ai_engine": "gemini" if gemini_count > 0 else "local_ai",
             "concurrent_processing": True
         }
     except Exception as e:

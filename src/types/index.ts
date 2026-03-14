@@ -208,8 +208,8 @@ export interface UploadResponse {
 }
 
 export interface BatchUploadResponse {
-  totalFiles: number;
-  successful: number;
+  total: number;
+  success: number;
   failed: number;
   results: UploadResponse[];
 }

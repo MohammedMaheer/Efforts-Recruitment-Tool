@@ -135,7 +135,7 @@ async def health_check():
         system_info = {"status": "unavailable"}
     
     status = "healthy" if db_ok else "degraded"
-    return {
+    result = {
         "status": status,
         "timestamp": datetime.now().isoformat(),
         "version": os.getenv('MODEL_VERSION', _settings.app_version),
@@ -147,6 +147,7 @@ async def health_check():
             "ai_embedding_cache": len(_ai().embedding_cache) if hasattr(_ai(), 'embedding_cache') else 0
         }
     }
+    return JSONResponse(content=result, status_code=200 if db_ok else 503)
 
 
 

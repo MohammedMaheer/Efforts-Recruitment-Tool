@@ -96,7 +96,7 @@ type SortOption = 'score-desc' | 'score-asc' | 'date-newest' | 'date-oldest' | '
 export default function Candidates() {
   const navigate = useNavigate()
   const [searchParams] = useSearchParams()
-  const { candidates, loading, refetch, totalCount } = useCandidates({ autoFetch: true })
+  const { candidates, loading, error, refetch, totalCount } = useCandidates({ autoFetch: true })
   // Auto-refresh when email sync detects new candidates
   useEmailSync(refetch, 30000)
   const [searchQuery, setSearchQuery] = useState(searchParams.get('search') || '')
@@ -213,7 +213,8 @@ export default function Candidates() {
         const matchesName = candidate.name.toLowerCase().includes(searchLower)
         const matchesCategory = candidate.jobCategory.toLowerCase().includes(searchLower)
         const matchesSkill = candidate.skills.some(skill => skill.toLowerCase().includes(searchLower))
-        if (!matchesName && !matchesCategory && !matchesSkill) return false
+        const matchesEmail = candidate.email?.toLowerCase().includes(searchLower)
+        if (!matchesName && !matchesCategory && !matchesSkill && !matchesEmail) return false
       }
       
       return true
@@ -840,7 +841,7 @@ export default function Candidates() {
                                   </button>
                                   {candidate.hasResume && (
                                     <button
-                                      onClick={(e) => { e.stopPropagation(); downloadOriginalResume(candidate).catch(() => {}) }}
+                                      onClick={(e) => { e.stopPropagation(); downloadOriginalResume(candidate).catch((err: Error) => toast.error('Download Failed', err.message || 'No resume available')) }}
                                       className="p-1 rounded-full hover:bg-emerald-100 text-emerald-600 transition-colors"
                                       title="Download Original Resume"
                                     >
@@ -1074,7 +1075,7 @@ export default function Candidates() {
                         </button>
                         {candidate.hasResume && (
                           <button
-                            onClick={(e) => { e.stopPropagation(); downloadOriginalResume(candidate).catch(() => {}) }}
+                            onClick={(e) => { e.stopPropagation(); downloadOriginalResume(candidate).catch((err: Error) => toast.error('Download Failed', err.message || 'No resume available')) }}
                             className="p-1 rounded-full hover:bg-emerald-100 text-emerald-600 transition-colors"
                             title="Download Original Resume"
                           >
@@ -1099,8 +1100,17 @@ export default function Candidates() {
         </Card>
       )}
 
+      {/* Error State */}
+      {!loading && error && (
+        <div className="text-center py-12">
+          <p className="text-red-600 font-medium">Failed to load candidates</p>
+          <p className="text-gray-500 text-sm mt-1">{error}</p>
+          <button onClick={refetch} className="mt-3 text-sm text-indigo-600 hover:underline">Try again</button>
+        </div>
+      )}
+
       {/* Empty State */}
-      {!loading && filteredCandidates.length === 0 && (
+      {!loading && !error && filteredCandidates.length === 0 && (
         <div className="text-center py-12">
           <Users className="w-16 h-16 text-gray-300 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-gray-900">No candidates found</h3>

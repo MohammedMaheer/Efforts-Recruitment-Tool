@@ -49,11 +49,11 @@ USER appuser
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
+    CMD curl -f http://localhost:${PORT:-8000}/health || exit 1
 
 # Run application
 # We use uvicorn directly instead of gunicorn because:
 # 1. Cloud Run manages process lifecycle (gunicorn's process management is redundant)
 # 2. Gunicorn's worker timeout kills workers during long-running background tasks (email sync)
 # 3. Single worker (w=1) means gunicorn adds overhead with no benefit
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1", "--timeout-keep-alive", "30", "--log-level", "info"]
+CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1 --timeout-keep-alive 30 --log-level info"]

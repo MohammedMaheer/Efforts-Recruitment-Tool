@@ -801,10 +801,19 @@ class DatabaseService:
                 education_data = json.dumps(education_data)
             elif not education_data:
                 education_data = '[]'
-            
+
+            _ic_sk = candidate.get('skills', [])
+            _ic_sk_json = json.dumps(_ic_sk) if isinstance(_ic_sk, list) else (_ic_sk if isinstance(_ic_sk, str) else json.dumps([]))
+            _ic_wh = candidate.get('workHistory') or candidate.get('work_history') or []
+            _ic_wh_json = json.dumps(_ic_wh) if isinstance(_ic_wh, list) else (_ic_wh if isinstance(_ic_wh, str) else json.dumps([]))
+            _ic_ce = candidate.get('certifications', [])
+            _ic_ce_json = json.dumps(_ic_ce) if isinstance(_ic_ce, list) else (_ic_ce if isinstance(_ic_ce, str) else json.dumps([]))
+            _ic_la = candidate.get('languages', [])
+            _ic_la_json = json.dumps(_ic_la) if isinstance(_ic_la, list) else (_ic_la if isinstance(_ic_la, str) else json.dumps([]))
+
             cursor.execute("""
                 INSERT INTO candidates (
-                    id, email, email_hash, name, phone, location, 
+                    id, email, email_hash, name, phone, location,
                     skills, experience, education, summary, work_history,
                     linkedin, status, match_score, job_category, job_subcategory,
                     applied_date, last_updated, raw_email_subject,
@@ -819,11 +828,11 @@ class DatabaseService:
                 candidate['name'],
                 candidate.get('phone', ''),
                 candidate.get('location', ''),
-                json.dumps(candidate.get('skills', [])),
+                _ic_sk_json,
                 candidate.get('experience', 0),
                 education_data,
                 candidate.get('summary', ''),
-                json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
+                _ic_wh_json,
                 candidate.get('linkedin', ''),
                 candidate.get('status', 'New'),
                 candidate.get('matchScore') or 0,  # 0 = unscored, never assign fake score
@@ -832,8 +841,8 @@ class DatabaseService:
                 candidate.get('appliedDate'),
                 candidate.get('last_updated'),
                 candidate.get('raw_email_subject', ''),
-                json.dumps(candidate.get('certifications', [])),
-                json.dumps(candidate.get('languages', [])),
+                _ic_ce_json,
+                _ic_la_json,
                 candidate.get('resume_text', ''),
                 candidate.get('nationality', ''),
                 candidate.get('notice_period', ''),
@@ -893,14 +902,23 @@ class DatabaseService:
         conn = self.get_connection_raw()
         try:
             cursor = conn.cursor()
-            
+
             # Handle education - ensure it's JSON string
             education_data = candidate.get('education', '[]')
             if isinstance(education_data, list):
                 education_data = json.dumps(education_data)
             elif not education_data:
                 education_data = '[]'
-            
+
+            _uc_sk = candidate.get('skills', [])
+            _uc_sk_json = json.dumps(_uc_sk) if isinstance(_uc_sk, list) else (_uc_sk if isinstance(_uc_sk, str) else json.dumps([]))
+            _uc_wh = candidate.get('workHistory') or candidate.get('work_history') or []
+            _uc_wh_json = json.dumps(_uc_wh) if isinstance(_uc_wh, list) else (_uc_wh if isinstance(_uc_wh, str) else json.dumps([]))
+            _uc_ce = candidate.get('certifications', [])
+            _uc_ce_json = json.dumps(_uc_ce) if isinstance(_uc_ce, list) else (_uc_ce if isinstance(_uc_ce, str) else json.dumps([]))
+            _uc_la = candidate.get('languages', [])
+            _uc_la_json = json.dumps(_uc_la) if isinstance(_uc_la, list) else (_uc_la if isinstance(_uc_la, str) else json.dumps([]))
+
             cursor.execute("""
                 UPDATE candidates SET
                     name = ?,
@@ -932,11 +950,11 @@ class DatabaseService:
                 candidate['name'],
                 candidate.get('phone', ''),
                 candidate.get('location', ''),
-                json.dumps(candidate.get('skills', [])),
+                _uc_sk_json,
                 candidate.get('experience', 0),
                 education_data,
                 candidate.get('summary', ''),
-                json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
+                _uc_wh_json,
                 candidate.get('linkedin', ''),
                 candidate.get('status', 'New'),
                 candidate.get('matchScore') or None,
@@ -944,8 +962,8 @@ class DatabaseService:
                 candidate.get('job_subcategory', ''),
                 candidate.get('last_updated'),
                 candidate.get('raw_email_subject', ''),
-                json.dumps(candidate.get('certifications', [])),
-                json.dumps(candidate.get('languages', [])),
+                _uc_ce_json,
+                _uc_la_json,
                 candidate.get('nationality', ''),
                 candidate.get('notice_period', ''),
                 candidate.get('current_salary', ''),
@@ -1046,16 +1064,31 @@ class DatabaseService:
         education_data = candidate.get('education', [])
         if isinstance(education_data, list):
             education_data = json.dumps(education_data)
+        _sk = candidate.get('skills', [])
+        _sk_json = json.dumps(_sk) if isinstance(_sk, list) else (_sk if isinstance(_sk, str) else json.dumps([]))
+        _wh = candidate.get('workHistory') or candidate.get('work_history') or []
+        _wh_json = json.dumps(_wh) if isinstance(_wh, list) else (_wh if isinstance(_wh, str) else json.dumps([]))
+        _ce = candidate.get('certifications', [])
+        _ce_json = json.dumps(_ce) if isinstance(_ce, list) else (_ce if isinstance(_ce, str) else json.dumps([]))
+        _la = candidate.get('languages', [])
+        _la_json = json.dumps(_la) if isinstance(_la, list) else (_la if isinstance(_la, str) else json.dumps([]))
+        _ai_val = candidate.get('ai_analysis')
+        _ai_json = json.dumps(_ai_val, default=str) if isinstance(_ai_val, dict) else (_ai_val if isinstance(_ai_val, str) else None)
+        _str_val = candidate.get('strengths')
+        _str_json = json.dumps(_str_val) if isinstance(_str_val, list) else (_str_val if isinstance(_str_val, str) else None)
+        _gap_val = candidate.get('gaps')
+        _gap_json = json.dumps(_gap_val) if isinstance(_gap_val, list) else (_gap_val if isinstance(_gap_val, str) else None)
         cursor.execute("""
             INSERT OR REPLACE INTO candidates (
-                id, email, email_hash, name, phone, location, 
+                id, email, email_hash, name, phone, location,
                 skills, experience, education, summary, work_history,
                 linkedin, status, match_score, job_category, job_subcategory,
                 applied_date, last_updated, raw_email_subject, is_active,
                 certifications, languages, resume_text,
                 nationality, notice_period, current_salary, expected_salary,
-                source_portal, job_applied_for
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                source_portal, job_applied_for,
+                ai_analysis, strengths, gaps, shortlisted_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, COALESCE(NULLIF(?, 0), (SELECT match_score FROM candidates WHERE id = ?)), ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             candidate['id'],
             candidate.get('email', ''),
@@ -1063,21 +1096,22 @@ class DatabaseService:
             candidate.get('name', ''),
             candidate.get('phone', ''),
             candidate.get('location', ''),
-            json.dumps(candidate.get('skills', [])),
+            _sk_json,
             candidate.get('experience', 0),
             education_data,
             candidate.get('summary', ''),
-            json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
+            _wh_json,
             candidate.get('linkedin', ''),
             candidate.get('status', 'New'),
-            candidate.get('matchScore', 0),
+            candidate.get('matchScore') or candidate.get('match_score') or 0,
+            candidate['id'],
             candidate.get('job_category', candidate.get('jobCategory', 'General')),
             candidate.get('job_subcategory', candidate.get('jobSubcategory', '')),
             candidate.get('appliedDate', ''),
             candidate.get('last_updated', datetime.now().isoformat()),
             candidate.get('raw_email_subject', ''),
-            json.dumps(candidate.get('certifications', [])),
-            json.dumps(candidate.get('languages', [])),
+            _ce_json,
+            _la_json,
             candidate.get('resume_text', ''),
             candidate.get('nationality', ''),
             candidate.get('notice_period', ''),
@@ -1085,6 +1119,10 @@ class DatabaseService:
             candidate.get('expected_salary', ''),
             candidate.get('source_portal', 'Direct'),
             candidate.get('job_applied_for', ''),
+            _ai_json,
+            _str_json,
+            _gap_json,
+            candidate.get('shortlisted_at') or None,
         ))
 
     @staticmethod
@@ -1262,7 +1300,8 @@ class DatabaseService:
                        c.work_history, c.certifications, c.languages, c.phone, c.linkedin,
                        c.created_at, c.applied_date,
                        CASE WHEN r.candidate_id IS NOT NULL THEN 1 ELSE 0 END AS has_resume_flag,
-                       c.nationality, c.notice_period, c.job_applied_for, c.resume_text
+                       c.nationality, c.notice_period, c.job_applied_for, c.resume_text,
+                       c.current_salary, c.expected_salary
                 FROM candidates c
                 LEFT JOIN resumes r ON c.id = r.candidate_id
                 WHERE c.is_active = 1
@@ -1437,10 +1476,12 @@ class DatabaseService:
                     params.append(filters['min_experience'])
                 
                 if filters.get('search'):
-                    where_clause += " AND (name LIKE ? OR email LIKE ? OR skills LIKE ? OR job_subcategory LIKE ? OR summary LIKE ? OR location LIKE ? OR work_history LIKE ? OR job_applied_for LIKE ?)"
-                    search_term = f"%{filters['search']}%"
+                    where_clause += " AND (name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' OR skills LIKE ? ESCAPE '\\' OR job_subcategory LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR location LIKE ? ESCAPE '\\' OR work_history LIKE ? ESCAPE '\\' OR job_applied_for LIKE ? ESCAPE '\\')"
+                    _search_raw = filters['search']
+                    _search_esc = _search_raw.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                    search_term = f"%{_search_esc}%"
                     params.extend([search_term] * 8)
-            
+
             # Get total count (same filters, no LIMIT/OFFSET)
             cursor.execute(f"SELECT COUNT(*) FROM candidates {where_clause}", params)
             total_count = cursor.fetchone()[0]
@@ -1491,8 +1532,10 @@ class DatabaseService:
                     where_clause += " AND experience >= ?"
                     params.append(filters['min_experience'])
                 if filters.get('search'):
-                    where_clause += " AND (name LIKE ? OR email LIKE ? OR skills LIKE ? OR job_subcategory LIKE ? OR summary LIKE ? OR location LIKE ? OR work_history LIKE ? OR job_applied_for LIKE ?)"
-                    search_term = f"%{filters['search']}%"
+                    where_clause += " AND (name LIKE ? ESCAPE '\\' OR email LIKE ? ESCAPE '\\' OR skills LIKE ? ESCAPE '\\' OR job_subcategory LIKE ? ESCAPE '\\' OR summary LIKE ? ESCAPE '\\' OR location LIKE ? ESCAPE '\\' OR work_history LIKE ? ESCAPE '\\' OR job_applied_for LIKE ? ESCAPE '\\')"
+                    _search_raw = filters['search']
+                    _search_esc = _search_raw.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+                    search_term = f"%{_search_esc}%"
                     params.extend([search_term] * 8)
 
             cursor.execute(f"SELECT COUNT(*) FROM candidates {where_clause}", params)
@@ -1604,7 +1647,7 @@ class DatabaseService:
                             candidate.get('experience', 0),
                             education_data,
                             candidate.get('summary', ''),
-                            json.dumps(candidate.get('workHistory', [])),
+                            json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
                             candidate.get('linkedin', ''),
                             candidate.get('matchScore') or None,
                             candidate.get('job_category', 'General'),
@@ -1645,7 +1688,7 @@ class DatabaseService:
                             candidate.get('experience', 0),
                             education_data,
                             candidate.get('summary', ''),
-                            json.dumps(candidate.get('workHistory', [])),
+                            json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
                             candidate.get('linkedin', ''),
                             candidate.get('status', 'New'),
                             candidate.get('matchScore') or 0,

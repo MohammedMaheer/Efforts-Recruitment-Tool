@@ -37,6 +37,26 @@ GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "efforts-recruitment-ai-data")
 GCS_DB_BLOB_PATH = "db/recruitment.db"
 LOCAL_DB_PATH = "./recruitment.db"
 
+# ── Blocked email/name patterns (module-level for reuse) ─────────────────
+_BLOCKED_EMAIL_PATTERNS = [
+    'noreply', 'no-reply', 'no_reply', 'donotreply', 'do-not-reply',
+    'mailer-daemon', 'postmaster', 'notifications@', 'notification@',
+    'messages-noreply', 'alert@', 'alerts@', 'system@', 'bounce@',
+    'auto-confirm', 'autoconfirm', 'feedback@noreply',
+]
+_BLOCKED_NAMES = [
+    'unknown', 'messages', 'notification', 'noreply', 'no reply',
+    'system', 'admin', 'administrator', 'postmaster', 'mailer-daemon',
+    'indeed', 'linkedin', 'glassdoor', 'monster', 'info', 'support',
+    'test', 'null', 'none', 'n/a', 'na', '',
+    'lusha', 'maestrorecruiter', 'maestro recruiter', 'recruiter',
+    'hiring manager', 'hiring team', 'dear sir', 'dear madam',
+    'candidate', 'applicant', 'resume', 'cv', 'cover letter',
+    'naukri', 'bayt', 'gulftalent', 'ziprecruiter', 'careerbuilder',
+    'jobstreet', 'seek', 'reed', 'totaljobs', 'cwjobs',
+    'user', 'guest', 'subscriber', 'member',
+]
+
 
 # ── GCS Persistence ─────────────────────────────────────────────────────
 
@@ -89,7 +109,7 @@ async def _acquire_distributed_lease(key: str, ttl_seconds: int = 120) -> bool:
         return await asyncio.to_thread(_acquire)
     except Exception as e:
         logger.warning(f"Lease acquire failed for {key}: {e}")
-        return True
+        return False
 
 
 def _get_gcs_bucket():
@@ -517,24 +537,6 @@ async def auto_sync_emails():
 
                                 _email_lower = candidate['email'].lower()
                                 _name_lower = (candidate.get('name', '') or '').lower().strip()
-                                _BLOCKED_EMAIL_PATTERNS = [
-                                    'noreply', 'no-reply', 'no_reply', 'donotreply', 'do-not-reply',
-                                    'mailer-daemon', 'postmaster', 'notifications@', 'notification@',
-                                    'messages-noreply', 'alert@', 'alerts@', 'system@', 'bounce@',
-                                    'auto-confirm', 'autoconfirm', 'feedback@noreply',
-                                ]
-                                _BLOCKED_NAMES = [
-                                    'unknown', 'messages', 'notification', 'noreply', 'no reply',
-                                    'system', 'admin', 'administrator', 'postmaster', 'mailer-daemon',
-                                    'indeed', 'linkedin', 'glassdoor', 'monster', 'info', 'support',
-                                    'test', 'null', 'none', 'n/a', 'na', '',
-                                    'lusha', 'maestrorecruiter', 'maestro recruiter', 'recruiter',
-                                    'hiring manager', 'hiring team', 'dear sir', 'dear madam',
-                                    'candidate', 'applicant', 'resume', 'cv', 'cover letter',
-                                    'naukri', 'bayt', 'gulftalent', 'ziprecruiter', 'careerbuilder',
-                                    'jobstreet', 'seek', 'reed', 'totaljobs', 'cwjobs',
-                                    'user', 'guest', 'subscriber', 'member',
-                                ]
                                 if any(pat in _email_lower for pat in _BLOCKED_EMAIL_PATTERNS):
                                     logger.debug(f"Blocked system/noreply email: {candidate['email'][:50]}")
                                     if msg_id:
@@ -572,8 +574,9 @@ async def auto_sync_emails():
 
                                 if needs_ai and analysis_text and len(analysis_text) > 20:
                                     try:
+                                        _job_ctx = candidate.get('job_applied_for') or candidate.get('job_category') or None
                                         ai_analysis = await asyncio.wait_for(
-                                            ai_service.analyze_candidate(analysis_text),
+                                            ai_service.analyze_candidate(analysis_text, job_context=_job_ctx),
                                             timeout=AI_ANALYSIS_TIMEOUT
                                         )
                                         if ai_analysis and ai_analysis.get('quality_score') is not None and ai_analysis.get('quality_score') > 0:
@@ -833,7 +836,7 @@ async def auto_sync_emails():
                             try:
                                 await asyncio.to_thread(db_service.set_sync_metadata, 'last_email_sync_time', sync_start_time)
                             except Exception as e:
-                                logger.debug(f"Non-critical: set_sync_metadata failed: {e}")
+                                logger.warning(f"Non-critical: set_sync_metadata failed: {e}")
                             if new_count > 0:
                                 response_cache.clear()
                                 logger.info(f"Cache cleared after adding {new_count} new candidates")
@@ -895,7 +898,7 @@ async def auto_sync_emails():
 
     while True:
         try:
-            has_sync_lease = await _acquire_distributed_lease('lease:auto_sync', ttl_seconds=120)
+            has_sync_lease = await _acquire_distributed_lease('lease:auto_sync', ttl_seconds=700)
             if not has_sync_lease:
                 await asyncio.sleep(15)
                 continue
@@ -1110,7 +1113,10 @@ async def _background_process_candidates(interval_minutes: int = 5):
                                 continue
 
                             result = await asyncio.wait_for(
-                                ai_service.analyze_candidate(analysis_text),
+                                ai_service.analyze_candidate(
+                                    analysis_text,
+                                    job_context=candidate.get('job_applied_for') or candidate.get('job_category') or None
+                                ),
                                 timeout=AI_ANALYSIS_TIMEOUT
                             )
 

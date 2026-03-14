@@ -109,8 +109,8 @@ const transformCandidate = (c: RawCandidate): Candidate => {
   const experience = c.experience || c.experience_years || 0
   
   // Get match score (matchScore from DB, or ai_score, or match_score) - ENSURE IT'S A NUMBER
-  const rawScore = c.matchScore ?? c.ai_score ?? c.match_score ?? 50
-  const matchScore = typeof rawScore === 'number' ? rawScore : parseFloat(rawScore) || 50
+  const rawScore = c.matchScore ?? c.ai_score ?? c.match_score ?? 0
+  const matchScore = typeof rawScore === 'number' ? rawScore : parseFloat(rawScore) ?? 0
   
   // Determine status - use backend status if available, otherwise derive from score
   const backendStatus = c.status || c.candidate_status || ''
@@ -134,13 +134,14 @@ const transformCandidate = (c: RawCandidate): Candidate => {
     summary: c.summary || c.raw_text?.substring(0, 300) || '',
     education,
     workHistory,
-    hasResume: c.hasResume || false,
+    hasResume: c.hasResume ?? (c as any).has_resume ?? false,
     jobCategory: c.job_category || 'General',
+    jobSubcategory: (c as any).job_subcategory || (c as any).jobSubcategory || '',
     linkedin: c.linkedin || '',
     evaluation: {
       strengths: parseJSON<string>(c.strengths, []),
       gaps: parseJSON<string>(c.gaps, []),
-      recommendation: c.job_category || 'General'
+      recommendation: (c as any).recommendation || (c as any).hiring_recommendation || c.job_category || 'General'
     },
     certifications: parseJSON<string>(c.certifications, []),
     languages: parseJSON<string>(c.languages, []),

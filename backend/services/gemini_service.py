@@ -784,7 +784,7 @@ class GeminiService:
     def _get_search_cached(self, query: str, num_candidates: int, total: int) -> Optional[Any]:
         """Check search cache using normalized query key. Thread-safe."""
         normalized = self._normalize_query_for_cache(query)
-        key = f"search:{hashlib.sha256(f'{normalized}:{num_candidates}:{total}'.encode()).hexdigest()}"
+        key = f"search:{hashlib.sha256(f'{normalized}:{num_candidates}'.encode()).hexdigest()}"
         with self._search_cache_lock:
             if key in self._search_cache:
                 entry = self._search_cache[key]
@@ -802,7 +802,7 @@ class GeminiService:
         - Thin results (few/no candidates): 5 min TTL (pool may grow soon)
         """
         normalized = self._normalize_query_for_cache(query)
-        key = f"search:{hashlib.sha256(f'{normalized}:{num_candidates}:{total}'.encode()).hexdigest()}"
+        key = f"search:{hashlib.sha256(f'{normalized}:{num_candidates}'.encode()).hexdigest()}"
         # Adaptive TTL: fewer results → shorter cache (candidate pool might grow)
         result_count = num_candidates if isinstance(num_candidates, int) else 0
         ttl = self._search_cache_ttl if result_count >= 5 else max(300, self._search_cache_ttl // 3)
@@ -1256,12 +1256,12 @@ Return JSON:
     "certifications": ["certs"],
     "languages": ["languages"],
     "linkedin": "",
-    "work_history": ["Recent company/role"]
+    "work_history": [{"title": "", "company": "", "period": "", "duration": "", "description": ""}]
 }}
 
 quality_score rules: 10+ skills + 5+ yrs + degree = 70-85 | 5-9 skills + 2-5 yrs = 55-70 | 3-4 skills + 1-2 yrs = 45-55 | Nearly empty = below 30 | Any skills/experience = min 35. Never default to 25/50/65."""
 
-        result = await self._agenerate_json(prompt, temperature=0.1)
+        result = await self._agenerate_json(prompt, temperature=0.0, max_tokens=2048)
 
         if result:
             # Normalize score — prefer quality_score, then match_score
@@ -1475,7 +1475,7 @@ SCORING GUIDELINES:
 
 Be specific — reference actual skills, companies, and experience from the profile. Never be generic."""
 
-        result = await self._agenerate_json(prompt, temperature=0.15)
+        result = await self._agenerate_json(prompt, temperature=0.15, max_tokens=2048)
 
         if result:
             result.setdefault('overall_assessment', result.get('executive_summary', ''))
@@ -1538,7 +1538,7 @@ Return JSON:
     "risk_factors": ["risk1"]
 }}"""
 
-        result = await self._agenerate_json(prompt, temperature=0.15)
+        result = await self._agenerate_json(prompt, temperature=0.15, max_tokens=2048)
 
         if result:
             score = result.get('match_score', 50)
@@ -1639,8 +1639,9 @@ Return JSON:
         _neg_match_jd = NEGATIVE_PATTERN.search(job_description)
         if _neg_match_jd:
             neg_raw = _neg_match_jd.group(1).strip().lower()
-            for part in re.split(r'[,;&]+', neg_raw):
+            for part in re.split(r'[,;&]+|\s+or\s+', neg_raw):
                 part = part.strip()
+                part = re.sub(r'\s+(background|experience|skills?|developers?|engineers?|knowledge|expertise)$', '', part)
                 if part and part not in STOP_WORDS and len(part) > 1:
                     jd_negative_terms.add(part)
 
@@ -1788,7 +1789,7 @@ Return JSON:
         # Check cache first
         uncached = []
         for c in shortlisted:
-            ck = self._cache_key("fast_match", f"{c.get('name','')}:{c.get('email','')}:{job_description[:200]}")
+            ck = self._cache_key("fast_match", f"{c.get('name','')}:{c.get('email','')}:{hashlib.sha256(job_description.encode()).hexdigest()[:16]}")
             cached = self._get_cached(ck)
             if cached:
                 results.append({'candidate': c, 'match': cached, 'score': cached.get('match_score', 0)})
@@ -1805,7 +1806,7 @@ Return JSON:
                 for j, c in enumerate(batch):
                     if j < len(batch_results):
                         match_data = batch_results[j]
-                        ck = self._cache_key("fast_match", f"{c.get('name','')}:{c.get('email','')}:{job_description[:200]}")
+                        ck = self._cache_key("fast_match", f"{c.get('name','')}:{c.get('email','')}:{hashlib.sha256(job_description.encode()).hexdigest()[:16]}")
                         self._set_cache(ck, match_data)
                         batch_results_list.append({'candidate': c, 'match': match_data, 'score': match_data.get('match_score', 0)})
             except Exception as e:
@@ -1898,6 +1899,18 @@ Return JSON:
         _sen_m = SENIORITY_PATTERN.search(job_description)
         if _sen_m:
             constraints_lines.append(f"SENIORITY: {_sen_m.group(1)} level — verify via work history titles, not just years")
+        _neg_m = NEGATIVE_PATTERN.search(job_description)
+        if _neg_m:
+            _neg_raw = _neg_m.group(1).strip().lower()
+            jd_negative_terms = set()
+            for _part in re.split(r'[,;&]+|\s+or\s+', _neg_raw):
+                _part = _part.strip()
+                _part = re.sub(r'\s+(background|experience|skills?|developers?|engineers?|knowledge|expertise)$', '', _part)
+                if _part and _part not in STOP_WORDS and len(_part) > 1:
+                    jd_negative_terms.add(_part)
+            if jd_negative_terms:
+                neg_str = ', '.join(sorted(jd_negative_terms))
+                constraints_lines.append(f"EXCLUDE (HARD): candidates with {neg_str} background = score 0-20")
         constraints_block = "\n".join(f"  • {l}" for l in constraints_lines) if constraints_lines else "  • None — score by overall fit"
 
         n = len(batch)
@@ -1924,7 +1937,7 @@ Score guidelines: 85-100 Excellent fit (all constraints met + strong match), 70-
 
 Return: {{"candidates": [...]}}"""
 
-        result = await self._agenerate_json(prompt, temperature=0.1)
+        result = await self._agenerate_json(prompt, temperature=0.0, max_tokens=2048)
         if not result:
             raise ValueError("Empty Gemini batch response")
 
@@ -1986,7 +1999,7 @@ Return JSON:
     "best_for_role": "Best candidate and why"
 }}"""
 
-        result = await self._agenerate_json(prompt, temperature=0.2)
+        result = await self._agenerate_json(prompt, temperature=0.2, max_tokens=2048)
         return result or {'ranking': [], 'comparison_summary': 'Comparison unavailable'}
 
     # ==================================================================
@@ -2276,8 +2289,9 @@ Return JSON:
             _neg_match = NEGATIVE_PATTERN.search(message)
             if _neg_match:
                 neg_raw = _neg_match.group(1).strip().lower()
-                for part in re.split(r'[,;&]+', neg_raw):
+                for part in re.split(r'[,;&]+|\s+or\s+', neg_raw):
                     part = part.strip()
+                    part = re.sub(r'\s+(background|experience|skills?|developers?|engineers?|knowledge|expertise)$', '', part)
                     if part and part not in STOP_WORDS and len(part) > 1:
                         negative_terms.add(part)
                 if negative_terms:
@@ -2896,7 +2910,7 @@ Return JSON:
                 MAX_CANDIDATES_TO_GEMINI = 25  # Broad/simple query — wider pool needed
             
             # Ensure we request at least enough for the user's num_candidates
-            MAX_CANDIDATES_TO_GEMINI = max(MAX_CANDIDATES_TO_GEMINI, min(num_candidates + 5, 30))
+            MAX_CANDIDATES_TO_GEMINI = max(MAX_CANDIDATES_TO_GEMINI, min(num_candidates + 5, 50))
             
             if has_specific_keywords:
                 relevant = [(score, idx, c) for score, idx, c in scored_candidates if score > 0]
@@ -3306,7 +3320,7 @@ Skills: {', '.join(skills[:15])}, Experience: {experience} years{job_ctx}
 Return JSON:
 {{"questions": [{{"question": "...", "type": "technical|behavioral|situational", "difficulty": "easy|medium|hard", "skill_tested": "...", "what_to_look_for": "..."}}]}}"""
 
-        result = await self._agenerate_json(prompt, temperature=0.3)
+        result = await self._agenerate_json(prompt, temperature=0.3, max_tokens=2048)
         if result and 'questions' in result:
             return result['questions'][:num_questions]
         return [{"question": f"Tell me about your experience with {skills[0] if skills else 'your field'}.", "type": "technical", "difficulty": "medium", "skill_tested": skills[0] if skills else "General", "what_to_look_for": "Depth of knowledge"}]
@@ -3338,7 +3352,7 @@ Return JSON:
     "key_requirements": ["req1", "req2"]
 }}"""
 
-        result = await self._agenerate_json(prompt, temperature=0.05)
+        result = await self._agenerate_json(prompt, temperature=0.05, max_tokens=2048)
         return result or {'title': 'Position', 'required_skills': [], 'responsibilities': []}
 
     # ==================================================================
@@ -3360,7 +3374,7 @@ Type: {template_type}
 Return JSON:
 {{"subject": "Subject line", "body": "Full email body", "variables": ["{{name}}", "{{position}}"], "tips": "Usage tips"}}"""
 
-        result = await self._agenerate_json(prompt, temperature=0.4)
+        result = await self._agenerate_json(prompt, temperature=0.4, max_tokens=2048)
         return result or {'subject': f'Re: {template_type}', 'body': 'Template unavailable', 'variables': [], 'tips': ''}
 
     # ==================================================================
@@ -3391,18 +3405,21 @@ Return JSON:
 # ============================================================================
 
 _gemini_service: Optional[GeminiService] = None
+_gemini_lock = threading.Lock()
 
 
 def get_gemini_service() -> Optional[GeminiService]:
-    """Get or create Gemini service singleton."""
+    """Get or create Gemini service singleton. Thread-safe via double-checked locking."""
     global _gemini_service
     if _gemini_service is None:
-        import os
-        api_key = os.getenv("GEMINI_API_KEY", "").strip()
-        model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-        if api_key:
-            _gemini_service = GeminiService(api_key=api_key, model_name=model)
-        else:
-            logger.info("💡 GEMINI_API_KEY not set — Gemini service not initialized")
-            return None
+        with _gemini_lock:
+            if _gemini_service is None:
+                import os
+                api_key = os.getenv("GEMINI_API_KEY", "").strip()
+                model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+                if api_key:
+                    _gemini_service = GeminiService(api_key=api_key, model_name=model)
+                else:
+                    logger.info("💡 GEMINI_API_KEY not set — Gemini service not initialized")
+                    return None
     return _gemini_service

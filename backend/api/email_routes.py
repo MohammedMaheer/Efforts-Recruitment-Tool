@@ -530,7 +530,17 @@ async def _backfill_resumes_task(email_address: str):
         )
         graph_service.access_token = token_data['access_token']
         graph_service.auth_type = token_data.get('auth_type', 'delegated')
-        graph_service.token_expiry = datetime.fromisoformat(token_data['expires_at'])
+        _exp_raw = token_data.get('expires_at') or token_data.get('expires_at_dt')
+        if _exp_raw:
+            try:
+                graph_service.token_expiry = (
+                    datetime.fromisoformat(str(_exp_raw).replace('Z', '+00:00'))
+                    if isinstance(_exp_raw, str) else _exp_raw
+                )
+            except Exception:
+                graph_service.token_expiry = datetime.now() + timedelta(hours=1)
+        else:
+            graph_service.token_expiry = datetime.now() + timedelta(hours=1)
 
         msg_candidates = await asyncio.to_thread(_db().get_candidate_message_ids)
         existing_resumes = await asyncio.to_thread(_db().get_all_resume_candidate_ids)
@@ -1621,6 +1631,8 @@ async def process_single_email(message_id: str, graph_service):
     Used for real-time notifications
     """
     try:
+        if await asyncio.to_thread(_db().is_email_processed, message_id):
+            return None
         # Get the message with attachments
         result = await graph_service.get_message_with_attachments(message_id)
         if result['status'] != 'success':
@@ -1667,8 +1679,9 @@ async def process_single_email(message_id: str, graph_service):
         # AI processing for new candidates
         if candidate.get('resume_text'):
             try:
+                _job_ctx = candidate.get('job_applied_for') or candidate.get('job_category') or None
                 ai_analysis = await asyncio.wait_for(
-                    _ai().analyze_candidate(candidate['resume_text']),
+                    _ai().analyze_candidate(candidate['resume_text'], job_context=_job_ctx),
                     timeout=_deps().AI_ANALYSIS_TIMEOUT
                 )
                 if ai_analysis:
@@ -1700,6 +1713,10 @@ async def process_single_email(message_id: str, graph_service):
                 else:
                     candidate['matchScore'] = 30
         
+        # Extract resume bytes before DB save
+        resume_file = candidate.pop('resume_file_data', None)
+        resume_fname = candidate.pop('resume_filename', None)
+
         # Save to database
         if existing:
             await asyncio.to_thread(_db().update_candidate, candidate)
@@ -1707,7 +1724,29 @@ async def process_single_email(message_id: str, graph_service):
         else:
             await asyncio.to_thread(_db().insert_candidate, candidate)
             logger.info(f"✨ NEW candidate from real-time sync: {candidate.get('name', 'Unknown')} - {candidate.get('email', '')}")
-        
+
+        # Save resume attachment
+        if resume_file and resume_fname and candidate.get('id'):
+            try:
+                ct = 'application/pdf' if resume_fname.lower().endswith('.pdf') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+                await asyncio.to_thread(_db().save_resume, candidate['id'], resume_fname, resume_file, ct)
+            except Exception as e:
+                logger.warning(f"Failed to save webhook resume for {candidate.get('id', '')}: {e}")
+
+        try:
+            _db().save_ai_analysis(candidate.get('id', ''), {
+                'score': candidate.get('matchScore', 0),
+                'category': candidate.get('job_category', 'General'),
+            })
+        except Exception:
+            pass
+        try:
+            await asyncio.to_thread(
+                _db().mark_email_processed, message_id,
+                candidate.get('id', '') if isinstance(candidate, dict) else '', 'webhook'
+            )
+        except Exception:
+            pass
         return candidate
         
     except Exception as e:

@@ -23,7 +23,7 @@ settings = get_settings()
 # Configuration
 DEBUG = settings.debug if not settings.is_production else False
 AI_TIMEOUT = float(os.getenv('AI_TIMEOUT', os.getenv('AI_TIMEOUT_SECONDS', str(settings.ai_timeout))))
-AI_ANALYSIS_TIMEOUT = float(os.getenv('AI_ANALYSIS_TIMEOUT', '60.0'))
+AI_ANALYSIS_TIMEOUT = float(os.getenv('AI_ANALYSIS_TIMEOUT', '90.0'))
 MAX_CONCURRENT_REQUESTS = settings.max_concurrent_requests
 
 # Performance: Response cache (5 minutes TTL) with thread-safe lock

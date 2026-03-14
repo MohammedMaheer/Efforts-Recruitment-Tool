@@ -662,7 +662,7 @@ export default function AIAssistant() {
           ...candidate,
           location: cleanLocation(fullData.location || candidate.location),
           summary: fullData.summary || candidate.summary || '',
-          workHistory: (fullData.workHistory || []).map((job: Record<string, string>) => ({
+          workHistory: (fullData.workHistory || (fullData as any).work_history || []).map((job: Record<string, string>) => ({
             title: job.title || job.position || '',
             company: job.company || job.organization || '',
             duration: job.duration || job.period || job.years || '',
@@ -713,7 +713,7 @@ export default function AIAssistant() {
           status: fullData.status || candidate.status || 'New',
           location: cleanLocation(fullData.location || candidate.location),
           summary: fullData.summary || candidate.summary || '',
-          workHistory: (fullData.workHistory || []).map((job: Record<string, string>) => ({
+          workHistory: (fullData.workHistory || (fullData as any).work_history || []).map((job: Record<string, string>) => ({
             title: job.title || job.position || '',
             company: job.company || job.organization || '',
             duration: job.duration || job.period || job.years || '',
@@ -1396,7 +1396,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
           return local ? { ...local, location: cleanLocation(local.location) } : {
             id: entry.id as string,
             name: (entry.name as string) || 'Unknown',
-            matchScore: (entry.matchScore as number) || 50,
+            matchScore: (entry.matchScore as number) ?? 50,
             location: cleanLocation(entry.location as string),
             jobCategory: normalizeCategory((entry.jobCategory as string) || 'General'),
             experience: (entry.experience as number) || 0,
@@ -1563,11 +1563,30 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       setMessages(prev => prev.filter(m => m.id !== loadingId))
 
       if (data.rankings && data.rankings.length > 0) {
-        // Map ranked candidates to our candidate format
-        const rankedCandidateIds = data.rankings.map((r) => r.candidate_id)
-        const matchedCandidates = rankedCandidateIds
-          .map((id: string) => candidates.find(c => c.id === id))
-          .filter(Boolean) as Candidate[]
+        // Map ranked candidates to our candidate format; fall back to ranking data for candidates not yet in local store
+        type RankEntry = { candidate_id: string; job_fit_score?: number; candidate_name?: string; matched_skills?: string[]; recommendation?: string }
+        const matchedCandidates = (data.rankings as RankEntry[])
+          .map((ranking) => {
+            const id = ranking.candidate_id
+            const c = candidates.find(cand => cand.id === id)
+            const score = ranking.job_fit_score ?? 0
+            if (c) return score ? { ...c, matchScore: score } : c
+            // Candidate not yet in local store — build lightweight object from ranking data
+            return {
+              id,
+              name: ranking.candidate_name || 'Unknown',
+              email: '',
+              matchScore: score,
+              skills: ranking.matched_skills || [],
+              jobCategory: 'General',
+              status: 'new',
+              experience: 0,
+              education: [],
+              location: '',
+              summary: ranking.recommendation || '',
+            } as unknown as Candidate
+          })
+          .filter((c): c is Candidate => c !== null)
 
         // Build response with AI analysis
         let responseText = `## AI Job Matching Results\n\n`
