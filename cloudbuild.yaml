@@ -64,10 +64,6 @@ steps:
       - '--port'
       - '8000'
       - '--allow-unauthenticated'
-      - '--http-startup-probe-path=/health'
-      - '--http-startup-probe-failure-threshold=10'
-      - '--http-startup-probe-initial-delay-seconds=10'
-      - '--http-liveness-probe-path=/health'
       - '--set-env-vars'
       - 'ENVIRONMENT=production,DEBUG=false,HOST=0.0.0.0,PORT=8000,SYNC_INTERVAL_MINUTES=30,MAX_EMAILS_PER_SYNC=500,AI_TIMEOUT=60,AI_ANALYSIS_TIMEOUT=90,GEMINI_MODEL=gemini-2.5-flash,GCS_BUCKET_NAME=${_GCS_BUCKET},CORS_ORIGINS=${_CORS_ORIGINS},EMAIL_ADDRESS=${_EMAIL_ADDRESS},MICROSOFT_REDIRECT_URI=${_MICROSOFT_REDIRECT_URI}'
       - '--update-secrets'
@@ -134,9 +130,6 @@ steps:
       - '--port'
       - '3000'
       - '--allow-unauthenticated'
-      - '--http-startup-probe-path=/'
-      - '--http-startup-probe-failure-threshold=10'
-      - '--http-startup-probe-initial-delay-seconds=5'
     id: 'deploy-frontend'
     waitFor: ['push-frontend']
 
