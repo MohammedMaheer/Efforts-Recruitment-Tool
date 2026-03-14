@@ -8,6 +8,7 @@ import {
 } from 'lucide-react'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
+import { useAuthStore } from '@/store/authStore'
 
 interface SearchHistoryEntry {
   id: string
@@ -21,6 +22,8 @@ interface SearchHistoryEntry {
 
 export default function SearchReports() {
   const navigate = useNavigate()
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
   const [searches, setSearches] = useState<SearchHistoryEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [clearing, setClearing] = useState(false)
@@ -94,12 +97,12 @@ export default function SearchReports() {
                 className="pl-9 pr-3 py-2 text-sm border border-gray-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-sky-500/20 focus:border-sky-300 w-48"
               />
             </div>
-            {searches.length > 0 && !showClearConfirm && (
+            {isAdmin && searches.length > 0 && !showClearConfirm && (
               <Button variant="outline" size="sm" onClick={() => setShowClearConfirm(true)} disabled={clearing} className="flex items-center gap-1.5 text-red-600 hover:text-red-700 hover:border-red-300">
                 {clearing ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Trash2 className="w-3.5 h-3.5" />} Clear All
               </Button>
             )}
-            {showClearConfirm && (
+            {isAdmin && showClearConfirm && (
               <div className="flex items-center gap-2 text-sm">
                 <span className="text-gray-600">Clear all history?</span>
                 <Button variant="outline" size="sm" onClick={handleClear} className="text-red-600 hover:text-red-700 border-red-300 px-3 py-1 text-xs">Yes, clear</Button>

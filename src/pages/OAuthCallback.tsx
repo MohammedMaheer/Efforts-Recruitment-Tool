@@ -3,9 +3,12 @@ import { useNavigate } from 'react-router-dom'
 import { authFetch } from '@/lib/authFetch'
 import config from '@/config'
 import { toast } from '@/components/ui/Toast'
+import { useAuthStore } from '@/store/authStore'
 
 export default function OAuthCallback() {
   const navigate = useNavigate()
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
   const hasProcessed = useRef(false)  // Prevent duplicate requests
 
   useEffect(() => {
@@ -41,14 +44,16 @@ export default function OAuthCallback() {
         })
 
         if (response.ok) {
-          // Trigger email sync in background using authFetch (auto-injects auth header)
-          try {
-            await authFetch(`${config.apiUrl}/api/email/sync-now`, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-            })
-          } catch (syncError) {
-            console.warn('Email sync trigger failed, will sync on next interval:', syncError)
+          // Trigger email sync in background — admin only (sync-now requires admin)
+          if (isAdmin) {
+            try {
+              await authFetch(`${config.apiUrl}/api/email/sync-now`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+              })
+            } catch (syncError) {
+              console.warn('Email sync trigger failed, will sync on next interval:', syncError)
+            }
           }
 
           navigate('/candidates')
@@ -68,7 +73,7 @@ export default function OAuthCallback() {
     }
 
     handleCallback()
-  }, [navigate])
+  }, [navigate, isAdmin])
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">

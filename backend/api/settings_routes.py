@@ -602,10 +602,10 @@ async def get_pipeline_stats(current_user: dict = Depends(require_auth)):
         counts = await asyncio.to_thread(_db().get_pipeline_counts)
         stats = await asyncio.to_thread(_db().get_statistics)
         return {
-            "selected": counts.get('Selected', 0),
+            "selected": counts.get('Offered', 0) + counts.get('Hired', 0),
             "rejected": counts.get('Rejected', 0),
             "shortlisted": counts.get('Shortlisted', 0),
-            "interviewed": counts.get('Interviewed', 0),
+            "interviewed": counts.get('Interviewing', 0),
             "new": counts.get('New', 0),
             "total": stats.get('total_candidates', 0),
             "recent_24h": stats.get('recent_24h', 0),

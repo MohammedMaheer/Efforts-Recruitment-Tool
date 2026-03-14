@@ -258,8 +258,8 @@ export default function CandidateDetail() {
       const response = await authFetch(`${config.endpoints.candidates}/${candidate.id}/ai-analysis${isRefresh ? '?refresh=true' : ''}`)
 
       if (!response.ok) {
-        if (response.status === 503) {
-          throw new Error('AI service not configured. Please ensure the Gemini API key is set.')
+        if (response.status === 503 || response.status === 500) {
+          throw new Error('AI service unavailable. Please ensure the Gemini API key is configured.')
         }
         throw new Error('Failed to analyze candidate')
       }

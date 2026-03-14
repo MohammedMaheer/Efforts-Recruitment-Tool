@@ -485,6 +485,7 @@ export default function Settings() {
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-5">
+            {isAdmin && (<>
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">
                 <p className="font-medium text-gray-900">Sync Emails Now</p>
@@ -495,7 +496,6 @@ export default function Settings() {
                 {isSyncing ? 'Syncing...' : 'Sync Now'}
               </Button>
             </div>
-            {isAdmin && (<>
             <div className="border-t border-gray-100" />
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">

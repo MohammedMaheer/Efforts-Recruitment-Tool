@@ -392,7 +392,7 @@ class LocalAIService:
     # CORE ANALYSIS METHODS
     # ========================================================================
     
-    async def analyze_candidate(self, text: str) -> Dict:
+    async def analyze_candidate(self, text: str, job_context: str = None) -> Dict:
         """
         Comprehensive candidate analysis using AI
         Returns: skills, experience, education, job_category, quality_score, etc.

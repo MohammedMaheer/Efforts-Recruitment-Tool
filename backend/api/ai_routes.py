@@ -38,6 +38,10 @@ def _ai():
     from api.deps import get_ai
     return get_ai()
 
+def _get_local_ai():
+    from api.deps import get_local_ai
+    return get_local_ai()
+
 def _gemini():
     from api.deps import get_gemini
     return get_gemini()
@@ -1202,19 +1206,19 @@ async def analyze_match(request: AnalyzeMatchRequest, current_user: dict = Depen
 
         # TIER 1 — Local AI (fallback)
         if not result:
-            loop = asyncio.get_running_loop()
             try:
-                result = await asyncio.wait_for(
-                    loop.run_in_executor(
-                        _ai_executor,
-                        _ai().analyze_candidate_match,
+                local_svc = _get_local_ai()
+                if local_svc:
+                    result = await asyncio.to_thread(
+                        local_svc.analyze_candidate_match,
                         request.candidate,
-                        request.job_description
-                    ),
-                    timeout=_deps().AI_ANALYSIS_TIMEOUT
-                )
-                result['source'] = 'local_ai'
-                logger.info("✅ Local AI analysis completed")
+                        request.job_description or {}
+                    )
+                    result['source'] = 'local_ai'
+                    logger.info("✅ Local AI analysis completed")
+                else:
+                    result = _quick_fallback_analysis(request.candidate, request.job_description)
+                    result['source'] = 'fallback_error'
 
             except asyncio.TimeoutError:
                 logger.warning(f"⏱️ Local AI timeout (>{_deps().AI_ANALYSIS_TIMEOUT}s)")
@@ -1270,13 +1274,23 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
 
         # TIER 1: Try Local AI (FREE)
         try:
-            questions = _ai().generate_interview_questions(
-                request.candidate,
-                request.job_description,
-                request.num_questions
-            )
-            if questions:
-                return {"questions": questions, "source": "local_ai"}
+            local_svc = _get_local_ai()
+            if local_svc:
+                raw_questions = await asyncio.to_thread(
+                    local_svc.generate_interview_questions,
+                    request.candidate,
+                    request.job_description or {},
+                    request.num_questions or 10
+                )
+                # Normalize List[str] -> List[Dict] to match TIER 0 shape
+                questions = []
+                for q in (raw_questions or []):
+                    if isinstance(q, dict):
+                        questions.append(q)
+                    else:
+                        questions.append({"question": str(q), "type": "general", "difficulty": "medium", "skill_tested": "", "what_to_look_for": ""})
+                if questions:
+                    return {"questions": questions, "source": "local_ai"}
         except Exception as local_error:
             logger.warning(f"⚠️ Local AI interview questions failed: {local_error}")
 
@@ -1308,14 +1322,35 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
 async def summarize_resume(request: SummarizeResumeRequest, current_user: dict = Depends(require_auth)):
     """
     Generate AI summary of resume
-    2-TIER FALLBACK: Local AI -> Rule-based
+    3-TIER FALLBACK: Gemini -> Local AI -> Rule-based
     """
     try:
-        # TIER 1: Try Local AI first (FREE)
+        # TIER 0 — Gemini
         try:
-            summary = _ai().summarize_resume(request.resume_text)
-            if summary:
-                return {"summary": summary, "source": "local_ai"}
+            from services.gemini_service import get_gemini_service
+            gemini_svc = get_gemini_service()
+            if gemini_svc and gemini_svc.available:
+                result = await asyncio.wait_for(
+                    gemini_svc.analyze_candidate(request.resume_text),
+                    timeout=15.0
+                )
+                if result and isinstance(result, dict) and result.get('summary'):
+                    return {
+                        "summary": result['summary'],
+                        "key_skills": result.get('skills', []),
+                        "experience_years": result.get('experience', 0),
+                        "source": "gemini"
+                    }
+        except Exception:
+            pass  # Fall through to TIER 1
+
+        # TIER 1: Try Local AI (FREE)
+        try:
+            local_svc = _get_local_ai()
+            if local_svc:
+                summary = await asyncio.to_thread(local_svc.summarize_resume, request.resume_text)
+                if summary:
+                    return {"summary": summary, "source": "local_ai"}
         except Exception as local_error:
             logger.warning(f"⚠️ Local AI summarize failed: {local_error}")
 
@@ -1386,11 +1421,13 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
 
                 if result is None:
                     # Run CPU-bound Local AI analysis in thread pool to avoid blocking event loop
-                    result = await asyncio.to_thread(
-                        _ai().analyze_candidate_match,
-                        candidate,
-                        {"id": job_id, "title": "General Position", "required_skills": []}
-                    )
+                    local_svc = _get_local_ai()
+                    if local_svc:
+                        result = await asyncio.to_thread(
+                            local_svc.analyze_candidate_match,
+                            candidate,
+                            {"id": job_id, "title": _job_ctx or "General Position", "description": ""}
+                        )
 
                 if result:
                     result['ai_engine'] = engine
@@ -1426,7 +1463,8 @@ async def ai_status(current_user: dict = Depends(require_auth)):
     # Get local AI cache stats
     ai_cache = {}
     try:
-        ai_cache = _ai().get_cache_stats()
+        local_svc = _get_local_ai()
+        ai_cache = local_svc.get_cache_stats() if local_svc else {}
     except Exception as e:
         logger.debug(f"Non-critical: AI cache stats failed: {e}")
 

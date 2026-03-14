@@ -487,7 +487,8 @@ export const statsApi = {
    * Get AI status
    */
   async getAIStatus(): Promise<ApiResponse<{
-    gemini: { status: string; model?: string };
+    gemini: { available: boolean; model: string | null };
+    keyword: { available: boolean };
   }>> {
     return client.get('/api/ai/status');
   },
@@ -997,7 +998,8 @@ export const aiApi = {
    * Get AI status
    */
   async getStatus(): Promise<ApiResponse<{
-    gemini: { status: string; model?: string };
+    gemini: { available: boolean; model: string | null; requests_processed: number; error_count: number };
+    keyword: { available: boolean };
   }>> {
     return client.get('/api/ai/status');
   },

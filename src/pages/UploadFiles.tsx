@@ -19,7 +19,7 @@ export default function UploadFiles() {
   const isAdmin = user?.role === 'admin'
   const [activeTab, setActiveTab] = useState<'upload' | 'email'>('upload')
   const [isUploading, setIsUploading] = useState(false)
-  const [uploadResults, setUploadResults] = useState<{ status: string; message?: string; filename?: string; candidate_name?: string; job_category?: string; ai_score?: number }[]>([])
+  const [uploadResults, setUploadResults] = useState<{ status: string; message?: string; filename?: string; candidate_name?: string; job_category?: string; ai_score?: number; candidate?: { name?: string; matchScore?: number; ai_score?: number; jobCategory?: string; job_category?: string } }[]>([])
   const [dragActive, setDragActive] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [uploadStats, setUploadStats] = useState({ today: 0, success: 0, failed: 0 })
@@ -164,11 +164,11 @@ export default function UploadFiles() {
                       <div key={i} className={`p-3 rounded-lg border flex items-start gap-3 ${r.status === 'success' ? 'bg-green-50 border-green-200' : 'bg-red-50 border-red-200'}`}>
                         {r.status === 'success' ? <CheckCircle className="w-4 h-4 text-green-600 mt-0.5" /> : <AlertCircle className="w-4 h-4 text-red-600 mt-0.5" />}
                         <div className="min-w-0 flex-1">
-                          <p className="text-sm font-medium text-gray-900 truncate">{r.filename || r.candidate_name || 'Unknown'}</p>
-                          {r.candidate_name && <p className="text-xs text-gray-500">{r.candidate_name} — {r.job_category || 'Uncategorized'}</p>}
+                          <p className="text-sm font-medium text-gray-900 truncate">{r.filename || r.candidate?.name || r.candidate_name || 'Unknown'}</p>
+                          {(r.candidate?.name || r.candidate_name) && <p className="text-xs text-gray-500">{r.candidate?.name || r.candidate_name} — {r.candidate?.jobCategory || r.candidate?.job_category || r.job_category || 'Uncategorized'}</p>}
                           {r.message && r.status !== 'success' && <p className="text-xs text-red-600">{r.message}</p>}
                         </div>
-                        {r.ai_score && <Badge className="bg-sky-100 text-sky-700 border-0 text-xs">{r.ai_score}%</Badge>}
+                        {(r.candidate?.matchScore ?? r.candidate?.ai_score ?? r.ai_score) != null && <Badge className="bg-sky-100 text-sky-700 border-0 text-xs">{r.candidate?.matchScore ?? r.candidate?.ai_score ?? r.ai_score}%</Badge>}
                       </div>
                     ))}
                   </div>

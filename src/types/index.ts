@@ -200,11 +200,18 @@ export interface StatsResponse {
 }
 
 export interface UploadResponse {
-  success: boolean;
-  message: string;
-  candidate?: Candidate;
-  filename?: string;
-  errors?: string[];
+  filename: string;
+  status: string;  // 'success' | 'error'
+  message?: string;
+  candidate?: {
+    name?: string;
+    matchScore?: number;
+    jobCategory?: string;
+  };
+  // Legacy flat fields (for backward compat)
+  candidate_name?: string;
+  ai_score?: number;
+  job_category?: string;
 }
 
 export interface BatchUploadResponse {
@@ -280,16 +287,16 @@ export interface EmailAccount {
   name: string;
   email: string;
   server: string;
-  processedCount: number;
-  lastCheck?: string;
+  processed_count: number;
+  last_check?: string;
 }
 
 export interface ScraperStatus {
   running: boolean;
-  totalAccounts: number;
+  total_accounts: number;
   accounts: EmailAccount[];
-  totalProcessed: number;
-  processAllHistory: boolean;
+  total_processed: number;
+  process_all_history: boolean;
 }
 
 export interface OAuthConfig {

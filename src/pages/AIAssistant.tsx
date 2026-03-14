@@ -1118,7 +1118,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         { label: 'Merge Duplicates', icon: Users, action: async () => {
           try {
             const result = await candidateApi.deduplicate()
-            toast.success('Deduplication', `Processed ${(result as any)?.data?.checked || 0} candidates. ${(result as any)?.data?.merged || 0} duplicates merged.`)
+            toast.success('Deduplication', `${(result as any)?.data?.merged || 0} duplicate(s) merged successfully.`)
           } catch { toast.error('Error', 'Could not run deduplication. Please try again.') }
         }, variant: 'warning' }
       ]
