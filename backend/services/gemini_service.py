@@ -1638,8 +1638,8 @@ Return JSON:
             pre_scored.append((pre_score, idx, c))
 
         pre_scored.sort(key=lambda x: (x[0], -x[1]), reverse=True)
-        # Take more candidates for better Gemini recall
-        deep_count = min(max(top_n * 3, 30), len(pre_scored))
+        # Take more candidates for better Gemini recall (5× top_n for higher accuracy)
+        deep_count = min(max(top_n * 5, 50), len(pre_scored))
         # Prefer candidates with actual relevance
         relevant = [(s, i, c) for s, i, c in pre_scored if s > 0]
         shortlisted = [c for _, _, c in (relevant[:deep_count] if relevant else pre_scored[:deep_count])]
@@ -1700,7 +1700,34 @@ Return JSON:
             skills_str = ', '.join(c.get('skills', [])[:12]) or 'Not specified'
             exp = c.get('experience', 0)
             loc = c.get('location', 'N/A')
-            candidates_text += f"\nCANDIDATE {i}: {c.get('name', 'Unknown')}\n  Skills: {skills_str}\n  Experience: {exp} years\n  Location: {loc}\n  Summary: {c.get('summary', '')[:200]}\n"
+            # Build enriched optional fields for better scoring accuracy
+            work_hist = c.get('work_history', [])
+            work_str = ''
+            if isinstance(work_hist, list) and work_hist:
+                entries = [f"{j.get('company', '')} ({j.get('title', '')})" for j in work_hist[:2] if isinstance(j, dict) and j.get('company')]
+                if entries:
+                    work_str = f"\n  Work History: {', '.join(entries)}"
+            certs = c.get('certifications', [])
+            cert_str = ''
+            if isinstance(certs, list) and certs:
+                cert_names = [ci if isinstance(ci, str) else (ci.get('name', '') if isinstance(ci, dict) else '') for ci in certs[:3]]
+                cert_names = [n for n in cert_names if n]
+                if cert_names:
+                    cert_str = f"\n  Certifications: {', '.join(cert_names)}"
+            langs = c.get('languages', [])
+            lang_str = f"\n  Languages: {', '.join(langs[:4])}" if isinstance(langs, list) and langs else ''
+            notice = c.get('notice_period', '')
+            notice_str = f"\n  Notice Period: {notice}" if notice else ''
+            nationality = c.get('nationality', '')
+            nat_str = f"\n  Nationality: {nationality}" if nationality else ''
+            candidates_text += (
+                f"\nCANDIDATE {i}: {c.get('name', 'Unknown')}\n"
+                f"  Skills: {skills_str}\n"
+                f"  Experience: {exp} years\n"
+                f"  Location: {loc}\n"
+                f"  Summary: {c.get('summary', '')[:200]}"
+                f"{work_str}{cert_str}{lang_str}{notice_str}{nat_str}\n"
+            )
 
         n = len(batch)
         prompt = f"""Score each candidate against the job description. Return ONLY valid JSON with a "candidates" array of EXACTLY {n} objects — one per candidate, in the SAME order.

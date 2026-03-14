@@ -1467,9 +1467,9 @@ async def ai_smart_search(
     top_n = max(1, min(100, top_n))
     
     try:
-        # 1. Get active candidates (lightweight for AI matching)
+        # 1. Get active candidates (enriched: includes work_history, certifications, languages, etc.)
         candidates = await asyncio.to_thread(
-            _db().get_candidates_lightweight, {}, 5000
+            _db().get_candidates_for_ai, {}, 5000
         )
         if not candidates:
             return {"results": [], "total": 0, "query": query, "message": "No candidates in database"}
@@ -1538,31 +1538,59 @@ async def ai_smart_search(
         except Exception as sem_err:
             logger.warning(f"Semantic search failed: {sem_err}")
 
-        # 5. Basic keyword fallback
+        # 5. Tokenized keyword fallback (individual tokens, not full-string match)
+        _STOP_WORDS = {'with', 'and', 'the', 'for', 'years', 'year', 'who', 'has', 'have', 'are', 'that', 'from', 'this', 'those', 'any', 'all'}
         q_lower = query.lower()
+        tokens = [t for t in re.split(r'\W+', q_lower) if len(t) > 2 and t not in _STOP_WORDS]
         scored = []
         for c in candidates:
             score = 0
             match_reasons = []
             skills = c.get('skills', [])
-            for s in skills:
-                if s.lower() in q_lower or q_lower in s.lower():
-                    score += 15
-                    match_reasons.append(f"Skill: {s}")
-            if str(c.get('summary', '')).lower().find(q_lower) >= 0:
-                score += 10
+            skills_lower = [s.lower() for s in skills]
+            matched_skill_names: list = []
+            for t in tokens:
+                for idx_s, s_low in enumerate(skills_lower):
+                    if (t in s_low or s_low in t) and skills[idx_s] not in matched_skill_names:
+                        matched_skill_names.append(skills[idx_s])
+                        break
+            if matched_skill_names:
+                score += min(len(matched_skill_names) * 15, 45)
+                for sn in matched_skill_names[:3]:
+                    match_reasons.append(f"Skill: {sn}")
+            summary_lower = str(c.get('summary', '')).lower()
+            summary_hits = sum(1 for t in tokens if t in summary_lower)
+            if summary_hits:
+                score += min(summary_hits * 5, 15)
                 match_reasons.append("Summary match")
-            if str(c.get('jobCategory', '')).lower() in q_lower:
+            cat_lower = str(c.get('jobCategory', '')).lower()
+            if any(t in cat_lower for t in tokens):
                 score += 10
                 match_reasons.append(f"Category: {c.get('jobCategory', '')}")
-            # Location matching in keyword fallback
+            # Location matching
             c_location = str(c.get('location', '')).lower()
             if c_location:
-                for q_word in q_lower.split():
-                    if len(q_word) > 2 and q_word in c_location:
+                for q_word in tokens:
+                    if q_word in c_location:
                         score += 15
                         match_reasons.append(f"Location: {c.get('location', '')}")
                         break
+            # Work history company search (enriched data)
+            work_hist = c.get('work_history', [])
+            if isinstance(work_hist, list):
+                for job in work_hist[:3]:
+                    company = str(job.get('company', '') if isinstance(job, dict) else '').lower()
+                    if any(t in company for t in tokens if len(t) > 3):
+                        score += 20
+                        match_reasons.append(f"Worked at: {job.get('company', '')}")
+                        break
+            # Language matching (enriched data)
+            langs = c.get('languages', [])
+            if isinstance(langs, list):
+                langs_lower = {(l.lower() if isinstance(l, str) else '') for l in langs}
+                if any(t in langs_lower for t in tokens):
+                    score += 15
+                    match_reasons.append("Language match")
             scored.append({
                 "candidate": c,
                 "relevance_score": min(score, 100),
