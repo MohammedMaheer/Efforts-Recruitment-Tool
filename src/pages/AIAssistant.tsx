@@ -1538,6 +1538,10 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
           method: 'POST',
           body: formData
         })
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}))
+          throw new Error((err as { detail?: string }).detail || `Matching failed (${response.status})`)
+        }
         data = await response.json()
       } else {
         // Text-only path — use JSON
@@ -1549,6 +1553,10 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
             top_n: topN
           })
         })
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}))
+          throw new Error((err as { detail?: string }).detail || `Matching failed (${response.status})`)
+        }
         data = await response.json()
       }
 

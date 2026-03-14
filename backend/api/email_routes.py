@@ -1248,7 +1248,7 @@ async def sync_emails_now(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/email/deep-sync")
-async def deep_sync_emails(current_user: dict = Depends(require_auth)):
+async def deep_sync_emails(current_user: dict = Depends(require_admin)):
     """
     Deep sync: clear 'no-candidate' entries from email_processing_log,
     optionally clear entries since a given date, then trigger a full
@@ -1375,7 +1375,7 @@ async def backfill_resumes(current_user: dict = Depends(require_auth)):
 
 
 @router.get("/api/email/backfill-debug")
-async def backfill_debug(current_user: dict = Depends(require_auth)):
+async def backfill_debug(current_user: dict = Depends(require_admin)):
     """
     Diagnostic endpoint: inspect message_id format and test one Graph API lookup.
     """
@@ -1852,7 +1852,7 @@ async def subscribe_to_email_webhook(current_user: dict = Depends(require_auth))
 
 
 @router.post("/api/email/outlook/connect")
-async def connect_outlook(request: Request, current_user: dict = Depends(require_auth)):
+async def connect_outlook(request: Request, current_user: dict = Depends(require_admin)):
     """
     Connect Microsoft Outlook/Office 365 using Graph API
     Enterprise OAuth2 authentication

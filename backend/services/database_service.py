@@ -784,6 +784,7 @@ class DatabaseService:
                 # Candidate exists — use smart merge to preserve existing data
                 existing_id = existing[0]
                 self.return_connection(conn)
+                conn = None  # prevent double-return in finally
                 existing_data = self.get_candidate_by_id(existing_id)
                 if existing_data:
                     merged = self.smart_merge_candidate(existing_data, candidate)
@@ -844,8 +845,9 @@ class DatabaseService:
             
             conn.commit()
         finally:
-            self.return_connection(conn)
-    
+            if conn is not None:
+                self.return_connection(conn)
+
     def save_ai_analysis(self, candidate_id: str, analysis: Dict):
         """Save detailed AI analysis for a candidate and update strengths/gaps"""
         conn = self.get_connection_raw()

@@ -516,12 +516,16 @@ class EmailParser:
     
     def _extract_email_address(self, from_field: str) -> str:
         """Extract email address from 'From' field"""
+        if not from_field:
+            return ''
         email_pattern = r'[\w\.-]+@[\w\.-]+'
         match = re.search(email_pattern, from_field)
         return match.group(0) if match else ''
-    
+
     def _extract_name_from_email(self, from_field: str) -> str:
         """Extract name from 'From' field"""
+        if not from_field:
+            return 'Unknown'
         # Try to extract name before email
         name_pattern = r'^([^<]+)<'
         match = re.search(name_pattern, from_field)

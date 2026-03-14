@@ -1,6 +1,7 @@
 import PyPDF2
 import docx
 import re
+import asyncio
 import logging
 import unicodedata
 from typing import Dict, List, Any, Optional
@@ -262,9 +263,9 @@ class ResumeParser:
     async def extract_text(self, content: bytes, filename: str) -> str:
         """Extract text from PDF or DOCX file"""
         if filename.lower().endswith('.pdf'):
-            return self._extract_from_pdf(content)
+            return await asyncio.to_thread(self._extract_from_pdf, content)
         elif filename.lower().endswith('.docx'):
-            return self._extract_from_docx(content)
+            return await asyncio.to_thread(self._extract_from_docx, content)
         else:
             raise ValueError("Unsupported file format. Supported: PDF, DOCX")
     

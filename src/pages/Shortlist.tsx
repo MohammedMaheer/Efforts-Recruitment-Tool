@@ -39,6 +39,7 @@ import { toast } from '@/components/ui/Toast'
 import { candidateApi } from '@/services/api'
 import { getScoreColor, getFitLabel } from '@/lib/utils'
 import { ScoreRing } from '@/components/ui/ScoreRing'
+import { useAuthStore } from '@/store/authStore'
 
 type SortKey = 'score' | 'name' | 'experience' | 'date'
 type SortDir = 'asc' | 'desc'
@@ -49,6 +50,7 @@ export default function Shortlist() {
   const shortlistedIds = useCandidateStore((s) => s.shortlistedIds)
   const toggleShortlist = useCandidateStore((s) => s.toggleShortlist)
   const addNotification = useNotificationStore((s) => s.addNotification)
+  const isAdmin = useAuthStore((s) => s.user?.role === 'admin')
 
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [selectedCandidate, setSelectedCandidate] = useState<Candidate | null>(null)
@@ -262,10 +264,12 @@ export default function Shortlist() {
             <Button variant="outline" size="sm" onClick={handleExportPDF} disabled={stats.total === 0}>
               <FileText className="w-3.5 h-3.5 mr-1.5" />PDF
             </Button>
+            {isAdmin && (
             <Button variant="outline" size="sm" onClick={handleResetAll} disabled={stats.total === 0}
               className="text-red-600 border-red-200 hover:bg-red-50">
               <Trash2 className="w-3.5 h-3.5 mr-1.5" />Reset All
             </Button>
+            )}
             <Button variant="outline" size="sm" onClick={() => refetch()} disabled={loading}>
               <RefreshCw className={`w-3.5 h-3.5 mr-1.5 ${loading ? 'animate-spin' : ''}`} />Refresh
             </Button>

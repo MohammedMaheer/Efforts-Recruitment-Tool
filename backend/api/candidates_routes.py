@@ -74,7 +74,7 @@ def _deps():
 
 
 @router.delete("/api/candidates/{candidate_id}")
-async def delete_candidate(candidate_id: str, current_user: dict = Depends(require_auth)):
+async def delete_candidate(candidate_id: str, current_user: dict = Depends(require_admin)):
     """Delete a single candidate by ID."""
     try:
         def _delete_candidate_db():
@@ -573,8 +573,7 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_admi
 
 
 @router.post("/api/candidates/fix-summaries")
-async def fix_garbage_summaries(current_user: dict = Depends(require_auth)):
-    """
+async def fix_garbage_summaries(current_user: dict = Depends(require_admin)):    """
     Find all candidates with garbage summaries (raw email body text like 'Dear HR...')
     and regenerate proper summaries using Gemini AI or structured field generation.
     """
@@ -964,7 +963,7 @@ def normalize_category_backend(raw: str) -> str:
 
 
 @router.post("/api/candidates/normalize-categories")
-async def normalize_all_categories(current_user: dict = Depends(require_auth)):
+async def normalize_all_categories(current_user: dict = Depends(require_admin)):
     """
     Normalize ALL candidate categories to canonical names.
     This is a fast, zero-AI-cost operation that uses pattern matching.
@@ -1028,7 +1027,7 @@ async def normalize_all_categories(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/candidates/recategorize-general")
-async def recategorize_general_candidates(current_user: dict = Depends(require_auth)):
+async def recategorize_general_candidates(current_user: dict = Depends(require_admin)):
     """
     Re-categorize all candidates with job_category='General' using skills-based classification.
     Uses the rule-based classify_job_title() from job_taxonomy for speed (no AI cost).
@@ -1234,7 +1233,7 @@ async def recategorize_general_candidates(current_user: dict = Depends(require_a
 
 
 @router.post("/api/candidates/reprocess-with-gemini")
-async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_auth)):
+async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_admin)):
     """
     Bulk reprocess ALL poorly-scored candidates using Gemini AI.
     Targets candidates with: score <= 35, category='General', minimal skills like '["R"]'.
@@ -1771,7 +1770,7 @@ async def import_linkedin_profile(profile: LinkedInProfileImport, current_user: 
 
 
 @router.post("/api/candidates/deduplicate")
-async def deduplicate_candidates(current_user: dict = Depends(require_auth)):
+async def deduplicate_candidates(current_user: dict = Depends(require_admin)):
     """Merge duplicate candidates (same email, different case)."""
     try:
         result = await asyncio.to_thread(_db().deduplicate_candidates)

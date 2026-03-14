@@ -425,7 +425,7 @@ async def trigger_manual_scrape(
     process_all: bool = False,
     max_emails: int = 0,
     days_back: int = 0,
-    current_user: dict = Depends(require_auth)
+    current_user: dict = Depends(require_admin)
 ):
     """
     Manually trigger email scraping.

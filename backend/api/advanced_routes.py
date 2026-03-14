@@ -46,7 +46,7 @@ from services.calendar_integration_service import get_calendar_service
 from services.sms_notification_service import get_sms_service
 from services.followup_service import get_followup_service
 from services.database_service import get_db_service
-from core.dependencies import require_auth
+from core.dependencies import require_auth, require_admin
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +125,7 @@ async def rank_candidates(request: MLRankRequest):
 
 
 @router.post("/ml/record-decision")
-async def record_hiring_decision(request: HiringDecisionRequest):
+async def record_hiring_decision(request: HiringDecisionRequest, current_user: dict = Depends(require_admin)):
     """
     Record a hiring decision to train the ML model.
     Model retrains automatically after sufficient data.
@@ -158,7 +158,7 @@ async def record_hiring_decision(request: HiringDecisionRequest):
 
 
 @router.post("/ml/retrain")
-async def retrain_ml_model():
+async def retrain_ml_model(current_user: dict = Depends(require_admin)):
     """Force retrain the ML ranking model"""
     try:
         service = get_ranking_model()
@@ -275,7 +275,7 @@ async def check_duplicates(request: DuplicateCheckRequest):
 
 
 @router.post("/duplicates/merge")
-async def merge_duplicates(request: MergeCandidatesRequest):
+async def merge_duplicates(request: MergeCandidatesRequest, current_user: dict = Depends(require_admin)):
     """
     Merge duplicate candidates into primary record.
     Combines data and removes duplicates.
@@ -739,7 +739,7 @@ async def get_availability(request: AvailabilityRequest):
 # ============================================================================
 
 @router.post("/sms/send", response_model=SendSMSResponse)
-async def send_sms(request: SendSMSRequest):
+async def send_sms(request: SendSMSRequest, current_user: dict = Depends(require_admin)):
     """
     Send SMS notification to candidate.
     Uses template or custom message.
@@ -768,7 +768,7 @@ async def send_sms(request: SendSMSRequest):
 
 
 @router.post("/sms/bulk", response_model=BulkSMSResponse)
-async def send_bulk_sms(request: BulkSMSRequest):
+async def send_bulk_sms(request: BulkSMSRequest, current_user: dict = Depends(require_admin)):
     """
     Send SMS to multiple recipients.
     Rate-limited to avoid carrier issues.
