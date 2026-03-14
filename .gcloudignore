@@ -18,7 +18,6 @@ env/
 recruitment.db
 
 # Large model/cache dirs inside backend
-backend/models/
 backend/.cache/
 backend/cache/
 backend/uploads/tmp/
