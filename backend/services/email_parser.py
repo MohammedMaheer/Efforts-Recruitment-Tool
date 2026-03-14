@@ -3,9 +3,12 @@ import email
 from email import policy
 from email.parser import BytesParser
 import imaplib
+import logging
 import re
 from datetime import datetime
 import base64
+
+logger = logging.getLogger(__name__)
 
 # ============================================================================
 # PRECOMPILED REGEX PATTERNS FOR PERFORMANCE
@@ -301,7 +304,7 @@ class EmailParser:
             return candidates
         
         except Exception as e:
-            print(f"Error fetching emails: {str(e)}")
+            logger.warning(f"Error fetching emails: {str(e)}", exc_info=True)
             return []
     
     async def _parse_email(
@@ -372,7 +375,7 @@ class EmailParser:
             return None
         
         except Exception as e:
-            print(f"Error parsing email {email_id}: {str(e)}")
+            logger.warning(f"Error parsing email {email_id}: {str(e)}", exc_info=True)
             return None
     
     async def _process_attachment(self, part) -> Optional[Dict[str, Any]]:
@@ -400,7 +403,7 @@ class EmailParser:
             }
         
         except Exception as e:
-            print(f"Error processing attachment: {str(e)}")
+            logger.warning(f"Error processing attachment: {str(e)}", exc_info=True)
             return None
     
     def _is_resume_file(self, filename: str) -> bool:

@@ -26,7 +26,6 @@ import {
   Sparkles,
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
-import { jsPDF } from 'jspdf'
 import { useCandidates } from '@/hooks/useCandidates'
 import { useCandidateStore } from '@/store/candidateStore'
 import type { Candidate } from '@/types'
@@ -178,30 +177,14 @@ export default function Shortlist() {
     addNotification({ type: 'success', title: 'Exported', message: `${shortlistedCandidates.length} candidates exported` })
   }, [shortlistedCandidates, addNotification])
 
-  const handleExportPDF = useCallback(() => {
+  const handleExportPDF = useCallback(async () => {
     if (shortlistedCandidates.length === 0) return
-    try {
-      const doc = new jsPDF()
-      const pw = doc.internal.pageSize.getWidth()
-      const ph = doc.internal.pageSize.getHeight()
-      doc.setFontSize(20); doc.text('Shortlisted Candidates', pw / 2, 20, { align: 'center' })
-      doc.setFontSize(10); doc.text(`Generated: ${new Date().toLocaleDateString()} | Total: ${shortlistedCandidates.length}`, pw / 2, 28, { align: 'center' })
-      let y = 40
-      shortlistedCandidates.forEach((c, i) => {
-        if (y > ph - 40) { doc.addPage(); y = 20 }
-        doc.setFontSize(13); doc.setFont('helvetica', 'bold')
-        doc.text(`${i + 1}. ${c.name}  (${(c.matchScore ?? 0).toFixed(1)}%)`, 15, y); y += 6
-        doc.setFontSize(10); doc.setFont('helvetica', 'normal')
-        doc.text(`${c.email} | ${c.location} | ${c.experience}yr exp | ${c.jobCategory}`, 20, y); y += 5
-        const sl = doc.splitTextToSize(`Skills: ${c.skills.join(', ')}`, pw - 40)
-        doc.text(sl, 20, y); y += sl.length * 5
-        const su = doc.splitTextToSize(c.summary || '', pw - 40)
-        doc.text(su, 20, y); y += su.length * 5 + 8
-      })
-      doc.save(`shortlist-${new Date().toISOString().split('T')[0]}.pdf`)
-      addNotification({ type: 'success', title: 'PDF Exported', message: `${shortlistedCandidates.length} candidates exported` })
-    } catch { addNotification({ type: 'error', title: 'Error', message: 'Failed to generate PDF' }) }
-  }, [shortlistedCandidates, addNotification])
+    for (const candidate of shortlistedCandidates) {
+      await generateQuickProfilePDF(candidate).catch(() => {})
+      // Small delay to prevent browser tab overwhelm
+      await new Promise(r => setTimeout(r, 300))
+    }
+  }, [shortlistedCandidates])
 
   const handleResetAll = useCallback(async () => {
     if (shortlistedCandidates.length === 0) return
@@ -569,7 +552,11 @@ function CandidateDetailPanel({
         <Button size="sm" variant="outline" onClick={() => onScheduleInterview(candidate)}>
           <Calendar className="w-3.5 h-3.5 mr-1.5" />Schedule Interview
         </Button>
-        <Button size="sm" variant="outline" onClick={() => generateQuickProfilePDF(candidate)} className="text-xs">
+        <Button size="sm" variant="outline" onClick={() =>
+          generateQuickProfilePDF(candidate).catch((err: Error) =>
+            toast.error('PDF Failed', err.message || 'Could not generate PDF report')
+          )
+        } className="text-xs">
           <Download className="w-3.5 h-3.5 mr-1.5" />PDF Report
         </Button>
         <Button size="sm" variant="outline" onClick={async () => {

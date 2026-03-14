@@ -100,6 +100,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
         return
     await trigger_reset_and_reparse._lock.acquire()
     try:
+        trigger_reset_and_reparse._fail_count = 0
         logger.info("Full inbox cross-verify started (incremental -- keeping existing data)...")
 
         _cache().clear()
@@ -248,6 +249,17 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
                         r'^password\s+reset',
                         r'^verify\s+your\s+email',
                         r'^your\s+subscription',
+                        r'^sign.in\s+activity',
+                        r'^security\s+alert',
+                        r'^unusual\s+sign.in',
+                        r'^payment\s+received',
+                        r'^billing\s+statement',
+                        r'^receipt\s+for\s+your',
+                        r'^order\s+confirm',
+                        r'^weekly\s+digest',
+                        r'^monthly\s+roundup',
+                        r'^your\s+free\s+trial',
+                        r'^upgrade\s+your\s+plan',
                     ]
                     if any(re.search(p, _pre_subj_lower) for p in _notification_patterns):
                         continue
@@ -1674,6 +1686,13 @@ async def process_single_email(message_id: str, graph_service):
         # Extract candidate
         candidate = await _scraper().extract_candidate_from_email(email_data)
         if not candidate or not candidate.get('email'):
+            # Mark so incremental sync skips it next time
+            try:
+                msg_id = email_data.get('id', '') or email_data.get('message_id', '') or message_id
+                if msg_id:
+                    await asyncio.to_thread(_db().mark_email_processed, msg_id, '', 'no-candidate')
+            except Exception:
+                pass
             return None
         
         # Check if exists

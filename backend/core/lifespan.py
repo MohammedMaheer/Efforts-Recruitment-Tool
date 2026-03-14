@@ -610,7 +610,9 @@ async def auto_sync_emails():
                                                 'work_history': ai_analysis.get('work_history', []),
                                             })
                                             score = ai_analysis.get('quality_score')
-                                            candidate['status'] = 'Strong' if score >= 70 else ('Partial' if score >= 40 else 'Reject')
+                                            _protected_statuses = {'Shortlisted', 'Interviewing', 'Offered', 'Hired', 'Rejected', 'Withdrawn', 'Strong', 'Partial'}
+                                            if candidate.get('status') not in _protected_statuses:
+                                                candidate['status'] = 'Strong' if score >= 70 else ('Partial' if score >= 40 else 'Reject')
                                             logger.info(f"AI scored {candidate.get('name')}: {score}%")
                                             _ms = len(merged_skills)
                                             _me = merged_exp
@@ -619,7 +621,8 @@ async def auto_sync_emails():
                                             if candidate['matchScore'] < _floor:
                                                 logger.info(f"Score boosted for {candidate.get('name')}: {candidate['matchScore']} -> {_floor} (skills={_ms}, exp={_me})")
                                                 candidate['matchScore'] = _floor
-                                                candidate['status'] = 'Strong' if _floor >= 70 else ('Partial' if _floor >= 40 else 'Reject')
+                                                if candidate.get('status') not in _protected_statuses:
+                                                    candidate['status'] = 'Strong' if _floor >= 70 else ('Partial' if _floor >= 40 else 'Reject')
                                             if candidate.get('job_category') == 'General' and _ms >= 3:
                                                 _sl = {s.lower() for s in merged_skills}
                                                 _tech = {'python','java','javascript','react','angular','vue','node','django','flask','.net','c#','c++','typescript','php','ruby','swift','kotlin','sql','mongodb','postgresql','docker','kubernetes','aws','azure','gcp','html','css','git','rest','api','spring','fastapi','express'}
@@ -905,9 +908,9 @@ async def auto_sync_emails():
 
             if _is_first_sync:
                 try:
-                    await asyncio.wait_for(_run_single_sync(), timeout=600)
+                    await asyncio.wait_for(_run_single_sync(), timeout=7200)
                 except asyncio.TimeoutError:
-                    logger.error("First email sync timed out after 600s — will retry next cycle")
+                    logger.error("First email sync timed out after 7200s — will retry next cycle")
             else:
                 try:
                     await asyncio.wait_for(_run_single_sync(), timeout=600)
@@ -976,7 +979,9 @@ async def _background_seed_from_json():
                     raw_email_subject TEXT, is_active INTEGER DEFAULT 1,
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
                     ai_analysis TEXT, certifications TEXT, languages TEXT, resume_text TEXT,
-                    strengths TEXT, gaps TEXT
+                    strengths TEXT, gaps TEXT,
+                    nationality TEXT, notice_period TEXT, current_salary TEXT, expected_salary TEXT,
+                    source_portal TEXT DEFAULT 'Direct', job_applied_for TEXT
                 )
             """)
             conn.commit()
@@ -998,8 +1003,10 @@ async def _background_seed_from_json():
                             skills, experience, education, summary, work_history,
                             linkedin, status, match_score, job_category, job_subcategory,
                             applied_date, last_updated, raw_email_subject,
-                            certifications, languages, resume_text
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            certifications, languages, resume_text,
+                            nationality, notice_period, current_salary, expected_salary,
+                            source_portal, job_applied_for
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """, (
                         c.get('id', email_hash[:12]),
                         email, email_hash,
@@ -1022,6 +1029,12 @@ async def _background_seed_from_json():
                         json.dumps(c.get('certifications', [])),
                         json.dumps(c.get('languages', [])),
                         c.get('resume_text', ''),
+                        c.get('nationality', ''),
+                        c.get('notice_period', ''),
+                        c.get('current_salary', ''),
+                        c.get('expected_salary', ''),
+                        c.get('source_portal', 'Direct'),
+                        c.get('job_applied_for', ''),
                     ))
                     count += 1
                     if count % 1000 == 0:
@@ -1073,7 +1086,7 @@ async def _background_process_candidates(interval_minutes: int = 5):
                     cursor = conn.cursor()
                     cursor.execute("""
                         SELECT id, name, skills, experience, education, location,
-                               match_score, job_category, summary, resume_text
+                               match_score, job_category, summary, resume_text, job_applied_for
                         FROM candidates
                         WHERE is_active = 1
                         AND (
@@ -1160,16 +1173,21 @@ async def _background_process_candidates(interval_minutes: int = 5):
                                                 match_score = CASE WHEN ? > 0 THEN ? ELSE match_score END,
                                                 job_category = CASE WHEN ? != '' THEN ? ELSE job_category END,
                                                 skills = CASE WHEN ? IS NOT NULL AND length(?) > 4 THEN ? ELSE skills END,
-                                                experience = CASE WHEN ? > 0 THEN MAX(experience, ?) ELSE experience END,
                                                 summary = CASE WHEN ? != '' AND length(?) > length(COALESCE(summary, '')) THEN ? ELSE summary END,
-                                                last_updated = datetime('now')
+                                                last_updated = CURRENT_TIMESTAMP
                                             WHERE id = ?
                                         """, [_json.dumps(ai_result), match_score, match_score,
                                               job_category, job_category,
                                               skills_json, skills_json, skills_json,
-                                              ai_experience, ai_experience,
                                               ai_summary, ai_summary, ai_summary,
                                               cid])
+                                        # Separate experience update avoids MAX() vs GREATEST() incompatibility
+                                        # between SQLite and PostgreSQL
+                                        if ai_experience > 0:
+                                            conn.execute("""
+                                                UPDATE candidates SET experience = ?
+                                                WHERE id = ? AND (experience IS NULL OR experience = 0 OR ? > experience)
+                                            """, [ai_experience, cid, ai_experience])
                                         conn.commit()
 
                                 await loop.run_in_executor(None, _update_candidate, candidate['id'], result)

@@ -838,7 +838,12 @@ export default function Candidates() {
                                     </span>
                                   )}
                                   <button
-                                    onClick={(e) => { e.stopPropagation(); generateQuickProfilePDF(candidate) }}
+                                    onClick={(e) => {
+                                      e.stopPropagation()
+                                      generateQuickProfilePDF(candidate).catch((err: Error) =>
+                                        toast.error('PDF Failed', err.message || 'Could not generate PDF report')
+                                      )
+                                    }}
                                     className="p-1 rounded-full hover:bg-sky-100 text-sky-600 transition-colors"
                                     title="Download PDF Report"
                                   >
@@ -1072,7 +1077,12 @@ export default function Candidates() {
                           </span>
                         )}
                         <button
-                          onClick={(e) => { e.stopPropagation(); generateQuickProfilePDF(candidate) }}
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            generateQuickProfilePDF(candidate).catch((err: Error) =>
+                              toast.error('PDF Failed', err.message || 'Could not generate PDF report')
+                            )
+                          }}
                           className="p-1 rounded-full hover:bg-sky-100 text-sky-600 transition-colors"
                           title="Download PDF Report"
                         >

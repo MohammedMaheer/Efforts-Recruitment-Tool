@@ -30,6 +30,7 @@ import {
 import { useCandidates } from '@/hooks/useCandidates'
 import { useCandidateStore } from '@/store/candidateStore'
 import { useNotificationStore } from '@/store/notificationStore'
+import { useAuthStore } from '@/store/authStore'
 import { candidateApi } from '@/services/api'
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -109,6 +110,8 @@ export default function CandidateDetail() {
   const isShortlisted = useCandidateStore((state) => state.isShortlisted)
   const toggleShortlist = useCandidateStore((state) => state.toggleShortlist)
   const addNotification = useNotificationStore((state) => state.addNotification)
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
 
   const [aiAnalysis, setAiAnalysis] = useState<CandidateAnalysis | null>(null)
   const [isAnalyzing, setIsAnalyzing] = useState(false)
@@ -239,8 +242,8 @@ export default function CandidateDetail() {
     try {
       const isRefresh = !!aiAnalysis
 
-      // If refreshing, first re-score the candidate via Gemini (updates matchScore + category in DB)
-      if (isRefresh) {
+      // If refreshing and user is admin, re-score the candidate via Gemini (updates matchScore + category in DB)
+      if (isRefresh && isAdmin) {
         try {
           const rescoreRes = await authFetch(`${config.endpoints.candidates}/${candidate.id}/rescore`, { method: 'POST' })
           if (rescoreRes.ok) {
@@ -605,13 +608,15 @@ export default function CandidateDetail() {
                     {isAnalyzing ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Sparkles className="w-3.5 h-3.5 mr-1" />}
                     {isAnalyzing ? 'Analyzing...' : aiAnalysis ? 'Re-analyze' : 'AI Analysis'}
                   </Button>
-                  <Button 
+                  <Button
                     size="sm"
-                    variant="outline" 
+                    variant="outline"
                     onClick={() => generateCandidatePDF(candidate, aiAnalysis)}
+                    disabled={fullDataLoading && !fullCandidateData}
                     className="text-xs h-8"
                   >
-                    <Download className="w-3.5 h-3.5 mr-1" />PDF
+                    <Download className="w-3.5 h-3.5 mr-1" />
+                    {fullDataLoading && !fullCandidateData ? 'Loading...' : 'PDF Report'}
                   </Button>
                   <Button 
                     size="sm"

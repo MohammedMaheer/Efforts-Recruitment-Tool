@@ -572,6 +572,8 @@ export default function AIAssistant() {
   const navigate = useNavigate()
   const location = useLocation()
   const aiStatus = useAIStatus()
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
 
   // Load HR notes from localStorage on mount
   useEffect(() => {
@@ -803,6 +805,10 @@ export default function AIAssistant() {
   }
 
   const handleShortlistSelected = async (candidateList: Candidate[]) => {
+    if (!isAdmin) {
+      toast.error('Permission Required', 'Only admins can bulk shortlist candidates.')
+      return
+    }
     const toShortlist = candidateList.filter(c => selectedIds.has(c.id) && c.status !== 'Shortlisted')
     if (toShortlist.length === 0) return
     if (!confirm(`Shortlist ${toShortlist.length} selected candidate${toShortlist.length !== 1 ? 's' : ''} and send notification emails?`)) return
@@ -1224,6 +1230,10 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
           else toast.info('No Emails', 'No email addresses found.')
         }, variant: 'primary' },
         { label: 'Shortlist All', icon: Star, action: async () => {
+          if (!isAdmin) {
+            toast.error('Permission Required', 'Only admins can bulk shortlist candidates.')
+            return
+          }
           const count = filteredCandidates.filter(c => c.status !== 'Shortlisted').length
           if (count === 0) { toast.info('Already Shortlisted', 'All candidates are already shortlisted.'); return }
           const typed = prompt(`⚠️ This will shortlist ${count} candidates and send notification emails.\n\nType "${count}" to confirm:`)
@@ -2097,9 +2107,11 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                         setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${data?.shortlisted || toShortlist.length} candidates** shortlisted. **${data?.emails_sent || 0}** notification emails sent.`, timestamp: new Date(), intent: 'shortlist_confirm' }])
                       } catch (e) {
                         console.error('Bulk shortlist error:', e)
+                        toast.error('Permission Required', 'Only admins can bulk shortlist candidates.')
                       }
                     }}
-                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors"
+                    disabled={!isAdmin}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     Shortlist {[...selectedIds].filter(id => resultsCandidates.some(c => c.id === id)).length} & Send Emails
@@ -2121,9 +2133,11 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                         setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${data?.shortlisted || toShortlist.length} candidates** shortlisted. **${data?.emails_sent || 0}** notification emails sent.`, timestamp: new Date(), intent: 'shortlist_confirm' }])
                       } catch (e) {
                         console.error('Bulk shortlist error:', e)
+                        toast.error('Permission Required', 'Only admins can bulk shortlist candidates.')
                       }
                     }}
-                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors"
+                    disabled={!isAdmin}
+                    className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     Shortlist All & Send Emails
@@ -2756,7 +2770,8 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                       whileHover={{ scale: 1.05 }}
                                       whileTap={{ scale: 0.95 }}
                                       onClick={() => handleShortlistSelected(message.candidates!)}
-                                      className="flex items-center gap-1 px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium"
+                                      disabled={!isAdmin}
+                                      className="flex items-center gap-1 px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                                     >
                                       <CheckCircle2 className="w-3 h-3" />
                                       Shortlist Selected
@@ -2946,7 +2961,8 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                               whileHover={{ scale: 1.05 }}
                               whileTap={{ scale: 0.95 }}
                               onClick={() => handleShortlistSelected(message.candidates!)}
-                              className="flex items-center gap-1 px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium"
+                              disabled={!isAdmin}
+                              className="flex items-center gap-1 px-2.5 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium disabled:opacity-50 disabled:cursor-not-allowed"
                             >
                               <CheckCircle2 className="w-3 h-3" />
                               Shortlist Selected

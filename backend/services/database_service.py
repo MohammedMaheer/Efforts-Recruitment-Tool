@@ -616,12 +616,20 @@ class DatabaseService:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT * FROM candidates 
+                SELECT * FROM candidates
                 WHERE id = ? AND is_active = 1
             """, (candidate_id,))
             row = cursor.fetchone()
             if row:
-                return self._row_to_candidate(row)
+                candidate = self._row_to_candidate(row, check_resume=False)
+                # Check if resume exists
+                try:
+                    cursor.execute("SELECT COUNT(*) FROM resumes WHERE candidate_id = ?", (candidate_id,))
+                    has_resume = cursor.fetchone()[0] > 0
+                except Exception:
+                    has_resume = False
+                candidate['hasResume'] = has_resume
+                return candidate
             return None
 
     def update_candidate_status(self, candidate_id: str, status: str) -> bool:
@@ -1194,6 +1202,15 @@ class DatabaseService:
                 merged[key] = new_val
             elif self._is_meaningful(new_val) and len(new_val) > len(old_val):
                 merged[key] = new_val
+
+        # Update job_applied_for if new data has a more specific value
+        old_job = existing.get('job_applied_for', '') or ''
+        new_job = new_data.get('job_applied_for', '') or ''
+        if new_job and (not old_job or old_job == 'General'):
+            merged['job_applied_for'] = new_job
+        elif new_job and old_job and new_job != old_job:
+            # Candidate applied for multiple roles — keep both
+            merged['job_applied_for'] = f"{old_job}; {new_job}"
 
         # ---- list fields: union / deduplicate ----
         for key in ('skills', 'certifications', 'languages'):

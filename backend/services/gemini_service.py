@@ -909,7 +909,7 @@ class GeminiService:
             return None
         return _repair_json(result)
 
-    async def _agenerate_json(self, prompt: str, temperature: float = 0.05, max_tokens: int = 1024) -> Optional[Dict]:
+    async def _agenerate_json(self, prompt: str, temperature: float = 0.0, max_tokens: int = 1024) -> Optional[Dict]:
         """Async JSON generation (thinking disabled for cost savings)."""
         result = await self._agenerate(prompt, temperature=temperature, max_tokens=max_tokens, thinking_budget=0)
         if not result:
@@ -1140,7 +1140,7 @@ Return EXACTLY this JSON:
 }}"""
 
         try:
-            result = await self._agenerate_json(prompt, temperature=0.05, max_tokens=2048)
+            result = await self._agenerate_json(prompt, temperature=0.0, max_tokens=2048)
         except Exception as gen_err:
             logger.warning(f"Gemini JSON generation error: {gen_err}")
             return None
@@ -1246,7 +1246,7 @@ Return JSON:
     "skills": ["ALL technical/professional skills — be thorough"],
     "experience": 5,
     "education": ["Highest degree e.g. B.Tech CS, MBA"],
-    "job_category": "One of: Software Engineering, Data & Analytics, IT & Systems, Engineering, HR & Admin, Finance & Accounting, Sales, Operations, Consulting, Healthcare, Design & Creative, QA & Testing, Marketing, Customer Service, Insurance & Safety, Retail & Hospitality, Business Analyst, Education, Legal, General",
+    "job_category": "One of: Software Engineer, DevOps Engineer, Data Scientist, Cybersecurity, QA / Testing, IT & Systems, Product Manager, Design, Project Management, Business Analyst, Consulting, Marketing, Content & Communications, Sales, Finance, HR, Executive, Legal, Healthcare, Education, Customer Service, Operations, General",
     "job_subcategory": "Specific role title",
     "quality_score": "<integer 10-100>",
     "summary": "2-3 sentence summary",
@@ -1501,7 +1501,9 @@ Be specific — reference actual skills, companies, and experience from the prof
 
     async def match_candidate_to_job(self, candidate_data: Dict, job_description: str) -> Dict:
         """Match a single candidate against a job description."""
-        cache_key = self._cache_key("match", f"{json.dumps(candidate_data, default=str)}:{job_description[:500]}")
+        import hashlib as _hl
+        _jd_hash = _hl.sha256((job_description or '').encode()).hexdigest()[:16]
+        cache_key = self._cache_key("match", f"{json.dumps(candidate_data, default=str)}:{_jd_hash}")
         cached = self._get_cached(cache_key)
         if cached:
             return cached
@@ -1510,15 +1512,37 @@ Be specific — reference actual skills, companies, and experience from the prof
         skills = candidate_data.get('skills', [])
         experience = candidate_data.get('experience', candidate_data.get('experience_years', 0))
 
+        # Build the same rich candidate block as _batch_match uses
+        skills_str = ', '.join((candidate_data.get('skills') or [])[:20])
+        exp = candidate_data.get('experience', 0)
+        location = candidate_data.get('location', '')
+        notice = candidate_data.get('notice_period', '')
+        salary = candidate_data.get('current_salary', '') or candidate_data.get('expected_salary', '')
+        wh = candidate_data.get('workHistory') or candidate_data.get('work_history') or []
+        wh_lines = []
+        for w in wh[:3]:
+            if isinstance(w, dict):
+                wh_lines.append(f"  - {w.get('title','')} at {w.get('company','')} ({w.get('duration','')}) : {w.get('description','')[:120]}")
+        work_text = '\n'.join(wh_lines) if wh_lines else '  Not provided'
+        edu = candidate_data.get('education') or []
+        edu_text = '; '.join([e.get('degree','') + ' ' + e.get('field','') if isinstance(e, dict) else str(e) for e in edu[:2]]) or 'Not provided'
+        certs = ', '.join(candidate_data.get('certifications') or []) or 'None'
+        summary = candidate_data.get('summary', '')
+
         prompt = f"""Evaluate candidate-job fit. Return ONLY valid JSON.
 
 CANDIDATE: {name}
-Skills: {', '.join(skills[:20]) if skills else 'Not specified'}
-Experience: {experience} years
-Summary: {candidate_data.get('summary', '')[:400]}
+Skills: {skills_str}
+Experience: {exp} years | Location: {location}
+Notice Period: {notice} | Salary: {salary}
+Work History:
+{work_text}
+Education: {edu_text}
+Certifications: {certs}
+Summary: {summary[:400]}
 
 JOB:
-{job_description[:2000]}
+{job_description[:3000]}
 
 Return JSON:
 {{
@@ -1591,7 +1615,7 @@ Return JSON:
             for canonical, syn_set in SKILL_SYNONYMS.items():
                 if kw in syn_set:
                     synonym_additions.add(canonical)
-                    synonym_additions.update(syn_set)
+                    # Do NOT add all syn_set members — they contaminate unrelated queries
         expanded_keywords.update(synonym_additions)
 
         # Detect explicit location requirement from JD
@@ -1830,7 +1854,7 @@ Return JSON:
         """Score multiple candidates in a single Gemini call."""
         candidates_text = ""
         for i, c in enumerate(batch, 1):
-            skills_str = ', '.join(c.get('skills', [])[:12]) or 'Not specified'
+            skills_str = ', '.join(c.get('skills', [])[:20]) or 'Not specified'
             exp = c.get('experience', 0)
             loc = c.get('location', 'N/A')
             # Build enriched optional fields for better scoring accuracy
@@ -1855,6 +1879,8 @@ Return JSON:
             lang_str = f"\n  Languages: {', '.join(langs[:4])}" if isinstance(langs, list) and langs else ''
             notice = c.get('notice_period', '')
             notice_str = f"\n  Notice Period: {notice}" if notice else ''
+            salary_str = c.get('current_salary', '') or c.get('expected_salary', '') or ''
+            salary_disp = f"\n  Salary: {salary_str}" if salary_str else ''
             nationality = c.get('nationality', '')
             nat_str = f"\n  Nationality: {nationality}" if nationality else ''
             # Education
@@ -1874,7 +1900,7 @@ Return JSON:
                 f"  Experience: {exp} years\n"
                 f"  Location: {loc}\n"
                 f"  Summary: {c.get('summary', '')[:200]}"
-                f"{work_str}{cert_str}{lang_str}{edu_str}{notice_str}{nat_str}\n"
+                f"{work_str}{cert_str}{lang_str}{edu_str}{notice_str}{salary_disp}{nat_str}\n"
             )
 
         # Build constraints block so Gemini enforces ALL conditions simultaneously
@@ -1908,6 +1934,12 @@ Return JSON:
             if jd_negative_terms:
                 neg_str = ', '.join(sorted(jd_negative_terms))
                 constraints_lines.append(f"EXCLUDE (HARD): candidates with {neg_str} background = score 0-20")
+        # Extract salary range from JD text
+        import re as _re
+        _salary_match = _re.search(r'(?:salary|compensation|pay|package)[^\n]*?([\d,]+)\s*(?:to|-)\s*([\d,]+)', job_description, _re.IGNORECASE)
+        if _salary_match:
+            sal_lo, sal_hi = _salary_match.group(1).replace(',', ''), _salary_match.group(2).replace(',', '')
+            constraints_lines.append(f"SALARY RANGE: {sal_lo}-{sal_hi} — candidates above this range = 0-30 score")
         constraints_block = "\n".join(f"  • {l}" for l in constraints_lines) if constraints_lines else "  • None — score by overall fit"
 
         n = len(batch)
@@ -1922,11 +1954,14 @@ R2. ALL hard constraints above must be satisfied — a single violation = 0-35 s
 R3. Skills listed but never demonstrated in work history = weaker signal
 R4. Certifications and languages are strong differentiators when mentioned in JD
 R5. For composite queries ("senior Python dev with 5 yrs in Dubai"): EVERY condition is required
+R6. ALL hard constraints in the block above must be met SIMULTANEOUSLY
+R7. Job hopper penalty: if work history shows more than 4 jobs in 3 years with each tenure under 6 months, reduce score by 15-20 points.
+R8. Skills without evidence: if a skill is listed but never appears in work history roles/descriptions, treat it as a weaker signal (50% weight).
 
 {candidates_text}
 
 JOB DESCRIPTION:
-{job_description[:1500]}
+{job_description[:3000]}
 
 Each object must have: match_score (0-100 integer — be precise, no defaults), matched_skills (array), missing_skills (array), strengths (array), gaps (array), recommendation (string).
 
@@ -2900,11 +2935,11 @@ Return JSON:
             has_many_keywords = len(keywords) >= 4
             
             if has_many_keywords:
-                MAX_CANDIDATES_TO_GEMINI = 16  # Complex query — pre-filter is strong, fewer needed
+                MAX_CANDIDATES_TO_GEMINI = 50  # Complex query — pre-filter is strong, wider pool for accuracy
             elif has_specific_keywords:
-                MAX_CANDIDATES_TO_GEMINI = 20  # Moderate query — pre-filter handles most ranking
+                MAX_CANDIDATES_TO_GEMINI = 50  # Moderate query — wider pool for better recall
             else:
-                MAX_CANDIDATES_TO_GEMINI = 25  # Broad/simple query — wider pool needed
+                MAX_CANDIDATES_TO_GEMINI = 60  # Broad/simple query — widest pool needed
             
             # Ensure we request at least enough for the user's num_candidates
             MAX_CANDIDATES_TO_GEMINI = max(MAX_CANDIDATES_TO_GEMINI, min(num_candidates + 5, 50))
@@ -3262,6 +3297,11 @@ For EACH matched candidate (up to {num_candidates}):
                             'phone': best_match.get('phone', ''),
                             'status': best_match.get('status', 'New'),
                             'hasResume': best_match.get('hasResume', False),
+                            'summary': best_match.get('summary', ''),
+                            'workHistory': best_match.get('workHistory') or best_match.get('work_history') or [],
+                            'education': best_match.get('education') or [],
+                            'jobSubcategory': best_match.get('jobSubcategory') or best_match.get('job_subcategory', ''),
+                            'appliedDate': best_match.get('appliedDate') or best_match.get('applied_date', ''),
                         })
             
             # Fallback: if parsing found nothing, send top-N from pool
@@ -3284,6 +3324,11 @@ For EACH matched candidate (up to {num_candidates}):
                         'phone': c.get('phone', ''),
                         'status': c.get('status', 'New'),
                         'hasResume': c.get('hasResume', False),
+                        'summary': c.get('summary', ''),
+                        'workHistory': c.get('workHistory') or c.get('work_history') or [],
+                        'education': c.get('education') or [],
+                        'jobSubcategory': c.get('jobSubcategory') or c.get('job_subcategory', ''),
+                        'appliedDate': c.get('appliedDate') or c.get('applied_date', ''),
                     })
             
             result_dict = {

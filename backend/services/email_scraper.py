@@ -1633,7 +1633,7 @@ class EmailScraperService:
                                 break
 
             if not candidate_name or not is_valid_name(candidate_name):
-                logger.warning(f"âš ï¸ Skipping candidate - invalid name: {candidate_name} | Subject: {subject[:80]}")
+                logger.warning(f"[SKIP] Invalid candidate name: {candidate_name} | Subject: {subject[:80]}")
                 return None
             
             # Note: actual_candidate_email was already determined earlier (before ID generation)
@@ -1702,7 +1702,7 @@ class EmailScraperService:
             return candidate
             
         except Exception as e:
-            logger.warning(f"Error extracting candidate: {e}")
+            logger.warning(f"Error extracting candidate from email: {e}", exc_info=True)
             return None
     
     async def infer_job_category(self, email_data: Dict, resume_data: Dict) -> tuple:
