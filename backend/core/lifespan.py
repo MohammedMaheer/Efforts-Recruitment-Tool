@@ -421,7 +421,7 @@ async def auto_sync_emails():
                                         else:
                                             logger.warning(
                                                 f"Attachment fetch failed for msg {msg['id'][:20]} "
-                                                f"from {sender_email}: {attach_result.get('error', 'unknown')}. "
+                                                f"from {sender_email}: {attach_result2.get('error', 'unknown')}. "
                                                 "Candidate will be stored without resume."
                                             )
 

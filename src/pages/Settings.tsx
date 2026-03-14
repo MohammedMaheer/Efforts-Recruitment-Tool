@@ -13,6 +13,7 @@ import { authFetch } from '@/lib/authFetch'
 
 export default function Settings() {
   const user = useAuthStore((state) => state.user)
+  const isAdmin = user?.role === 'admin'
   const addNotification = useNotificationStore((state) => state.addNotification)
   const [firstName, setFirstName] = useState(user?.name?.split(' ')[0] || '')
   const [lastName, setLastName] = useState(user?.name?.split(' ').slice(1).join(' ') || '')
@@ -496,23 +497,24 @@ export default function Settings() {
             <div className="border-t border-gray-100" />
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">
-                <p className="font-medium text-gray-900">Reprocess Garbled Candidates</p>
-                <p className="text-sm text-gray-600">Fix encoding issues, remove system/bot profiles, and re-score candidates with missing or default scores</p>
-              </div>
-              <Button onClick={handleReprocessGarbled} disabled={isReprocessing} size="sm" variant="outline" className="flex-shrink-0">
-                {isReprocessing ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Zap className="w-4 h-4 mr-1.5" />}
-                {isReprocessing ? 'Processing...' : 'Reprocess'}
-              </Button>
-            </div>
-            <div className="border-t border-gray-100" />
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex-1">
                 <p className="font-medium text-gray-900">Re-score Unscored Candidates</p>
                 <p className="text-sm text-gray-600">Recalculate AI match scores for candidates with 0% score</p>
               </div>
               <Button onClick={handleRescoreAll} disabled={isRescoring} size="sm" variant="outline" className="flex-shrink-0">
                 {isRescoring ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <RefreshCw className="w-4 h-4 mr-1.5" />}
                 {isRescoring ? 'Scoring...' : 'Re-score'}
+              </Button>
+            </div>
+            {isAdmin && (<>
+            <div className="border-t border-gray-100" />
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex-1">
+                <p className="font-medium text-gray-900">Reprocess Garbled Candidates</p>
+                <p className="text-sm text-gray-600">Fix encoding issues, remove system/bot profiles, and re-score candidates with missing or default scores</p>
+              </div>
+              <Button onClick={handleReprocessGarbled} disabled={isReprocessing} size="sm" variant="outline" className="flex-shrink-0">
+                {isReprocessing ? <Loader2 className="w-4 h-4 mr-1.5 animate-spin" /> : <Zap className="w-4 h-4 mr-1.5" />}
+                {isReprocessing ? 'Processing...' : 'Reprocess'}
               </Button>
             </div>
             <div className="border-t border-gray-100" />
@@ -568,6 +570,7 @@ export default function Settings() {
                 {isRelooking ? 'Looking up...' : 'Re-lookup'}
               </Button>
             </div>
+            </>)}
           </CardContent>
         </Card>
       </motion.div>

@@ -331,8 +331,8 @@ async def match_candidate_to_jobs(request: JobMatchRequest):
         return JobMatchResponse(
             candidate_id=request.candidate_id,
             candidate_name=candidate.get('name', ''),
-            matches=[],  # Map matches
-            best_match=None
+            matches=matches,
+            best_match=matches[0] if matches else None
         )
     except Exception as e:
         raise HTTPException(500, _safe_error("Matching failed", e))

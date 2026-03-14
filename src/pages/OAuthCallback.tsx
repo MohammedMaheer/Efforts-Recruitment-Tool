@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { authFetch } from '@/lib/authFetch'
 import config from '@/config'
+import { toast } from '@/components/ui/Toast'
 
 export default function OAuthCallback() {
   const navigate = useNavigate()
@@ -49,14 +50,19 @@ export default function OAuthCallback() {
           } catch (syncError) {
             console.warn('Email sync trigger failed, will sync on next interval:', syncError)
           }
-          
+
           navigate('/candidates')
         } else {
-          console.error('OAuth2 callback failed:', response.status)
+          const errorBody = await response.json().catch(() => ({}))
+          const errorMsg = errorBody?.detail || `Authentication failed (HTTP ${response.status})`
+          console.error('OAuth2 callback failed:', response.status, errorMsg)
+          toast.error('Microsoft Login Failed', errorMsg)
           navigate('/settings')
         }
       } catch (error) {
+        const msg = error instanceof Error ? error.message : 'Network error during authentication'
         console.error('Error during OAuth callback:', error)
+        toast.error('Microsoft Login Failed', msg)
         navigate('/settings')
       }
     }

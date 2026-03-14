@@ -177,7 +177,7 @@ async def _send_rejection_email(candidate: Dict):
         )
 
         if result.get('status') == 'success':
-            logger.warning(f"✅ Rejection email sent to {candidate_name} ({candidate_email})")
+            logger.info(f"✅ Rejection email sent to {candidate_name} ({candidate_email})")
         else:
             logger.warning(f"⚠️ Failed to send rejection email to {candidate_email}: {result.get('message')}")
 
@@ -334,7 +334,7 @@ async def _send_shortlist_email(candidate: Dict):
         )
 
         if result.get('status') == 'success':
-            logger.warning(f"✅ Shortlist email sent to {candidate_name} ({candidate_email}) [UAE={is_uae}]")
+            logger.info(f"✅ Shortlist email sent to {candidate_name} ({candidate_email}) [UAE={is_uae}]")
         else:
             logger.warning(f"⚠️ Failed to send shortlist email to {candidate_email}: {result.get('message')}")
 
@@ -690,8 +690,7 @@ async def bulk_shortlist_candidates(
 
 
 @router.post("/api/candidates/reset-shortlist")
-async def reset_all_shortlisted(current_user: dict = Depends(require_auth)):
-    """Reset ALL candidates with status 'Shortlisted' back to 'Strong'."""
+async def reset_all_shortlisted(current_user: dict = Depends(require_admin)):
     try:
         def _reset_shortlisted_db():
             with _db().get_connection() as conn:
@@ -719,7 +718,7 @@ async def reset_all_shortlisted(current_user: dict = Depends(require_auth)):
 
 
 @router.get("/api/audit/shortlist-log")
-async def get_shortlist_audit_log(current_user: dict = Depends(require_auth)):
+async def get_shortlist_audit_log(current_user: dict = Depends(require_admin)):
     """Return all currently-shortlisted candidates with their shortlisted_at timestamp for audit purposes."""
     try:
         def _get_log():
