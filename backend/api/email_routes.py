@@ -1493,6 +1493,16 @@ async def cron_sync(request: Request):
             or token_data.get('is_expired', True)
             or not token_data.get('access_token')
         )
+        # Also check actual expiry clock — stored is_expired flag may be stale
+        if not needs_refresh and token_data.get('expires_at'):
+            try:
+                from datetime import datetime as _dt, timedelta as _td
+                exp = _dt.fromisoformat(token_data['expires_at'].replace('Z', '+00:00'))
+                exp_naive = exp.replace(tzinfo=None)
+                if exp_naive < _dt.utcnow() + _td(minutes=5):
+                    needs_refresh = True
+            except Exception:
+                needs_refresh = True
         
         if needs_refresh:
             graph_svc = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=email_address)

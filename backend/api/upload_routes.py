@@ -93,7 +93,7 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
         if not parsed.get('email'):
             # Generate a placeholder email from filename
             import hashlib
-            file_hash = hashlib.md5(content[:1024]).hexdigest()[:8]
+            file_hash = hashlib.sha256(content[:1024]).hexdigest()[:8]
             clean_name = re.sub(r'[^a-zA-Z]', '', parsed.get('name', ''))[:20] or 'candidate'
             parsed['email'] = f"{clean_name.lower()}.{file_hash}@uploaded.local"
 

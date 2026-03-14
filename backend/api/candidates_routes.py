@@ -134,45 +134,60 @@ async def reset_and_reparse_all_emails(current_user: dict = Depends(require_admi
     Parses email body, attached resumes, and uses Local AI for analysis.
     """
     try:
-        # Clear response cache
-        _cache().clear()
-        
-        # Step 1: Clear all candidates from database
-        deleted_count = await asyncio.to_thread(_db().clear_all_candidates)
-        logger.info(f"🗑️ Cleared {deleted_count} candidates from database")
-        
-        # Step 2: Clear processed message IDs to force reprocessing
-        _scraper().processed_message_ids.clear()
-        
-        # Step 3: Trigger full email sync via OAuth2 (Microsoft Graph)
+        # Step 1: Validate & refresh OAuth2 token BEFORE doing any destructive operations
         primary_email = os.getenv('EMAIL_ADDRESS') or os.getenv('IMAP_EMAIL') or _settings.email_address or ''
         token_storage = get_token_storage()
         token_data = token_storage.get_token(primary_email)
-        
-        if not token_data:
-            return {
-                "status": "error",
-                "message": "No OAuth2 token found. Please authenticate first.",
-                "deleted_count": deleted_count
-            }
-        
-        # Initialize Graph service
+
+        if not token_data or not token_data.get('access_token'):
+            return {"status": "error", "message": "No OAuth2 token found. Please authenticate first."}
+
         client_id = os.getenv('MICROSOFT_CLIENT_ID')
         client_secret = os.getenv('MICROSOFT_CLIENT_SECRET')
         tenant_id = os.getenv('MICROSOFT_TENANT_ID')
-        
-        graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id)
+
+        graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id, user_email=primary_email)
         graph_service.access_token = token_data.get('access_token', '')
         try:
             expires_str = (token_data.get('expires_at') or '').replace('Z', '+00:00')
             graph_service.token_expiry = datetime.fromisoformat(expires_str) if expires_str else None
         except (ValueError, TypeError):
             graph_service.token_expiry = None
-        
-        # Fetch emails in batches to avoid OOM (max 5000 per batch, paginated)
-        logger.info("📧 Fetching emails from inbox for re-parsing (paginated)...")
+
+        # Refresh token if expired or expiring within 5 minutes
+        token_expired = token_data.get('is_expired', True) or not token_data.get('access_token')
+        if not token_expired and graph_service.token_expiry:
+            try:
+                from datetime import timezone as _tz, timedelta as _td
+                exp = graph_service.token_expiry
+                if exp.tzinfo is not None:
+                    exp = exp.astimezone(_tz.utc).replace(tzinfo=None)
+                if exp < datetime.utcnow() + _td(minutes=5):
+                    token_expired = True
+            except Exception:
+                pass
+
+        if token_expired:
+            refresh_token = token_data.get('refresh_token')
+            if not refresh_token:
+                return {"status": "error", "message": "OAuth2 token expired and no refresh token available. Please re-authenticate."}
+            ref_result = await graph_service.refresh_access_token(refresh_token)
+            if ref_result.get('status') == 'success':
+                token_storage.save_token(primary_email, ref_result.get('token_data', {}))
+                graph_service.access_token = ref_result.get('token_data', {}).get('access_token', '')
+            else:
+                return {"status": "error", "message": f"Token refresh failed: {ref_result.get('message')}. Please re-authenticate."}
+
+        # Step 2: Token validated — now safe to clear data
+        _cache().clear()
+        deleted_count = await asyncio.to_thread(_db().clear_all_candidates)
+        logger.info(f"Cleared {deleted_count} candidates from database")
+        _scraper().processed_message_ids.clear()
+
+        # Step 3: Fetch emails from inbox
+        logger.info("Fetching emails from inbox for re-parsing (paginated)...")
         result = await graph_service.get_messages(folder='inbox', top=5000, fetch_all=True)
-        
+
         if result['status'] != 'success':
             return {
                 "status": "error",
@@ -1483,7 +1498,7 @@ async def download_resume(candidate_id: str, current_user: dict = Depends(requir
             content=resume['file_data'],
             media_type=resume['content_type'],
             headers={
-                'Content-Disposition': f'attachment; filename="{os.path.basename(resume.get("filename") or "resume.pdf")}"'
+                'Content-Disposition': f'attachment; filename="{os.path.basename(resume.get("filename") or "resume.pdf").replace(chr(34), "").replace(chr(10), "").replace(chr(13), "")}"'
             }
         )
     except HTTPException:

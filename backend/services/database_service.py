@@ -1359,13 +1359,23 @@ class DatabaseService:
             for row in rows:
                 skills_raw = row[3]
                 edu_raw = row[5]
+                # Safe JSON parse — handles arrays, objects, or broken values
+                _edu: list = []
+                if isinstance(edu_raw, list):
+                    _edu = edu_raw
+                elif edu_raw and isinstance(edu_raw, str):
+                    try:
+                        _v = json.loads(edu_raw)
+                        _edu = _v if isinstance(_v, list) else []
+                    except (json.JSONDecodeError, ValueError):
+                        pass
                 results.append({
                     'id': row[0],
                     'name': row[1],
                     'email': row[2],
                     'skills': json.loads(skills_raw) if skills_raw and isinstance(skills_raw, str) else (skills_raw or []),
                     'experience': row[4] or 0,
-                    'education': json.loads(edu_raw) if edu_raw and isinstance(edu_raw, str) and edu_raw.startswith('[') else [],
+                    'education': _edu,
                     'matchScore': row[6] or 0,
                     'match_score': row[6] or 0,
                     'job_category': row[7] or 'General',

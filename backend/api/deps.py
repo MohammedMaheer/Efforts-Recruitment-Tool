@@ -91,6 +91,8 @@ _services: dict = {}
 def init_services():
     """Initialize all services. Called once during app startup."""
     global _services
+    if _services:
+        return _services
     _services = get_services()
     return _services
 

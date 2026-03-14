@@ -53,9 +53,10 @@ def _verify_password(plain_password: str, stored_hash: str) -> bool:
             return _bcrypt.checkpw(pw, stored_hash.encode('utf-8'))
         # Legacy SHA-256 format: salt$hash
         if '$' in stored_hash:
-            import hashlib
+            import hashlib, hmac as _hmac
             salt, hashed = stored_hash.split('$', 1)
-            return hashlib.sha256((salt + plain_password).encode()).hexdigest() == hashed
+            computed = hashlib.sha256((salt + plain_password).encode()).hexdigest()
+            return _hmac.compare_digest(computed, hashed)
         return False
     except Exception:
         return False

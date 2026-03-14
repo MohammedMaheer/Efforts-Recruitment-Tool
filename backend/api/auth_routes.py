@@ -66,7 +66,11 @@ async def login(request: LoginRequest):
             attempts.append(now)
             _login_attempts[login_key] = attempts
             if len(_login_attempts) > 10000:
-                _login_attempts.clear()
+                # Evict only expired entries — do not wipe valid rate-limit records
+                cutoff = now - 900
+                expired_keys = [k for k, v in _login_attempts.items() if not v or max(v) < cutoff]
+                for k in expired_keys:
+                    del _login_attempts[k]
             raise HTTPException(401, "Invalid credentials")
 
     except HTTPException:

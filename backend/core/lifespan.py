@@ -5,7 +5,7 @@ import asyncio
 import logging
 import time
 import re
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from contextlib import asynccontextmanager
 
 from core.config import get_settings
@@ -371,7 +371,7 @@ async def auto_sync_emails():
 
                         logger.info(f"Starting paged email sync (already processed: {processed_count_before})...")
 
-                        sync_start_time = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')
+                        sync_start_time = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
                         new_count = 0
                         total_fetched = 0
@@ -920,7 +920,8 @@ async def _background_seed_from_json():
             return
 
         import tempfile
-        tmp_path = tempfile.mktemp(suffix='.json')
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.json') as _tf:
+            tmp_path = _tf.name
 
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(None, json_blob.download_to_filename, tmp_path)

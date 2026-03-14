@@ -136,58 +136,9 @@ class EmailParser:
                 if len(digits_only) >= 7:  # Valid phone has at least 7 digits
                     result['phone'] = phone_candidate
                     break
-        
-        # Extract skills (comprehensive tech + business keywords)
-        skill_keywords = [
-            # Programming & frameworks
-            'python', 'java', 'javascript', 'typescript', 'react', 'angular', 'vue', 'svelte',
-            'node.js', 'nodejs', 'express', 'django', 'flask', 'fastapi', 'spring', 'spring boot',
-            'ruby', 'rails', 'php', 'laravel', 'golang', 'rust', 'swift', 'kotlin', 'scala',
-            'c++', 'c#', '.net', 'asp.net', 'blazor', 'flutter', 'dart', 'react native',
-            # Data & AI
-            'sql', 'nosql', 'mongodb', 'postgresql', 'mysql', 'oracle', 'redis', 'elasticsearch',
-            'machine learning', 'deep learning', 'data science', 'artificial intelligence', 'nlp',
-            'tensorflow', 'pytorch', 'pandas', 'numpy', 'scikit-learn', 'spark', 'hadoop',
-            'power bi', 'tableau', 'data engineering', 'etl', 'data warehouse', 'snowflake',
-            # Cloud & DevOps
-            'aws', 'azure', 'gcp', 'google cloud', 'docker', 'kubernetes', 'terraform',
-            'jenkins', 'ci/cd', 'github actions', 'gitlab', 'ansible', 'chef', 'puppet',
-            'devops', 'sre', 'linux', 'microservices', 'serverless', 'lambda',
-            # Web & API
-            'rest api', 'restful', 'graphql', 'soap', 'html', 'css', 'sass', 'tailwind',
-            'webpack', 'vite', 'frontend', 'backend', 'full stack', 'fullstack',
-            # Business & management
-            'project management', 'agile', 'scrum', 'kanban', 'jira', 'confluence',
-            'marketing', 'digital marketing', 'seo', 'sem', 'social media', 'content marketing',
-            'sales', 'crm', 'salesforce', 'hubspot', 'business development', 'account management',
-            'analytics', 'google analytics', 'data analysis', 'business intelligence',
-            'human resources', 'recruitment', 'talent acquisition', 'payroll', 'hris',
-            'accounting', 'finance', 'bookkeeping', 'quickbooks', 'sap', 'erp', 'oracle erp',
-            'supply chain', 'logistics', 'procurement', 'inventory management',
-            # Design & creative
-            'figma', 'sketch', 'adobe xd', 'photoshop', 'illustrator', 'indesign',
-            'ui/ux', 'ux design', 'ui design', 'graphic design', 'video editing',
-            # Productivity
-            'excel', 'powerpoint', 'ms office', 'ms word', 'google workspace',
-            # Security & networking
-            'cybersecurity', 'network security', 'penetration testing', 'cissp', 'cism',
-            'firewalls', 'vpn', 'siem', 'soc',
-            # Mobile
-            'android', 'ios', 'mobile development', 'xamarin',
-            # Testing
-            'selenium', 'cypress', 'jest', 'pytest', 'qa', 'quality assurance', 'automation testing',
-            # Blockchain & emerging
-            'blockchain', 'solidity', 'web3', 'smart contracts',
-            # Communication
-            'kafka', 'rabbitmq', 'grpc', 'websockets',
-        ]
-        found_skills = []
-        for skill in skill_keywords:
-            # Use word boundary matching to avoid substring false positives
-            # e.g. 'ai' matching 'claim', 'rest' matching 'interested', 'go' matching 'going'
-            pattern = r'\b' + re.escape(skill) + r'\b'
-            if re.search(pattern, body_lower):
-                found_skills.append(skill.title())
+
+        # Extract skills using precompiled module-level patterns (avoid recompiling per email)
+        found_skills = [skill.title() for skill, pat in _SKILL_PATTERNS.items() if pat.search(body_lower)]
         result['skills'] = found_skills
         
         # Extract years of experience
