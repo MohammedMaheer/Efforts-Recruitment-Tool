@@ -3,7 +3,7 @@ Application Configuration with Type Safety and Validation
 Following 12-factor app principles
 """
 from functools import lru_cache
-from typing import List, Optional
+from typing import List, Optional  # List kept for cors_origins_list / allowed_extensions_list
 from pydantic_settings import BaseSettings
 from pydantic import Field, field_validator
 import os
@@ -34,25 +34,10 @@ class Settings(BaseSettings):
     # AI Services
     ai_timeout: float = Field(default=30.0, description="AI request timeout")
     ai_analysis_timeout: float = Field(default=30.0, description="AI analysis timeout for LLM inference")
-    use_local_ai: bool = Field(default=True, description="Use local AI (free) as primary")
-    
+
     # Google Gemini (primary for deployment)
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key")
     gemini_model: str = Field(default="gemini-2.5-flash", description="Gemini model (2.5 Flash is fast & capable)")
-    
-    # AI Tier Mode — controls which AI engine is tried first
-    # "auto"   = smart detection: production → Gemini first; local → Ollama first
-    # "gemini" = always try Gemini first
-    # "ollama" = always try Ollama first
-    ai_tier_mode: str = Field(default="auto", description="AI tier selection: auto|gemini|ollama")
-    
-    # Local LLM (Ollama)
-    ollama_base_url: str = Field(default="http://localhost:11434", description="Ollama API URL")
-    ollama_primary_model: str = Field(default="qwen2.5:7b", description="Primary LLM model for extraction")
-    ollama_fast_model: str = Field(default="phi3.5", description="Fast model for simple tasks")
-    ollama_reasoning_model: str = Field(default="llama3.1:8b", description="Reasoning model for analysis")
-    llm_temperature: float = Field(default=0.1, description="LLM temperature (lower = more accurate)")
-    llm_max_tokens: int = Field(default=4096, description="Max tokens for LLM responses")
     
     # Microsoft Graph (Email)
     microsoft_client_id: Optional[str] = Field(default=None)
@@ -128,27 +113,8 @@ class Settings(BaseSettings):
         return not self.is_production
     
     @property
-    def ai_tier_order(self) -> List[str]:
-        """
-        Return the AI engine priority order based on ai_tier_mode and environment.
-        
-        In 'auto' mode:
-          - Production/Cloud Run → ["gemini", "ollama", "keyword"]
-          - Local development   → ["ollama", "gemini", "keyword"]
-        
-        Manual overrides: "gemini", "ollama" force that engine first.
-        """
-        mode = self.ai_tier_mode.lower().strip()
-        
-        if mode == "gemini":
-            return ["gemini", "ollama", "keyword"]
-        elif mode == "ollama":
-            return ["ollama", "gemini", "keyword"]
-        else:  # "auto" — smart detection
-            if self.is_production:
-                return ["gemini", "ollama", "keyword"]
-            else:
-                return ["ollama", "gemini", "keyword"]
+    def ai_tier_order(self) -> list:
+        return ["gemini", "keyword"]
     
     class Config:
         env_file = ".env"

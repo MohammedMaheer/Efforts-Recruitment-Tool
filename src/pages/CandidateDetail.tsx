@@ -259,7 +259,7 @@ export default function CandidateDetail() {
 
       if (!response.ok) {
         if (response.status === 503) {
-          throw new Error('AI service not configured. Please ensure Ollama is running.')
+          throw new Error('AI service not configured. Please ensure the Gemini API key is set.')
         }
         throw new Error('Failed to analyze candidate')
       }

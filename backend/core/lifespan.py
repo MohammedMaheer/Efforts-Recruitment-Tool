@@ -1307,7 +1307,7 @@ async def lifespan(app):
     _seed_needed = not db_restored and _settings.is_production
 
     logger.info(f"Environment: {'Production' if _settings.is_production else 'Development'}")
-    logger.info(f"AI Tier Mode: {_settings.ai_tier_mode} -> {' -> '.join(_settings.ai_tier_order)}")
+    logger.info(f"AI Tier Order: {' -> '.join(_settings.ai_tier_order)}")
 
     # Initialize Gemini
     gemini_service = get_gemini_service()
@@ -1317,22 +1317,6 @@ async def lifespan(app):
         logger.warning("Gemini: API key set but service failed to initialize")
     else:
         logger.info("Gemini: not configured (set GEMINI_API_KEY for cloud deployment)")
-
-    # Initialize Local LLM (Ollama) - SKIP in production
-    if _settings.is_production:
-        logger.info("LLM: Ollama SKIPPED (production - using Gemini + sentence-transformers)")
-    else:
-        try:
-            from services.llm_service import get_llm_service
-            llm_svc = await get_llm_service()
-            if llm_svc.available:
-                logger.info(f"LLM: Ollama connected! Primary: {llm_svc.primary_model}")
-                logger.info(f"   Models: {', '.join(llm_svc.available_models)}")
-            else:
-                logger.warning("LLM: Ollama not available - using sentence-transformers + regex")
-                logger.warning("   Install: https://ollama.com/download -> ollama pull qwen2.5:7b")
-        except Exception as e:
-            logger.warning(f"LLM initialization skipped: {e}")
 
     logger.info(f"Email Accounts: {len(scraper_service.email_accounts)} configured")
     logger.info(f"Max Concurrent Requests: {MAX_CONCURRENT_REQUESTS}")

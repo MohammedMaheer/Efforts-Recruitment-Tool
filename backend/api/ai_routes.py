@@ -138,23 +138,6 @@ async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
         except Exception as gemini_err:
             logger.warning(f"Gemini deep analysis error: {gemini_err}")
 
-        # TIER 1 — Local LLM (fallback)
-        if not analysis:
-            try:
-                from services.llm_service import get_llm_service
-                llm_svc = await get_llm_service()
-                if llm_svc and llm_svc.available:
-                    analysis = await asyncio.wait_for(
-                        llm_svc.analyze_candidate_deep(candidate_for_analysis),
-                        timeout=_deps().AI_ANALYSIS_TIMEOUT
-                    )
-                    if analysis:
-                        analysis['source'] = 'local_llm'
-            except asyncio.TimeoutError:
-                logger.warning(f"LLM deep analysis timeout for {candidate_id}")
-            except Exception as llm_err:
-                logger.warning(f"LLM deep analysis error: {llm_err}")
-
         if not analysis:
             skills = candidate_for_analysis.get('skills', [])
             exp = candidate_for_analysis.get('experience', 0)
@@ -282,48 +265,38 @@ def _quick_fallback_analysis(candidate: dict, job_description: dict) -> dict:
     }
 
 
-def _determine_primary_engine(llm_status: Dict) -> str:
-    """Determine which AI engine is currently primary based on tier order and availability."""
-    tier = _settings.ai_tier_order
+def _determine_primary_engine() -> str:
+    """Determine which AI engine is currently primary."""
     gemini_svc = _gemini()
-    for engine in tier:
-        if engine == "gemini" and gemini_svc and gemini_svc.available:
-            return "gemini"
-        if engine == "ollama" and llm_status.get('available'):
-            return "ollama_llm"
+    if gemini_svc and gemini_svc.available:
+        return "gemini"
     return "local_ai"
 
 
-def _determine_model_description(llm_status: Dict) -> str:
+def _determine_model_description() -> str:
     """Dynamic model description based on what's available."""
     parts = []
     gemini_svc = _gemini()
     if gemini_svc and gemini_svc.available:
         parts.append(f"Gemini ({gemini_svc.model_name})")
-    if llm_status.get('available'):
-        parts.append(f"Ollama ({llm_status.get('primary_model', 'local')})")
     parts.extend(["Sentence-Transformers", "SpaCy NER", "Keyword"])
     return "Multi-Tier AI: " + " -> ".join(parts)
 
 
-def _determine_ai_message(llm_status: Dict) -> str:
+def _determine_ai_message() -> str:
     """Generate AI status message based on current configuration."""
-    primary = _determine_primary_engine(llm_status)
+    primary = _determine_primary_engine()
     gemini_svc = _gemini()
     if primary == "gemini":
         return f"AI Stack: Gemini {gemini_svc.model_name} (primary) + Local Embeddings + NER"
-    elif primary == "ollama_llm":
-        return "AI Stack: Local LLM + Embeddings + NER (FREE) with Gemini fallback"
     return "AI Stack: Sentence-Transformers + SpaCy NER + Keyword (FREE, no LLM)"
 
 
-def _determine_cost_info(llm_status: Dict) -> str:
+def _determine_cost_info() -> str:
     """Generate cost information string."""
-    primary = _determine_primary_engine(llm_status)
+    primary = _determine_primary_engine()
     if primary == "gemini":
         return "~$0.01-0.05/day (Gemini 2.5 Flash is very low cost)"
-    elif primary == "ollama_llm":
-        return "$0 (all local, Gemini fallback charges only if local AI fails)"
     return "$0 (all local, no API costs)"
 
 
@@ -432,26 +405,7 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
         except Exception as gemini_err:
             logger.warning(f"Gemini deep analysis failed: {gemini_err}")
 
-        # TIER 1: Try Local LLM (Ollama) — Free
-        try:
-            from services.llm_service import get_llm_service
-            llm_svc = await get_llm_service()
-            if llm_svc and llm_svc.available:
-                analysis = await llm_svc.analyze_candidate_deep(candidate)
-                if analysis and analysis.get('overall_assessment', '') != 'Unable to perform deep analysis':
-                    result = {
-                        "candidate_id": candidate_id,
-                        "candidate_name": candidate['name'],
-                        **analysis,
-                        "ai_powered": True,
-                        "source": "local_llm"
-                    }
-                    _cache()[cache_key] = result
-                    return result
-        except Exception as llm_err:
-            logger.warning(f"LLM deep analysis failed: {llm_err}")
-        
-        # TIER 2: Basic fallback — No AI
+        # TIER 1: Basic fallback — No AI
         return {
             "candidate_id": candidate_id,
             "candidate_name": candidate['name'],
@@ -462,7 +416,7 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
                 "Resume available in database"
             ],
             "cons": [
-                "AI analysis unavailable - configure Gemini or Ollama"
+                "AI analysis unavailable - configure Gemini API key"
             ],
             "hiring_recommendation": {
                 "verdict": "Review Needed",
@@ -599,62 +553,7 @@ async def match_candidates_to_job_file(
         except (asyncio.TimeoutError, Exception) as gemini_err:
             logger.warning(f"Gemini job file matching failed: {gemini_err}")
 
-        # TIER 1: Try Local LLM (Ollama)
-        try:
-            from services.llm_service import get_llm_service
-            llm_svc = await get_llm_service()
-            if llm_svc and llm_svc.available:
-                ranked = await llm_svc.rank_candidates_for_job(candidates_list, jd_text, top_n)
-                # Format for frontend: {rank, candidate_id, candidate_name, job_fit_score, ..., candidate_data}
-                formatted_rankings = []
-                for i, r in enumerate(ranked):
-                    c = r.get('candidate', {})
-                    m = r.get('match', {})
-                    formatted_rankings.append({
-                        'rank': i + 1,
-                        'candidate_id': c.get('id', ''),
-                        'candidate_name': c.get('name', 'Unknown'),
-                        'job_fit_score': round(m.get('match_score', r.get('score', 50)), 1),
-                        'overall_fit': m.get('overall_fit', 'Review Needed'),
-                        'matched_skills': m.get('matched_skills', []),
-                        'missing_skills': m.get('missing_skills', []),
-                        'strengths': m.get('strengths', []),
-                        'gaps': m.get('gaps', []),
-                        'recommendation': m.get('recommendation', 'Review candidate profile'),
-                        'match_reasons': m.get('strengths', [])[:3] or [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
-                        'interview_questions': m.get('interview_questions', []),
-                        'candidate_data': {
-                            'id': c.get('id', ''),
-                            'name': c.get('name', 'Unknown'),
-                            'email': c.get('email', ''),
-                            'phone': c.get('phone', ''),
-                            'location': c.get('location', ''),
-                            'experience': c.get('experience', 0),
-                            'matchScore': round(m.get('match_score', r.get('score', 50)), 1),
-                            'status': c.get('status', 'New'),
-                            'skills': c.get('skills', []),
-                            'summary': c.get('summary', ''),
-                            'jobCategory': c.get('jobCategory', c.get('job_category', 'General')),
-                            'jobSubcategory': c.get('jobSubcategory', c.get('job_subcategory', '')),
-                            'education': c.get('education', []),
-                            'workHistory': c.get('workHistory', c.get('work_history', [])),
-                            'hasResume': bool(c.get('resume_text') or c.get('hasResume')),
-                            'appliedDate': c.get('appliedDate', c.get('applied_date', '')),
-                            'isShortlisted': c.get('status', '') == 'Shortlisted',
-                        },
-                    })
-                return {
-                    "status": "success",
-                    "rankings": formatted_rankings,
-                    "ai_powered": True,
-                    "source": "local_llm",
-                    "total_candidates_searched": total_searched,
-                    "jd_text_length": len(jd_text)
-                }
-        except Exception as llm_err:
-            logger.warning(f"LLM job file matching failed: {llm_err}")
-
-        # TIER 2: Enhanced keyword matching fallback
+        # TIER 1: Enhanced keyword matching fallback
         jd_lower = jd_text.lower()
         for c in candidates_list:
             skill_matches = sum(1 for s in c.get('skills', []) if s.lower() in jd_lower)
@@ -790,61 +689,7 @@ async def match_candidates_to_job_description(
         except (asyncio.TimeoutError, Exception) as gemini_err:
             logger.warning(f"Gemini job matching failed: {gemini_err}")
 
-        # TIER 1: Try Local LLM (Ollama) — Free
-        try:
-            from services.llm_service import get_llm_service
-            llm_svc = await get_llm_service()
-            if llm_svc and llm_svc.available:
-                ranked = await llm_svc.rank_candidates_for_job(candidates, job_description, top_n)
-                # Format for frontend: {rank, candidate_id, candidate_name, job_fit_score, ..., candidate_data}
-                formatted_rankings = []
-                for i, r in enumerate(ranked):
-                    c = r.get('candidate', {})
-                    m = r.get('match', {})
-                    formatted_rankings.append({
-                        'rank': i + 1,
-                        'candidate_id': c.get('id', ''),
-                        'candidate_name': c.get('name', 'Unknown'),
-                        'job_fit_score': round(m.get('match_score', r.get('score', 50)), 1),
-                        'overall_fit': m.get('overall_fit', 'Review Needed'),
-                        'matched_skills': m.get('matched_skills', []),
-                        'missing_skills': m.get('missing_skills', []),
-                        'strengths': m.get('strengths', []),
-                        'gaps': m.get('gaps', []),
-                        'recommendation': m.get('recommendation', 'Review candidate profile'),
-                        'match_reasons': m.get('strengths', [])[:3] or [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
-                        'interview_questions': m.get('interview_questions', []),
-                        'candidate_data': {
-                            'id': c.get('id', ''),
-                            'name': c.get('name', 'Unknown'),
-                            'email': c.get('email', ''),
-                            'phone': c.get('phone', ''),
-                            'location': c.get('location', ''),
-                            'experience': c.get('experience', 0),
-                            'matchScore': round(m.get('match_score', r.get('score', 50)), 1),
-                            'status': c.get('status', 'New'),
-                            'skills': c.get('skills', []),
-                            'summary': c.get('summary', ''),
-                            'jobCategory': c.get('jobCategory', c.get('job_category', 'General')),
-                            'jobSubcategory': c.get('jobSubcategory', c.get('job_subcategory', '')),
-                            'education': c.get('education', []),
-                            'workHistory': c.get('workHistory', c.get('work_history', [])),
-                            'hasResume': bool(c.get('resume_text') or c.get('hasResume')),
-                            'appliedDate': c.get('appliedDate', c.get('applied_date', '')),
-                            'isShortlisted': c.get('status', '') == 'Shortlisted',
-                        },
-                    })
-                return {
-                    "status": "success",
-                    "rankings": formatted_rankings,
-                    "ai_powered": True,
-                    "source": "local_llm",
-                    "total_candidates_searched": len(candidates)
-                }
-        except Exception as llm_err:
-            logger.warning(f"LLM job matching failed: {llm_err}")
-        
-        # TIER 2: Basic keyword matching fallback
+        # TIER 1: Basic keyword matching fallback
         jd_lower = job_description.lower()
         for c in candidates:
             skill_matches = sum(1 for s in c.get('skills', []) if s.lower() in jd_lower)
@@ -939,20 +784,7 @@ async def compare_candidates(
         except Exception as gemini_err:
             logger.warning(f"Gemini comparison failed: {gemini_err}")
 
-        # TIER 1: Try Local LLM — Free
-        try:
-            from services.llm_service import get_llm_service
-            llm_svc = await get_llm_service()
-            if llm_svc and llm_svc.available:
-                result = await llm_svc.compare_candidates(candidates, job_description)
-                if result and not result.get('error'):
-                    result['ai_powered'] = True
-                    result['source'] = 'local_llm'
-                    return result
-        except Exception as llm_err:
-            logger.warning(f"LLM comparison failed: {llm_err}")
-        
-        # TIER 2: Rule-based fallback
+        # TIER 1: Rule-based fallback
         candidates.sort(key=lambda x: x.get('matchScore', 0), reverse=True)
         return {
             "comparison_matrix": [
@@ -972,7 +804,7 @@ async def compare_candidates(
                 "reasoning": "Highest match score",
                 "runner_up": candidates[1]['name'] if len(candidates) > 1 else None
             },
-            "recommendation": "Configure Ollama or Gemini API key for detailed comparison",
+            "recommendation": "Configure Gemini API key for detailed comparison",
             "ai_powered": False,
             "source": "rule_based"
         }
@@ -997,7 +829,7 @@ async def ai_chat(
     """
     Enhanced AI chat with full database search capability.
     2-STAGE APPROACH: Pre-filter candidates by query relevance -> Send subset to AI
-    3-TIER FALLBACK: Gemini -> Ollama -> Rule-based
+    2-TIER FALLBACK: Gemini -> Rule-based
     """
     # ── Input validation ──
     if not message or not message.strip():
@@ -1046,7 +878,7 @@ async def ai_chat(
                 'categories': stats.get('categories', {}),
             }
         
-        # TIER 1: Try Gemini (cost-effective, always available in production)
+        # TIER 0: Try Gemini (cost-effective, always available in production)
         try:
             from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()
@@ -1094,31 +926,10 @@ async def ai_chat(
             import traceback as _tb
             logger.warning(f"Gemini chat error: {gemini_err}\n{_tb.format_exc()}")
         
-        # TIER 2: Try Local LLM (Ollama) — Free, for local dev
-        try:
-            from services.llm_service import get_llm_service
-            llm_svc = await get_llm_service()
-            if llm_svc and llm_svc.available:
-                llm_response = await asyncio.wait_for(
-                    llm_svc.chat(message, context, conversation_history=conversation_history, candidates_data=candidates_data),
-                    timeout=_deps().AI_TIMEOUT
-                )
-                if llm_response:
-                    return {
-                        "response": llm_response,
-                        "ai_powered": True,
-                        "context_included": include_candidates,
-                        "source": "local_llm"
-                    }
-        except asyncio.TimeoutError:
-            logger.warning(f"LLM chat timeout (>{_deps().AI_TIMEOUT}s)")
-        except Exception as llm_err:
-            logger.warning(f"LLM chat error: {llm_err}")
-        
-        # TIER 3: Rule-based fallback
+        # TIER 1: Rule-based fallback
         return {
             "response": f"I understand you're asking about: '{message}'. Currently no AI services are available. "
-                        f"Please configure GEMINI_API_KEY or Ollama for intelligent responses.",
+                        f"Please configure GEMINI_API_KEY for intelligent responses.",
             "ai_powered": False,
             "context_included": include_candidates,
             "source": "rule_based"
@@ -1486,7 +1297,7 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
         return {
             "questions": default_questions[:request.num_questions],
             "source": "rule_based",
-            "note": "Configure Gemini or Ollama for AI-generated interview questions"
+            "note": "Configure Gemini for AI-generated interview questions"
         }
     except Exception as e:
         raise HTTPException(500, "Error generating questions")
@@ -1497,8 +1308,7 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
 async def summarize_resume(request: SummarizeResumeRequest, current_user: dict = Depends(require_auth)):
     """
     Generate AI summary of resume
-    3-TIER FALLBACK: Local AI -> Gemini -> Rule-based
-    TODO: Add Gemini TIER 0 once GeminiService.summarize_resume() is implemented.
+    2-TIER FALLBACK: Local AI -> Rule-based
     """
     try:
         # TIER 1: Try Local AI first (FREE)
@@ -1514,7 +1324,7 @@ async def summarize_resume(request: SummarizeResumeRequest, current_user: dict =
         return {
             "summary": f"Resume summary (basic extraction): {text}...",
             "source": "rule_based",
-            "note": "Configure Gemini or Ollama for AI-powered summaries"
+            "note": "Configure Gemini for AI-powered summaries"
         }
     except Exception as e:
         raise HTTPException(500, "Error summarizing resume")
@@ -1613,29 +1423,18 @@ async def ai_status(current_user: dict = Depends(require_auth)):
     """
     Check AI service status and configuration
     """
-    # Get LLM service status
-    llm_status = {}
-    try:
-        from services.llm_service import get_llm_service
-        llm_svc = await get_llm_service()
-        llm_status = llm_svc.get_status()
-    except Exception as e:
-        logger.debug(f"Non-critical: LLM service status check failed: {e}")
-        llm_status = {'available': False}
-    
     # Get local AI cache stats
     ai_cache = {}
     try:
         ai_cache = _ai().get_cache_stats()
     except Exception as e:
         logger.debug(f"Non-critical: AI cache stats failed: {e}")
-    
+
     return {
         "available": True,
-        "ai_tier_mode": _settings.ai_tier_mode,
         "ai_tier_order": _settings.ai_tier_order,
         "environment": "production" if _settings.is_production else "development",
-        "primary_engine": _determine_primary_engine(llm_status),
+        "primary_engine": _determine_primary_engine(),
         "fallback_engine": "keyword",
         "gemini": {
             "available": _gemini().available if _gemini() else False,
@@ -1645,16 +1444,6 @@ async def ai_status(current_user: dict = Depends(require_auth)):
             "error_count": _gemini()._error_count if _gemini() else 0,
             "cache_size": len(_gemini()._cache) if _gemini() else 0,
         },
-        "llm": {
-            "available": llm_status.get('available', False),
-            "primary_model": llm_status.get('primary_model', 'Not loaded'),
-            "fast_model": llm_status.get('fast_model', 'Not loaded'),
-            "reasoning_model": llm_status.get('reasoning_model', 'Not loaded'),
-            "available_models": llm_status.get('available_models', []),
-            "requests_processed": llm_status.get('requests_processed', 0),
-            "avg_response_time": llm_status.get('average_response_time', 0),
-            "ollama_url": llm_status.get('ollama_url', 'http://localhost:11434'),
-        },
         "sentence_model": ai_cache.get('model_loaded', False),
         "ner_model": ai_cache.get('ner_loaded', False),
         "device": ai_cache.get('device', 'cpu'),
@@ -1662,21 +1451,18 @@ async def ai_status(current_user: dict = Depends(require_auth)):
             "embedding": ai_cache.get('embedding_cache_size', 0),
             "ner": ai_cache.get('ner_cache_size', 0),
             "analysis": ai_cache.get('analysis_cache_size', 0),
-            "llm": llm_status.get('cache_size', 0),
             "gemini": len(_gemini()._cache) if _gemini() else 0,
         },
-        "model": _determine_model_description(llm_status),
+        "model": _determine_model_description(),
         "fallback_model": None,
-        "message": _determine_ai_message(llm_status),
+        "message": _determine_ai_message(),
         "caching_enabled": True,
         "concurrent_processing": True,
         "max_concurrent": "100+ requests",
-        "cost": _determine_cost_info(llm_status),
+        "cost": _determine_cost_info(),
         "gemini_available": _gemini().available if _gemini() else False,
         "setup_instructions": {
             "gemini": "Set GEMINI_API_KEY env var. Get key from https://aistudio.google.com/apikey",
-            "ollama": "Install from https://ollama.com/download then run: ollama pull qwen2.5:7b",
-            "models_recommended": ["qwen2.5:7b (extraction)", "phi3.5 (fast)", "llama3.1:8b (reasoning)"]
         }
     }
 
@@ -1731,29 +1517,7 @@ async def ai_smart_search(
         except Exception as gemini_err:
             logger.warning(f"Gemini smart search failed: {gemini_err}")
 
-        # 3. Try Local LLM matching (for local dev)
-        try:
-            from services.llm_service import get_llm_service
-            llm_svc = await get_llm_service()
-            if llm_svc and llm_svc.available:
-                ranked = await asyncio.wait_for(
-                    llm_svc.rank_candidates_for_job(candidates, query, top_n),
-                    timeout=_deps().AI_ANALYSIS_TIMEOUT
-                )
-                formatted = _format_search_results(ranked, candidates)
-                return {
-                    "results": formatted,
-                    "total_searched": len(candidates),
-                    "query": query,
-                    "source": "local_llm",
-                    "message": f"Found {len(formatted)} matches using AI search"
-                }
-        except asyncio.TimeoutError:
-            logger.warning(f"LLM smart search timed out after {_deps().AI_ANALYSIS_TIMEOUT}s")
-        except Exception as llm_err:
-            logger.warning(f"LLM smart search failed: {llm_err}")
-
-        # 4. Try matching engine (semantic / TF-IDF)
+        # 3. Try matching engine (semantic / TF-IDF)
         try:
             results = await asyncio.wait_for(
                 _matching_engine().match_candidates(query, candidates, top_n),
@@ -1772,7 +1536,7 @@ async def ai_smart_search(
         except Exception as sem_err:
             logger.warning(f"Semantic search failed: {sem_err}")
 
-        # 5. Tokenized keyword fallback (individual tokens, not full-string match)
+        # 4. Tokenized keyword fallback (individual tokens, not full-string match)
         _STOP_WORDS = {'with', 'and', 'the', 'for', 'years', 'year', 'who', 'has', 'have', 'are', 'that', 'from', 'this', 'those', 'any', 'all'}
         q_lower = query.lower()
         tokens = [t for t in re.split(r'\W+', q_lower) if len(t) > 2 and t not in _STOP_WORDS]

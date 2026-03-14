@@ -200,7 +200,6 @@ class ResumeParser:
     """
     
     def __init__(self):
-        self._llm_service = None
         # Comprehensive skill keywords for better extraction
         self.skill_keywords = [
             # Programming Languages
@@ -503,43 +502,9 @@ class ResumeParser:
         }
     
     async def _parse_with_llm(self, text: str) -> Optional[Dict[str, Any]]:
-        """Parse resume using LLM service for 100% accurate extraction"""
-        try:
-            # Lazy import to avoid circular dependencies
-            if self._llm_service is None:
-                from services.llm_service import get_llm_service
-                self._llm_service = await get_llm_service()
-            
-            if not self._llm_service.available:
-                return None
-            
-            result = await self._llm_service.parse_resume(text)
-            
-            if result and (result.get('name') or result.get('email') or result.get('skills')):
-                # Convert LLM format to parser format
-                return {
-                    "name": result.get('name', 'Unknown'),
-                    "email": result.get('email', ''),
-                    "phone": result.get('phone', ''),
-                    "skills": result.get('skills', []),
-                    "experience": result.get('experience_years', 0),
-                    "education": result.get('education', []),
-                    "work_history": result.get('work_history', []),
-                    "summary": result.get('summary', ''),
-                    "location": result.get('location', ''),
-                    "linkedin": result.get('linkedin', ''),
-                    "certifications": result.get('certifications', []),
-                    "languages": result.get('languages', []),
-                    "job_category": result.get('job_category', 'General'),
-                    "parsed_by": "llm"
-                }
-            
-            return None
-            
-        except Exception as e:
-            logger.warning(f"LLM resume parsing failed: {e}")
-            return None
-    
+        """LLM-based resume parsing — disabled (llm_service removed)."""
+        return None
+
     async def _parse_with_gemini(self, text: str) -> Optional[Dict[str, Any]]:
         """Parse resume using Gemini AI service as production fallback.
         

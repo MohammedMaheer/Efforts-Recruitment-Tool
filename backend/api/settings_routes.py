@@ -87,7 +87,7 @@ async def root():
         "features": [
             "Automated email scraping (Gmail + MS365)",
             "AI-powered candidate extraction",
-            "Smart AI tier fallback (Gemini -> Ollama -> Keyword)",
+            "Smart AI tier fallback (Gemini -> Keyword)",
             "High-load optimized (100+ concurrent)",
             "Response caching (5min TTL)",
             "Connection pooling (50 max)",
@@ -251,8 +251,6 @@ async def get_setup_instructions(current_user: dict = Depends(require_auth)):
                     "5. Set GEMINI_API_KEY for cloud AI inference"
                 ],
                 "env_vars": [
-                    "USE_LOCAL_AI=true",
-                    "LOCAL_AI_MODEL=all-mpnet-base-v2",
                     "GEMINI_API_KEY=your-gemini-key"
                 ]
             },
@@ -649,18 +647,6 @@ async def get_stats(current_user: dict = Depends(require_auth)):
 
 
 
-@router.get("/api/llm/status")
-async def llm_status(current_user: dict = Depends(require_auth)):
-    """Get detailed LLM service status"""
-    try:
-        from services.llm_service import get_llm_service
-        llm_svc = await get_llm_service()
-        return llm_svc.get_status()
-    except Exception as e:
-        return {
-            "available": False,
-            "error": "LLM service unavailable",
-            "setup": "Install Ollama from https://ollama.com/download, then: ollama pull qwen2.5:7b"
-        }
+
 
 

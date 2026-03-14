@@ -531,52 +531,6 @@ async def generate_shortlist_email_template(
         recruiter_name = os.getenv('RECRUITER_NAME', _settings.recruiter_name)
         job_title = request.job_title or (candidates[0].get('jobCategory', 'the open position') if candidates else 'the open position')
 
-        # Try LLM to generate a tailored email
-        try:
-            from services.llm_service import get_llm_service
-            llm_svc = await get_llm_service()
-            if llm_svc and llm_svc.available:
-                custom_note = f"\nAdditional instructions: {request.custom_instructions}" if request.custom_instructions else ""
-                prompt = f"""Generate a professional shortlist notification email for a recruitment process.
-
-Context:
-- Company: {company_name}
-- Recruiter: {recruiter_name}
-- Position: {job_title}
-- Tone: {request.tone}
-- Number of candidates being notified: {len(request.candidate_ids)}
-{custom_note}
-
-The email should:
-- Congratulate the candidate on being shortlisted
-- Mention the position/role
-- Explain next steps briefly
-- Be warm but professional
-- Use {{{{candidate_name}}}} as placeholder for the candidate's name
-- Use {{{{company_name}}}} as placeholder for company name
-- Use {{{{job_title}}}} as placeholder for the job title
-- Use {{{{recruiter_name}}}} as placeholder for recruiter name
-
-Return JSON:
-{{{{
-    "subject": "Email subject line",
-    "body": "Full email body text with placeholders"
-}}}}"""
-                result = await llm_svc._generate_json(prompt, temperature=0.4)
-                if result and result.get('subject') and result.get('body'):
-                    return {
-                        "status": "success",
-                        "subject": result['subject'],
-                        "body": result['body'],
-                        "placeholders": ["candidate_name", "company_name", "job_title", "recruiter_name"],
-                        "source": "ai_generated",
-                        "company_name": company_name,
-                        "recruiter_name": recruiter_name,
-                        "job_title": job_title,
-                    }
-        except Exception as llm_err:
-            logger.warning(f"LLM email generation failed: {llm_err}")
-
         # Fallback: return a default template
         default_subject = f"You've been shortlisted for {job_title} at {company_name}"
         default_body = (

@@ -114,10 +114,9 @@ def detect_gpu() -> Tuple[bool, str]:
 class LocalAIService:
     """
     Multi-Tier Local AI Service - Production Grade
-    
-    Tier 1: LLM (Ollama) - Deep analysis, structured extraction, chat (when available)
-    Tier 2: Sentence-Transformers (all-mpnet-base-v2) - Semantic similarity
-    Tier 3: SpaCy NER - Named entity recognition
+
+    Tier 1: Sentence-Transformers (all-mpnet-base-v2) - Semantic similarity
+    Tier 2: SpaCy NER - Named entity recognition
     Tier 4: Regex/keyword patterns - Fallback extraction
     
     ALL processing is LOCAL - zero API costs, full privacy.
@@ -132,9 +131,6 @@ class LocalAIService:
         self.sentence_model = None
         self.ner_model = None
         self.nlp = None
-        self._llm_service = None
-        self._llm_initialized = False
-        
         # Caches for performance
         self.embedding_cache = {}
         self.ner_cache = {}
@@ -506,91 +502,12 @@ class LocalAIService:
         }
     
     async def _ensure_llm(self):
-        """Lazy-initialize LLM service with retry support.
-        SKIPPED in production (Cloud Run) - Ollama is not available."""
-        if self._llm_initialized and self._llm_service and self._llm_service.available:
-            return  # Already connected successfully
-        
-        # Skip Ollama entirely in production (Cloud Run has no Ollama server)
-        import os
-        if os.getenv("K_SERVICE") or os.getenv("ENVIRONMENT", "").lower() == "production":
-            self._llm_initialized = True  # Mark done so we never retry
-            return
-        
-        try:
-            from services.llm_service import get_llm_service
-            self._llm_service = await get_llm_service()
-            if self._llm_service and self._llm_service.available:
-                self._llm_initialized = True
-                logger.info("âœ… LocalAI: LLM (Ollama) integration active")
-            else:
-                # Don't mark as initialized so we retry next time
-                self._llm_initialized = False
-                logger.warning("âš ï¸ LLM service connected but no models available - will retry next call")
-        except Exception as e:
-            # Don't mark as initialized so we retry next time
-            self._llm_initialized = False
-            logger.warning(f"âš ï¸ LLM service not available: {e} - will retry next call")
-    
+        """No-op -- Ollama/llm_service removed. Kept for API compat."""
+        return
+
     async def _analyze_with_llm(self, text: str) -> Optional[Dict]:
-        """Analyze candidate using LLM for 100% accurate extraction"""
-        await self._ensure_llm()
-        
-        if not self._llm_service or not self._llm_service.available:
-            return None
-        
-        try:
-            result = await self._llm_service.parse_resume(text)
-            
-            if not result:
-                return None
-            
-            # Convert LLM result to local AI format
-            skills = result.get('skills', [])
-            experience = result.get('experience_years', 0)
-            education = result.get('education', [])
-            work_history = result.get('work_history', [])
-            
-            # Calculate quality score from LLM-extracted data
-            quality_score = self._calculate_quality_score(
-                skills=skills,
-                experience=experience,
-                education=education,
-                work_indicators=len(work_history) * 3,
-                contact_info={
-                    'phone': result.get('phone', ''),
-                    'location': result.get('location', ''),
-                    'linkedin': result.get('linkedin', ''),
-                },
-                text_length=len(text)
-            )
-            
-            analysis = {
-                'skills': skills[:20],
-                'experience': experience,
-                'education': education,
-                'job_category': result.get('job_category', 'General'),
-                'quality_score': quality_score,
-                'summary': result.get('summary', ''),
-                'certifications': result.get('certifications', []),
-                'phone': result.get('phone', ''),
-                'location': result.get('location', ''),
-                'linkedin': result.get('linkedin', ''),
-                'work_indicators': len(work_history) * 3,
-                'work_history': work_history,
-                'languages': result.get('languages', []),
-                'analyzed_by': 'llm'
-            }
-            
-            logger.info(f"ðŸ¤– LLM Analysis: {result.get('job_category', 'General')} | "
-                       f"Score: {quality_score:.1f}% | Skills: {len(skills)} | "
-                       f"Exp: {experience}yrs | Edu: {len(education)}")
-            
-            return analysis
-            
-        except Exception as e:
-            logger.warning(f"LLM analysis failed, falling back: {e}")
-            return None
+        """LLM-powered analysis -- disabled (llm_service removed)."""
+        return None
     
     def _clean_text(self, text: str) -> str:
         """Clean text for analysis"""
@@ -1116,15 +1033,7 @@ class LocalAIService:
         Deep analysis using local LLM.
         Returns pros, cons, strengths, recommendations.
         """
-        await self._ensure_llm()
-        
-        if self._llm_service and self._llm_service.available:
-            try:
-                return await self._llm_service.analyze_candidate_deep(candidate_data)
-            except Exception as e:
-                logger.warning(f"LLM deep analysis failed: {e}")
-        
-        # Fallback: Generate basic analysis from data
+        # Generate basic analysis from data
         skills = candidate_data.get('skills', [])
         experience = candidate_data.get('experience', 0)
         education = candidate_data.get('education', [])
@@ -1132,9 +1041,9 @@ class LocalAIService:
         return {
             'overall_assessment': f"Candidate with {len(skills)} skills and {experience} years of experience.",
             'strengths': [f"Has {len(skills)} technical skills" if skills else "Resume submitted"],
-            'weaknesses': ['Detailed analysis requires Ollama LLM - install from ollama.com'],
+            'weaknesses': ['Detailed AI analysis requires Gemini API key'],
             'pros': [f"Skills: {', '.join(skills[:5])}" if skills else "In the pipeline"],
-            'cons': ['Install Ollama for detailed AI analysis'],
+            'cons': ['Configure GEMINI_API_KEY for detailed AI analysis'],
             'recommended_roles': [candidate_data.get('job_category', 'General')],
             'interview_focus_areas': ['Technical skills', 'Experience verification'],
             'hiring_recommendation': 'CONSIDER',
@@ -1142,31 +1051,16 @@ class LocalAIService:
         }
     
     async def compare_candidates(self, candidates: List[Dict], job_description: Optional[str] = None) -> Dict:
-        """Compare candidates using LLM"""
-        await self._ensure_llm()
-        
-        if self._llm_service and self._llm_service.available:
-            try:
-                return await self._llm_service.compare_candidates(candidates, job_description)
-            except Exception as e:
-                logger.warning(f"LLM comparison failed: {e}")
+        """Compare candidates using keyword/rule-based scoring"""
         
         return {
             'ranking': [],
-            'comparison_summary': 'Install Ollama for AI-powered comparison',
+            'comparison_summary': 'Configure GEMINI_API_KEY for AI-powered comparison',
             'recommendation': 'Manual review recommended'
         }
     
     async def generate_interview_questions_llm(self, candidate_data: Dict, job_description: Optional[str] = None) -> List[Dict]:
-        """Generate interview questions using LLM"""
-        await self._ensure_llm()
-        
-        if self._llm_service and self._llm_service.available:
-            try:
-                return await self._llm_service.generate_interview_questions(candidate_data, job_description)
-            except Exception as e:
-                logger.warning(f"LLM question gen failed: {e}")
-        
+        """Generate interview questions using rule-based method"""
         # Fallback to existing method
         return self.generate_interview_questions(
             candidate_data, 
@@ -1174,15 +1068,7 @@ class LocalAIService:
         )
     
     async def parse_job_description_llm(self, text: str) -> Dict:
-        """Parse job description using LLM"""
-        await self._ensure_llm()
-        
-        if self._llm_service and self._llm_service.available:
-            try:
-                return await self._llm_service.parse_job_description(text)
-            except Exception as e:
-                logger.warning(f"LLM JD parsing failed: {e}")
-        
+        """Parse job description using rule-based method"""
         # Fallback to existing method
         return await self.parse_job_description(text)
     
@@ -1357,25 +1243,9 @@ class LocalAIService:
         return questions[:num_questions]
     
     def summarize_resume(self, resume_text: str) -> Optional[str]:
-        """Generate a concise summary of a resume using AI or rule-based extraction."""
+        """Generate a concise summary of a resume using rule-based extraction."""
         if not resume_text or len(resume_text.strip()) < 50:
             return None
-        
-        try:
-            # Try LLM-based summary if available
-            if self.ollama_available:
-                import asyncio
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    # We're in an async context, can't use run_until_complete
-                    # Fall through to rule-based
-                    pass
-                else:
-                    result = loop.run_until_complete(self._summarize_with_llm(resume_text))
-                    if result:
-                        return result
-        except Exception:
-            pass
         
         # Rule-based summary fallback
         analysis = {}
@@ -1399,14 +1269,7 @@ class LocalAIService:
             return resume_text[:300]
     
     async def _summarize_with_llm(self, resume_text: str) -> Optional[str]:
-        """Use LLM to generate resume summary."""
-        try:
-            prompt = f"Summarize this resume in 2-3 sentences focusing on experience, skills, and qualifications:\\n\\n{resume_text[:3000]}"
-            result = await self._call_ollama(prompt, timeout=15)
-            if result and len(result) > 20:
-                return result
-        except Exception:
-            pass
+        """LLM-based resume summary -- disabled (llm_service removed)."""
         return None
     
     # ========================================================================
@@ -1482,10 +1345,6 @@ class LocalAIService:
     
     def get_cache_stats(self) -> Dict:
         """Get cache statistics for monitoring"""
-        llm_status = {}
-        if self._llm_service:
-            llm_status = self._llm_service.get_status()
-        
         return {
             'embedding_cache_size': len(self.embedding_cache),
             'ner_cache_size': len(self.ner_cache),
@@ -1493,10 +1352,6 @@ class LocalAIService:
             'model_loaded': self.sentence_model is not None,
             'ner_loaded': self.nlp is not None,
             'device': self.device,
-            'llm_available': self._llm_service.available if self._llm_service else False,
-            'llm_model': llm_status.get('primary_model', 'Not loaded'),
-            'llm_requests': llm_status.get('requests_processed', 0),
-            'llm_avg_time': llm_status.get('average_response_time', 0),
         }
     
     def chat_with_ai(self, message: str, context: Optional[str] = None, db_service=None) -> str:
@@ -1519,26 +1374,6 @@ class LocalAIService:
                 except Exception:
                     pass
             
-            # Try LLM-powered chat first (most intelligent)
-            try:
-                if self._llm_service and self._llm_service.available:
-                    # Run async in sync context
-                    loop = asyncio.get_event_loop()
-                    if loop.is_running():
-                        import concurrent.futures
-                        with concurrent.futures.ThreadPoolExecutor() as pool:
-                            result = pool.submit(
-                                asyncio.run,
-                                self._llm_service.chat(message, ctx)
-                            ).result(timeout=30)
-                    else:
-                        result = asyncio.run(self._llm_service.chat(message, ctx))
-                    
-                    if result:
-                        return result
-            except Exception as e:
-                logger.debug(f"LLM chat fallback: {e}")
-            
             # Parse context if provided
             ctx = {}
             if context:
@@ -1546,7 +1381,7 @@ class LocalAIService:
                     ctx = json.loads(context) if isinstance(context, str) else context
                 except Exception:
                     pass
-            
+
             # Get real data from context or database
             total_candidates = ctx.get('totalCandidates', 0)
             avg_score = ctx.get('avgMatchScore', 0)

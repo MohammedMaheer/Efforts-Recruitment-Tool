@@ -34,34 +34,25 @@ class MatchingEngine:
             stop_words='english',
             ngram_range=(1, 2)
         )
-        self._llm_service = None
+        self._llm_service = None  # kept for interface compat; always None now
         self._sentence_model = None
         self._initialized = False
     
     async def _ensure_initialized(self):
-        """Lazy-initialize LLM and sentence-transformer services"""
+        """Lazy-initialize sentence-transformer service"""
         if self._initialized:
             return
-        
-        # Try to get LLM service
-        try:
-            from services.llm_service import get_llm_service
-            self._llm_service = await get_llm_service()
-            if self._llm_service.available:
-                logger.info("âœ… MatchingEngine: LLM-powered matching enabled")
-        except Exception as e:
-            logger.debug(f"LLM service not available for matching: {e}")
-        
+
         # Try to get sentence model
         try:
             from services.local_ai_service import get_ai_service
             ai = get_ai_service()
             if ai.sentence_model:
                 self._sentence_model = ai.sentence_model
-                logger.info("âœ… MatchingEngine: Semantic similarity enabled")
+                logger.info("MatchingEngine: Semantic similarity enabled")
         except Exception as e:
             logger.debug(f"Sentence model not available: {e}")
-        
+
         self._initialized = True
     
     async def match_candidates(
@@ -78,19 +69,6 @@ class MatchingEngine:
         
         if not candidates:
             return []
-        
-        # Use LLM for intelligent matching if available
-        if self._llm_service and self._llm_service.available:
-            try:
-                results = await self._llm_service.rank_candidates_for_job(
-                    candidates=candidates,
-                    job_description=job_description,
-                    top_n=top_n
-                )
-                logger.info(f"ðŸ¤– LLM matched {len(results)} candidates")
-                return results
-            except Exception as e:
-                logger.warning(f"LLM matching failed, using fallback: {e}")
         
         # Fallback: Use semantic + keyword matching
         results = []
@@ -125,18 +103,8 @@ class MatchingEngine:
         Uses LLM for deep analysis.
         """
         await self._ensure_initialized()
-        
-        # Use LLM for detailed evaluation
-        if self._llm_service and self._llm_service.available:
-            try:
-                return await self._llm_service.match_candidate_to_job(
-                    candidate_data=candidate_data,
-                    job_description=job_description
-                )
-            except Exception as e:
-                logger.warning(f"LLM evaluation failed: {e}")
-        
-        # Fallback evaluation
+
+        # Fallback evaluation using semantic + keyword matching
         candidate_skills = [s.lower() for s in candidate_data.get('skills', [])]
         score = await self._calculate_combined_score(candidate_data, job_description)
         

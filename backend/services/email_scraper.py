@@ -1384,29 +1384,10 @@ class EmailScraperService:
                     sender_email
                 )
             
-            # FIRST: Try AI-powered email parsing
-            # In production (Cloud Run), skip Ollama (never available) and go straight to Gemini
-            # to avoid wasted connection attempts and timeouts per email.
+            # AI-powered email parsing — Gemini primary, keyword parser fallback
             llm_portal_data = None
-            _is_production = bool(os.getenv('K_SERVICE') or os.getenv('PYTHON_ENV') == 'production')
-            
-            if not _is_production:
-                # Local dev: try Ollama first (faster, free)
-                try:
-                    from services.llm_service import get_llm_service
-                    llm_service = await get_llm_service()
-                    if llm_service.available:
-                        llm_portal_data = await llm_service.parse_candidate_email(
-                            subject=subject,
-                            body=clean_body[:6000],
-                            sender=sender_email
-                        )
-                        if llm_portal_data:
-                            logger.info(f"LLM parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
-                except Exception as llm_err:
-                    logger.debug(f"LLM email parsing skipped: {llm_err}")
-            
-            # Gemini fallback (or primary in production)
+
+            # Try Gemini
             if not llm_portal_data:
                 try:
                     from services.gemini_service import get_gemini_service
