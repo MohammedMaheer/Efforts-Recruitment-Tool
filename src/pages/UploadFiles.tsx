@@ -69,10 +69,11 @@ export default function UploadFiles() {
   const handleEmailScrape = async () => {
     setScrapeStatus('running'); setScrapeResults(null)
     try {
-      const response = await authFetch(`${config.apiUrl}/api/scraper/process-now?process_all=true`, {
+      const params = new URLSearchParams({ process_all: 'true' })
+      if (scrapeMaxEmails) params.set('max_emails', String(scrapeMaxEmails))
+      if (scrapeDays) params.set('days_back', String(scrapeDays))
+      const response = await authFetch(`${config.apiUrl}/api/scraper/process-now?${params.toString()}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ max_emails: scrapeMaxEmails, days_back: scrapeDays }),
       })
       if (response.ok) {
         const data = await response.json()

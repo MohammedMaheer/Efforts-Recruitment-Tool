@@ -315,8 +315,10 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
 
                     if needs_ai and analysis_text and len(analysis_text) > 20:
                         try:
+                            # Pass job context so Gemini scores role fit, not just generic quality
+                            _job_ctx = candidate.get('job_applied_for') or candidate.get('job_category') or None
                             ai_analysis = await asyncio.wait_for(
-                                _ai().analyze_candidate(analysis_text),
+                                _ai().analyze_candidate(analysis_text, job_context=_job_ctx),
                                 timeout=_deps().AI_ANALYSIS_TIMEOUT
                             )
                             if ai_analysis and ai_analysis.get('quality_score', 0) > 0:

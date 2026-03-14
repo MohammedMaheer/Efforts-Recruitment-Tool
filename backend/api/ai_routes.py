@@ -1168,7 +1168,8 @@ async def rescore_single_candidate(candidate_id: str, current_user: dict = Depen
                 except (TypeError, ValueError):
                     parsed_score = 0
                 if parsed_score > 0:
-                    new_score = parsed_score
+                    # Never downgrade an existing valid score — take the higher value
+                    new_score = max(parsed_score, old_score or 0)
                 else:
                     # AI returned 0 — calculate fallback from AI-extracted data
                     ai_skills_fb = ai_result.get("skills", [])

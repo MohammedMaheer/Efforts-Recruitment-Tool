@@ -421,11 +421,17 @@ async def scraper_status(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/scraper/process-now")
-async def trigger_manual_scrape(process_all: bool = False, current_user: dict = Depends(require_auth)):
+async def trigger_manual_scrape(
+    process_all: bool = False,
+    max_emails: int = 0,
+    days_back: int = 0,
+    current_user: dict = Depends(require_auth)
+):
     """
-    Manually trigger email scraping
-    process_all=True: Process ALL historical emails (default)
-    process_all=False: Process only NEW emails
+    Manually trigger email scraping.
+    process_all=True: Process ALL historical emails
+    max_emails: Max emails to fetch (0 = no limit)
+    days_back: Only fetch emails from last N days (0 = no limit)
     """
     try:
         total_emails = 0

@@ -1100,7 +1100,14 @@ EXTRACTION RULES:
 • education: Real degrees only (B.Tech, MBA, Ph.D, Diploma). NOT certifications or training.
 • certifications: Professional certs (AWS, PMP, CFA). NOT degrees.
 • job_category + job_subcategory: Pick EXACT names from taxonomy below. Use "General" / "General Professional" if no match.
-• quality_score: 85-100=exceptional (10+yrs, leadership, rare skills) | 70-84=strong (5-10yrs, good skills) | 55-69=moderate (2-5yrs) | 40-54=developing | <40=weak. Score the actual candidate, never default to 50.
+• quality_score: Score 0-100 the ACTUAL candidate using ALL criteria simultaneously:
+  90-100: 10+ yrs exp, 10+ skills, degree+certifications, leadership/rare expertise, complete profile
+  75-89: 5-10 yrs exp, 7+ relevant skills, degree or strong certs, specialized knowledge, good profile
+  60-74: 3-6 yrs exp, 5+ skills, some education or certs, solid work history, decent profile
+  45-59: 1-4 yrs exp, 3-5 skills, basic education, limited history, partial profile
+  25-44: <2 yrs exp OR very few skills, student/fresh grad, or very thin profile
+  <25: No real work history, no skills, barely any information
+  NEVER default to 50. Score 0 means "no data to assess" (prefer 0 over a guess).
 
 TAXONOMY (use EXACT names):
 {taxonomy_text}
@@ -1127,7 +1134,7 @@ Return EXACTLY this JSON:
     "languages": [],
     "job_category": "",
     "job_subcategory": "",
-    "quality_score": 50,
+    "quality_score": 0,
     "is_candidate_email": true
 }}"""
 
@@ -1155,6 +1162,27 @@ Return EXACTLY this JSON:
                     cat, sub = classify_job_title(title)
                     result['job_category'] = cat
                     result['job_subcategory'] = sub
+            # Clamp + floor quality_score using extractable data signals
+            raw_qs = result.get('quality_score', 0)
+            try:
+                qs = max(0, min(100, int(float(raw_qs))))
+            except (TypeError, ValueError):
+                qs = 0
+            # Data-driven floor: if Gemini returned 0 but we have concrete data, compute a floor
+            if qs == 0:
+                _s = result.get('skills', [])
+                _e = result.get('experience', result.get('experience_years', 0)) or 0
+                try:
+                    _e = int(float(_e))
+                except (TypeError, ValueError):
+                    _e = 0
+                _has_edu = bool(result.get('education'))
+                _has_certs = bool(result.get('certifications'))
+                _has_summary = bool(str(result.get('summary', '')).strip())
+                _data_floor = 10 + min(25, len(_s) * 3) + min(20, _e * 3) + (8 if _has_edu else 0) + (5 if _has_certs else 0) + (3 if _has_summary else 0)
+                if len(_s) > 0 or _e > 0:
+                    qs = min(75, max(15, _data_floor))
+            result['quality_score'] = qs
             if result.get('name') or result.get('email'):
                 self._set_cache(cache_key, result)
                 logger.info(f"[Gemini] Email parsed: {result.get('name', 'Unknown')} | Source: {source}")
@@ -1570,9 +1598,47 @@ Return JSON:
         jd_location_terms = _expand_location_terms(raw_loc_terms)
         jd_has_location = len(jd_location_terms) > 0
 
-        # Detect experience requirement from JD
-        _exp_match_jd = EXPERIENCE_PATTERN.search(job_description)
-        jd_min_experience = int(_exp_match_jd.group(1)) if _exp_match_jd else 0
+        # Detect experience requirement (range + min)
+        jd_min_experience = 0
+        jd_max_experience = 999
+        _range_match_jd = EXPERIENCE_RANGE_PATTERN.search(job_description)
+        if _range_match_jd:
+            groups = _range_match_jd.groups()
+            if groups[0] and groups[1]:
+                jd_min_experience = int(groups[0]); jd_max_experience = int(groups[1])
+            elif groups[2] and groups[3]:
+                jd_min_experience = int(groups[2]); jd_max_experience = int(groups[3])
+            elif groups[4] and groups[5]:
+                jd_min_experience = int(groups[4]); jd_max_experience = int(groups[5])
+            elif groups[6]:
+                jd_max_experience = int(groups[6])
+            elif groups[7]:
+                jd_max_experience = int(groups[7])
+            elif groups[8]:
+                jd_max_experience = int(groups[8])
+            elif groups[9]:
+                jd_max_experience = int(groups[9])
+            elif groups[10] and groups[11]:
+                jd_min_experience = int(groups[10]); jd_max_experience = int(groups[11])
+            if jd_min_experience > jd_max_experience:
+                jd_min_experience, jd_max_experience = jd_max_experience, jd_min_experience
+        else:
+            _exp_match_jd = EXPERIENCE_PATTERN.search(job_description)
+            jd_min_experience = int(_exp_match_jd.group(1)) if _exp_match_jd else 0
+
+        # Detect seniority level
+        _seniority_match_jd = SENIORITY_PATTERN.search(job_description)
+        jd_seniority = _seniority_match_jd.group(1).lower().strip() if _seniority_match_jd else None
+
+        # Detect negative/exclusion terms
+        jd_negative_terms: set = set()
+        _neg_match_jd = NEGATIVE_PATTERN.search(job_description)
+        if _neg_match_jd:
+            neg_raw = _neg_match_jd.group(1).strip().lower()
+            for part in re.split(r'[,;&]+', neg_raw):
+                part = part.strip()
+                if part and part not in STOP_WORDS and len(part) > 1:
+                    jd_negative_terms.add(part)
 
         pre_scored = []
         for idx, c in enumerate(candidates):
@@ -1581,6 +1647,26 @@ Return JSON:
             subcategory = (c.get('jobSubcategory') or c.get('job_subcategory') or '').lower()
             location = (c.get('location') or '').lower()
             summary = (c.get('summary') or '').lower()
+            name = (c.get('name') or '').lower()
+
+            exp = _safe_int_experience(c.get('experience', 0))
+
+            # ── HARD FILTER: Experience range ──
+            if jd_max_experience < 999 and exp > jd_max_experience:
+                continue  # Exceeds maximum — skip
+            if jd_min_experience > 0 and exp < jd_min_experience:
+                continue  # Below minimum — skip
+
+            # ── HARD FILTER: Negative terms ──
+            if jd_negative_terms:
+                wh_neg = c.get('work_history', [])
+                wh_companies = ' '.join(
+                    j.get('company', '') for j in (wh_neg if isinstance(wh_neg, list) else []) if isinstance(j, dict)
+                ).lower()
+                cand_neg_text = f"{name} {' '.join(skills)} {category} {subcategory} {wh_companies}"
+                neg_hit = any(re.search(r'\b' + re.escape(neg) + r'\b', cand_neg_text) for neg in jd_negative_terms)
+                if neg_hit:
+                    continue  # Excluded by negative filter
 
             # Word-boundary matching for skills with synonym support
             skill_hits = 0
@@ -1608,15 +1694,12 @@ Return JSON:
 
             cat_hits = sum(1 for kw in expanded_keywords if kw in category.split() or kw in subcategory.split())
 
-            # Location scoring — strong when location requirement detected
+            # Location scoring — strong signal when requirement is explicit
             loc_score_add = 0
             if jd_has_location:
                 loc_words = set(re.sub(r'[^\w\s]', ' ', location).split())
                 loc_matched = any(lt in location or lt in loc_words for lt in jd_location_terms)
-                if loc_matched:
-                    loc_score_add = 50  # Strong boost
-                else:
-                    loc_score_add = -30  # Penalty
+                loc_score_add = 50 if loc_matched else -30
             else:
                 loc_hits = sum(1 for kw in expanded_keywords if kw in location)
                 loc_score_add = loc_hits * 8
@@ -1624,17 +1707,65 @@ Return JSON:
             summary_words = set(summary.split())
             summary_hits = len(summary_words & expanded_keywords)
 
-            exp = _safe_int_experience(c.get('experience', 0))
-            
-            # Experience scoring — meaningful weight
-            exp_score = min(exp, 20) * 1.5  # Up to 30 points from experience
-            if jd_min_experience > 0:
-                if exp >= jd_min_experience:
-                    exp_score += 15  # Bonus for meeting minimum
-                else:
-                    exp_score -= 15  # Penalty for below minimum
+            # ── Work history: title + company matching ──
+            wh = c.get('work_history', [])
+            wh_score = 0
+            if isinstance(wh, list) and wh:
+                for job in wh[:3]:
+                    if not isinstance(job, dict):
+                        continue
+                    jt = (job.get('title', '') or '').lower()
+                    jco = (job.get('company', '') or '').lower()
+                    jt_words = set(re.sub(r'[^\w\s]', ' ', jt).split())
+                    jco_words = set(re.sub(r'[^\w\s]', ' ', jco).split())
+                    role_kw_hits = len(jt_words & expanded_keywords)
+                    co_kw_hits = len(jco_words & expanded_keywords)
+                    wh_score += role_kw_hits * 12 + co_kw_hits * 10
 
-            pre_score = skill_hits * 15 + cat_hits * 10 + loc_score_add + min(summary_hits, 5) * 3 + exp_score
+            # ── Certification matching ──
+            certs = c.get('certifications', [])
+            cert_text = ' '.join(
+                (ci if isinstance(ci, str) else (ci.get('name', '') if isinstance(ci, dict) else ''))
+                for ci in (certs if isinstance(certs, list) else [])
+            ).lower()
+            cert_words = set(re.sub(r'[^\w\s]', ' ', cert_text).split())
+            cert_hits = len(cert_words & expanded_keywords)
+
+            # ── Language matching ──
+            langs = c.get('languages', [])
+            lang_text = ' '.join(str(l).lower() for l in (langs if isinstance(langs, list) else []))
+            lang_hits = sum(1 for kw in expanded_keywords if kw in lang_text)
+
+            # ── Seniority scoring ──
+            seniority_score = 0
+            if jd_seniority:
+                if jd_seniority in ('junior', 'entry-level', 'entry level', 'fresher', 'fresh graduate', 'intern', 'trainee'):
+                    seniority_score = 20 if exp <= 2 else (8 if exp <= 3 else -15)
+                elif jd_seniority in ('mid-level', 'mid level', 'midlevel'):
+                    seniority_score = 20 if 3 <= exp <= 7 else (8 if 2 <= exp <= 9 else -12)
+                elif jd_seniority in ('senior', 'lead', 'principal', 'staff'):
+                    seniority_score = 20 if exp >= 7 else (12 if exp >= 5 else -15)
+                elif jd_seniority in ('director', 'head', 'vp', 'c-level', 'chief', 'executive'):
+                    seniority_score = 20 if exp >= 12 else (8 if exp >= 8 else -20)
+                elif jd_seniority == 'manager':
+                    seniority_score = 15 if exp >= 5 else (8 if exp >= 3 else -12)
+
+            # ── Experience scoring ──
+            exp_score = min(exp, 20) * 1.5  # Up to 30 pts
+            if jd_min_experience > 0:
+                exp_score += 15 if exp >= jd_min_experience else 0
+
+            pre_score = (
+                skill_hits * 15
+                + cat_hits * 10
+                + loc_score_add
+                + min(summary_hits, 5) * 3
+                + min(wh_score, 40)
+                + cert_hits * 8
+                + lang_hits * 8
+                + seniority_score
+                + exp_score
+            )
             pre_scored.append((pre_score, idx, c))
 
         pre_scored.sort(key=lambda x: (x[0], -x[1]), reverse=True)
@@ -1704,7 +1835,11 @@ Return JSON:
             work_hist = c.get('work_history', [])
             work_str = ''
             if isinstance(work_hist, list) and work_hist:
-                entries = [f"{j.get('company', '')} ({j.get('title', '')})" for j in work_hist[:2] if isinstance(j, dict) and j.get('company')]
+                entries = [
+                    f"{j.get('company', '')} ({j.get('title', '')})"
+                    + (f" {j.get('period', '')}" if j.get('period') else '')
+                    for j in work_hist[:3] if isinstance(j, dict) and j.get('company')
+                ]
                 if entries:
                     work_str = f"\n  Work History: {', '.join(entries)}"
             certs = c.get('certifications', [])
@@ -1720,17 +1855,59 @@ Return JSON:
             notice_str = f"\n  Notice Period: {notice}" if notice else ''
             nationality = c.get('nationality', '')
             nat_str = f"\n  Nationality: {nationality}" if nationality else ''
+            # Education
+            edu = c.get('education', [])
+            edu_str = ''
+            if isinstance(edu, list) and edu:
+                edu_items = [
+                    f"{e.get('degree', '')} {e.get('field', '')} ({e.get('institution', '')})" if isinstance(e, dict) else str(e)
+                    for e in edu[:2]
+                ]
+                edu_items = [e.strip() for e in edu_items if e.strip() and e.strip() != '()']
+                if edu_items:
+                    edu_str = f"\n  Education: {', '.join(edu_items)}"
             candidates_text += (
                 f"\nCANDIDATE {i}: {c.get('name', 'Unknown')}\n"
                 f"  Skills: {skills_str}\n"
                 f"  Experience: {exp} years\n"
                 f"  Location: {loc}\n"
                 f"  Summary: {c.get('summary', '')[:200]}"
-                f"{work_str}{cert_str}{lang_str}{notice_str}{nat_str}\n"
+                f"{work_str}{cert_str}{lang_str}{edu_str}{notice_str}{nat_str}\n"
             )
+
+        # Build constraints block so Gemini enforces ALL conditions simultaneously
+        constraints_lines = []
+        _loc_terms = _extract_location_from_text(job_description)
+        if _loc_terms:
+            constraints_lines.append(f"LOCATION (MANDATORY): {', '.join(_loc_terms)} — non-local candidates = score 0-25")
+        _range_m = EXPERIENCE_RANGE_PATTERN.search(job_description)
+        if _range_m:
+            _g = _range_m.groups()
+            if _g[0] and _g[1]:
+                constraints_lines.append(f"EXPERIENCE (STRICT): {_g[0]}-{_g[1]} years required — outside range = major deduction")
+            elif _g[6]:
+                constraints_lines.append(f"EXPERIENCE (STRICT): max {_g[6]} years — over-experienced = major deduction")
+        else:
+            _em = EXPERIENCE_PATTERN.search(job_description)
+            if _em:
+                constraints_lines.append(f"EXPERIENCE (MINIMUM): {_em.group(1)}+ years required — below = major deduction")
+        _sen_m = SENIORITY_PATTERN.search(job_description)
+        if _sen_m:
+            constraints_lines.append(f"SENIORITY: {_sen_m.group(1)} level — verify via work history titles, not just years")
+        constraints_block = "\n".join(f"  • {l}" for l in constraints_lines) if constraints_lines else "  • None — score by overall fit"
 
         n = len(batch)
         prompt = f"""Score each candidate against the job description. Return ONLY valid JSON with a "candidates" array of EXACTLY {n} objects — one per candidate, in the SAME order.
+
+HARD CONSTRAINTS (R6 — ALL conditions must be met SIMULTANEOUSLY):
+{constraints_block}
+
+SCORING RULES:
+R1. Work History job titles are the #1 signal — check actual roles held
+R2. ALL hard constraints above must be satisfied — a single violation = 0-35 score
+R3. Skills listed but never demonstrated in work history = weaker signal
+R4. Certifications and languages are strong differentiators when mentioned in JD
+R5. For composite queries ("senior Python dev with 5 yrs in Dubai"): EVERY condition is required
 
 {candidates_text}
 
@@ -1739,7 +1916,7 @@ JOB DESCRIPTION:
 
 Each object must have: match_score (0-100 integer — be precise, no defaults), matched_skills (array), missing_skills (array), strengths (array), gaps (array), recommendation (string).
 
-Score guidelines: 85-100 Excellent fit, 70-84 Strong fit, 55-69 Moderate, 40-54 Weak match, <40 Poor match. Assess each candidate INDIVIDUALLY.
+Score guidelines: 85-100 Excellent fit (all constraints met + strong match), 70-84 Strong fit, 55-69 Moderate, 40-54 Weak, <40 Poor or constraint violation. Assess each candidate INDIVIDUALLY.
 
 Return: {{"candidates": [...]}}"""
 
@@ -1755,10 +1932,10 @@ Return: {{"candidates": [...]}}"""
         for item in batch_results:
             if not isinstance(item, dict):
                 continue
-            score = item.get('match_score', 50)
+            score = item.get('match_score', 30)
             if isinstance(score, str):
                 nums = re.findall(r'\d+', score)
-                score = int(nums[0]) if nums else 50
+                score = int(nums[0]) if nums else 30
             item['match_score'] = max(0, min(100, int(score)))
             normalized.append(item)
 

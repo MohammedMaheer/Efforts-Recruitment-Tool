@@ -241,16 +241,25 @@ async def auto_sync_emails():
 
     _is_first_sync = True
     _last_email_sync_time = None
-    logger.info("Startup: First sync will fetch FULL inbox (dedup handles already-processed)")
 
-    # Startup: clear orphaned processing entries
+    # ── Restore watermark from DB so restarts use incremental sync ──
+    try:
+        stored_watermark = await asyncio.to_thread(db_service.get_sync_metadata, 'last_email_sync_time')
+        if stored_watermark:
+            _last_email_sync_time = stored_watermark
+            _is_first_sync = False
+            logger.info(f"Startup: Resuming incremental sync from watermark {_last_email_sync_time}")
+        else:
+            logger.info("Startup: No watermark found — performing first full inbox scan")
+    except Exception as e:
+        logger.warning(f"Startup: Could not load sync watermark (will do full scan): {e}")
+
+    # Startup: clear only orphaned processing entries (entries with no matching candidate)
+    # Do NOT clear blocked entries — they represent legitimate rejections that should not be retried
     try:
         orphaned = await asyncio.to_thread(db_service.clear_orphaned_processing_entries)
         if orphaned > 0:
             logger.warning(f"Startup: cleared {orphaned} orphaned processing entries (candidates lost during restore)")
-        blocked = await asyncio.to_thread(db_service.clear_all_blocked_entries)
-        if blocked > 0:
-            logger.warning(f"Startup: cleared {blocked} blocked/failed entries for retry")
     except Exception as e:
         logger.warning(f"Startup orphan clearing failed (non-fatal): {e}")
 
@@ -403,6 +412,18 @@ async def auto_sync_emails():
                                     attach_result = await graph_service.get_message_with_attachments(msg['id'])
                                     if attach_result['status'] == 'success':
                                         attachments = attach_result['attachments']
+                                    else:
+                                        # Retry once after a short delay before giving up
+                                        await asyncio.sleep(2)
+                                        attach_result2 = await graph_service.get_message_with_attachments(msg['id'])
+                                        if attach_result2['status'] == 'success':
+                                            attachments = attach_result2['attachments']
+                                        else:
+                                            logger.warning(
+                                                f"Attachment fetch failed for msg {msg['id'][:20]} "
+                                                f"from {sender_email}: {attach_result.get('error', 'unknown')}. "
+                                                "Candidate will be stored without resume."
+                                            )
 
                                 received_dt = msg.get('receivedDateTime')
                                 if received_dt:
@@ -662,7 +683,7 @@ async def auto_sync_emails():
                                             action
                                         )
                                     except Exception as e:
-                                        logger.debug(f"Non-critical: mark_email_processed failed: {e}")
+                                        logger.warning(f"mark_email_processed failed for {msg_id[:20]}: {e} — email may be reprocessed on next sync")
 
                                 if needs_ai and analysis_text and len(analysis_text) > 20:
                                     try:

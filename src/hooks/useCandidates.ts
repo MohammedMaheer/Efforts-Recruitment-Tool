@@ -197,8 +197,8 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
       const token = useAuthStore.getState().token
       const headers: HeadersInit = token ? { Authorization: `Bearer ${token}` } : {}
       
-      // Use a large page size to minimize parallel requests (4820 candidates ≈ 1.5 MB with fields=light)
-      const pageSize = 2000
+      // Page size matches backend hard cap (min(500, limit)) — requesting more is silently truncated
+      const pageSize = 500
       let allCandidates: Candidate[] = []
       let totalFromServer = 0
       
