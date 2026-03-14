@@ -16,12 +16,12 @@ COPY requirements.txt requirements.production.txt ./
 ARG REQUIREMENTS_FILE=requirements.production.txt
 RUN pip install --no-cache-dir -r ${REQUIREMENTS_FILE}
 
-# Pre-download AI models during build into a shared location.
-# The model is baked into the image so cold starts never hit HuggingFace.
-ENV SENTENCE_TRANSFORMERS_HOME=/app/models
-ENV HF_HOME=/app/models/huggingface
+# Pre-download AI models during build into a dedicated cache directory.
+# Kept separate from /app/models/ (Python package) to avoid namespace collision.
+ENV SENTENCE_TRANSFORMERS_HOME=/app/st_cache
+ENV HF_HOME=/app/st_cache/huggingface
 
-RUN mkdir -p /app/models && \
+RUN mkdir -p /app/st_cache && \
     python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('all-mpnet-base-v2')" && \
     python -m spacy download en_core_web_sm
 
