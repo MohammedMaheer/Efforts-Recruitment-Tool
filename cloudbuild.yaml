@@ -18,7 +18,7 @@ steps:
     args:
       - 'build'
       - '-t'
-      - 'gcr.io/${PROJECT_ID}/recruitment-backend:${SHORT_SHA}'
+      - 'gcr.io/${PROJECT_ID}/recruitment-backend:${_TAG}'
       - '-t'
       - 'gcr.io/${PROJECT_ID}/recruitment-backend:latest'
       - '-f'
@@ -30,7 +30,7 @@ steps:
 
   # Step 2: Push backend image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/${PROJECT_ID}/recruitment-backend:${SHORT_SHA}']
+    args: ['push', 'gcr.io/${PROJECT_ID}/recruitment-backend:${_TAG}']
     id: 'push-backend'
     waitFor: ['build-backend']
 
@@ -42,7 +42,7 @@ steps:
       - 'deploy'
       - 'recruitment-backend'
       - '--image'
-      - 'gcr.io/${PROJECT_ID}/recruitment-backend:${SHORT_SHA}'
+      - 'gcr.io/${PROJECT_ID}/recruitment-backend:${_TAG}'
       - '--region'
       - '${_REGION}'
       - '--platform'
@@ -95,7 +95,7 @@ steps:
       - |
         BACKEND_URL=$$(cat /workspace/backend_url.txt)
         docker build \
-          -t gcr.io/${PROJECT_ID}/recruitment-frontend:${SHORT_SHA} \
+          -t gcr.io/${PROJECT_ID}/recruitment-frontend:${_TAG} \
           -t gcr.io/${PROJECT_ID}/recruitment-frontend:latest \
           -f Dockerfile.frontend \
           --build-arg VITE_API_URL=$$BACKEND_URL \
@@ -106,7 +106,7 @@ steps:
 
   # Step 6: Push frontend image
   - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/${PROJECT_ID}/recruitment-frontend:${SHORT_SHA}']
+    args: ['push', 'gcr.io/${PROJECT_ID}/recruitment-frontend:${_TAG}']
     id: 'push-frontend'
     waitFor: ['build-frontend']
 
@@ -118,7 +118,7 @@ steps:
       - 'deploy'
       - 'recruitment-frontend'
       - '--image'
-      - 'gcr.io/${PROJECT_ID}/recruitment-frontend:${SHORT_SHA}'
+      - 'gcr.io/${PROJECT_ID}/recruitment-frontend:${_TAG}'
       - '--region'
       - '${_REGION}'
       - '--platform'
@@ -169,11 +169,12 @@ substitutions:
   _CORS_ORIGINS: 'http://localhost:3000'
   _EMAIL_ADDRESS: 'hr@effortz.com'
   _MICROSOFT_REDIRECT_URI: 'https://efforts-recruitment-ai.web.app/auth/callback'
+  _TAG: 'latest'
 
 images:
-  - 'gcr.io/${PROJECT_ID}/recruitment-backend:${SHORT_SHA}'
+  - 'gcr.io/${PROJECT_ID}/recruitment-backend:${_TAG}'
   - 'gcr.io/${PROJECT_ID}/recruitment-backend:latest'
-  - 'gcr.io/${PROJECT_ID}/recruitment-frontend:${SHORT_SHA}'
+  - 'gcr.io/${PROJECT_ID}/recruitment-frontend:${_TAG}'
   - 'gcr.io/${PROJECT_ID}/recruitment-frontend:latest'
 
 options:
