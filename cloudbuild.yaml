@@ -83,7 +83,7 @@ steps:
       - |
         gcloud run services describe recruitment-backend \
           --region=${_REGION} --format='value(status.url)' > /workspace/backend_url.txt
-        echo "Backend URL: $(cat /workspace/backend_url.txt)"
+        echo "Backend URL: $$(cat /workspace/backend_url.txt)"
     id: 'get-backend-url'
     waitFor: ['deploy-backend']
 
@@ -146,19 +146,19 @@ steps:
     args:
       - '-c'
       - |
-        BACKEND_URL=$(cat /workspace/backend_url.txt)
-        FRONTEND_URL=$(gcloud run services describe recruitment-frontend \
+        BACKEND_URL=$$(cat /workspace/backend_url.txt)
+        FRONTEND_URL=$$(gcloud run services describe recruitment-frontend \
           --region=${_REGION} --format='value(status.url)')
         echo "============================================"
-        echo "Backend  URL : ${BACKEND_URL}"
-        echo "Frontend URL : ${FRONTEND_URL}"
+        echo "Backend  URL : $$BACKEND_URL"
+        echo "Frontend URL : $$FRONTEND_URL"
         echo "============================================"
         echo "ACTION REQUIRED: Add this redirect URI to Azure AD app registration:"
-        echo "  ${FRONTEND_URL}/auth/callback"
+        echo "  $$FRONTEND_URL/auth/callback"
         echo "============================================"
         gcloud run services update recruitment-backend \
           --region=${_REGION} \
-          --update-env-vars="CORS_ORIGINS=${FRONTEND_URL},http://localhost:3000,MICROSOFT_REDIRECT_URI=${FRONTEND_URL}/auth/callback"
+          --update-env-vars="CORS_ORIGINS=$$FRONTEND_URL,http://localhost:3000,MICROSOFT_REDIRECT_URI=$$FRONTEND_URL/auth/callback"
         echo "CORS and MICROSOFT_REDIRECT_URI updated on backend."
     id: 'patch-cors-and-print-urls'
     waitFor: ['deploy-frontend']

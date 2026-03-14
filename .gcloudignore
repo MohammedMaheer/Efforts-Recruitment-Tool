@@ -1,0 +1,55 @@
+#!include:.gitignore
+.git/
+.git
+node_modules/
+node_modules
+__pycache__/
+__pycache__
+*.pyc
+*.pyo
+venv/
+.venv/
+env/
+
+# Local DB and model files
+*.db
+*.sqlite
+*.sqlite3
+recruitment.db
+
+# Large model/cache dirs inside backend
+backend/models/
+backend/.cache/
+backend/cache/
+backend/uploads/tmp/
+backend/uploads/resumes/
+
+# Frontend build artifacts
+dist/
+dist-ssr/
+build/
+.next/
+
+# Logs and temp
+*.log
+logs/
+logs.json
+temp_*
+
+# Docs and reports
+docs/
+*.md
+FRONTEND_*.md
+BACKEND_*.md
+DEEP_*.md
+
+# Dev tools
+browser-extension/
+scripts/
+gcp-export/
+_extracted/
+
+# CI configs not needed by Cloud Build at runtime
+.github/
+.env
+.env.*
