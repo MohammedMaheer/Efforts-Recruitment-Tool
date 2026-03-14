@@ -151,7 +151,7 @@ steps:
         echo "============================================"
         gcloud run services update recruitment-backend \
           --region=${_REGION} \
-          --update-env-vars="CORS_ORIGINS=$$FRONTEND_URL,http://localhost:3000,MICROSOFT_REDIRECT_URI=$$FRONTEND_URL/auth/callback"
+          --update-env-vars="CORS_ORIGINS=$$FRONTEND_URL,MICROSOFT_REDIRECT_URI=$$FRONTEND_URL/auth/callback"
         echo "CORS and MICROSOFT_REDIRECT_URI updated on backend."
     id: 'patch-cors-and-print-urls'
     waitFor: ['deploy-frontend']
