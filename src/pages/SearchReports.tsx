@@ -46,7 +46,8 @@ export default function SearchReports() {
     setShowClearConfirm(false)
     setClearing(true)
     try {
-      await authFetch(`${config.apiUrl}/api/search-history`, { method: 'DELETE' })
+      const res = await authFetch(`${config.apiUrl}/api/search-history`, { method: 'DELETE' })
+      if (!res.ok) throw new Error('Server error')
       setSearches([])
     } catch (err) { console.error('Failed to clear search history:', err) }
     finally { setClearing(false) }
@@ -177,7 +178,7 @@ export default function SearchReports() {
                             <button onClick={() => navigate('/ai-assistant', { state: { restoreSessionQuery: s.query } })} className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-600 transition-colors" title="View Results in AI Search">
                               <Eye className="w-4 h-4" />
                             </button>
-                            <button onClick={() => handleDeleteOne(s.id || s._id || '')} className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 transition-colors" title="Delete">
+                            <button onClick={() => { const id = s.id || s._id; if (id) handleDeleteOne(id) }} className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 transition-colors" title="Delete">
                               <Trash2 className="w-4 h-4" />
                             </button>
                           </div>

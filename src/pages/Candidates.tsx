@@ -23,6 +23,7 @@ import { candidateApi } from '@/services/api'
 import { normalizeCategory } from '@/lib/categoryUtils'
 import { toast } from '@/components/ui/Toast'
 import type { Candidate } from '@/types'
+import { useAuthStore } from '@/store/authStore'
 
 // Quick contact helper - opens contact without navigating away
 const openContact = (e: React.MouseEvent, type: 'email' | 'whatsapp' | 'linkedin' | 'phone', candidate: Pick<Candidate, 'email' | 'name' | 'phone' | 'linkedin'>) => {
@@ -99,6 +100,8 @@ export default function Candidates() {
   const { candidates, loading, error, refetch, totalCount } = useCandidates({ autoFetch: true })
   // Auto-refresh when email sync detects new candidates
   useEmailSync(refetch, 30000)
+  const { user } = useAuthStore()
+  const isAdmin = user?.role === 'admin'
   const [searchQuery, setSearchQuery] = useState(searchParams.get('search') || '')
   const [showFilters, setShowFilters] = useState(false)
   const [viewMode, setViewMode] = useState<'grouped' | 'list'>('grouped')
@@ -340,10 +343,11 @@ export default function Candidates() {
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
             <span className="ml-2">Refresh</span>
           </Button>
-          <Button 
-            variant="outline" 
+          {isAdmin && (
+          <Button
+            variant="outline"
             size="sm"
-            onClick={handleReprocessWithGemini} 
+            onClick={handleReprocessWithGemini}
             disabled={isReprocessing}
             className="border-indigo-200 text-indigo-600 hover:bg-indigo-50"
             title="Reprocess poorly-scored candidates with Gemini AI"
@@ -351,6 +355,7 @@ export default function Candidates() {
             {isReprocessing ? <Loader2 className="w-4 h-4 animate-spin mr-1" /> : <Star className="w-4 h-4 mr-1" />}
             {isReprocessing ? 'Reprocessing...' : 'AI Reprocess'}
           </Button>
+          )}
         </div>
       </div>
 
@@ -646,7 +651,7 @@ export default function Candidates() {
                                 <div className="flex items-center gap-2 overflow-hidden">
                                   <Avatar className="w-8 h-8 flex-shrink-0">
                                     <AvatarImage
-                                      src={`https://api.dicebear.com/7.x/initials/svg?seed=${candidate.name}`}
+                                      src={`https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(candidate.name || 'candidate')}`}
                                     />
                                     <AvatarFallback>{candidate.name.charAt(0)}</AvatarFallback>
                                   </Avatar>
@@ -913,7 +918,7 @@ export default function Candidates() {
                       <div className="flex items-center gap-2 overflow-hidden">
                         <Avatar className="w-9 h-9 flex-shrink-0">
                           <AvatarImage
-                            src={`https://api.dicebear.com/7.x/initials/svg?seed=${candidate.name}`}
+                            src={`https://api.dicebear.com/7.x/initials/svg?seed=${encodeURIComponent(candidate.name || 'candidate')}`}
                           />
                           <AvatarFallback>{candidate.name.charAt(0)}</AvatarFallback>
                         </Avatar>

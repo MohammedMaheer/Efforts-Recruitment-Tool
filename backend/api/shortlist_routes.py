@@ -2,6 +2,7 @@
 import os
 import json
 import asyncio
+import html
 import logging
 import time
 from core.lifespan import backup_db_to_gcs
@@ -110,7 +111,7 @@ async def _send_rejection_email(candidate: Dict):
         role_mention = f' for the {display_title} position' if display_title else ''
         body_html = f"""
 <div style="font-family: Calibri, 'Segoe UI', Arial, sans-serif; font-size: 14px; line-height: 1.6; color: #000000; max-width: 650px;">
-  <p style="margin: 0 0 12px 0;">Hi {first_name},</p>
+  <p style="margin: 0 0 12px 0;">Hi {html.escape(first_name)},</p>
   <p style="margin: 0 0 12px 0;">&nbsp;</p>
   <p style="margin: 0 0 12px 0;">Thank you for taking the time to apply{role_mention} at {company_name}. We truly appreciate your interest in joining our team and the effort you put into your application.</p>
   <p style="margin: 0 0 12px 0;">After careful review, we have decided to move forward with other candidates whose profile more closely matches the current requirements for this role. Please know that this decision does not diminish the value of your experience and skills.</p>
@@ -604,7 +605,7 @@ Return JSON:
 @router.post("/api/candidates/bulk-shortlist")
 async def bulk_shortlist_candidates(
     request: BulkShortlistRequest,
-    current_user: dict = Depends(require_auth)
+    current_user: dict = Depends(require_admin)
 ):
     """
     Bulk shortlist candidates and send personalized notification emails.

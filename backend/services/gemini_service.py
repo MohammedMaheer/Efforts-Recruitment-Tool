@@ -1999,7 +1999,7 @@ Return JSON:
     "best_for_role": "Best candidate and why"
 }}"""
 
-        result = await self._agenerate_json(prompt, temperature=0.2, max_tokens=2048)
+        result = await self._agenerate_json(prompt, temperature=0.0, max_tokens=2048)
         return result or {'ranking': [], 'comparison_summary': 'Comparison unavailable'}
 
     # ==================================================================

@@ -175,7 +175,7 @@ We are seeking a talented and driven {title} to join our team{' in ' + location 
         }
     except Exception as e:
         logger.error(f"JD generation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=500, detail="Error occurred. Check server logs.")
 
 
 

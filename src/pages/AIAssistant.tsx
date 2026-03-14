@@ -1069,7 +1069,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
           { title: 'High Potential', value: predictions.filter((p) => { const pred = (p as any)?.data || p; return (pred?.response_rate || pred?.interview_success || pred?.probability || 0) > 0.7 }).length, icon: Star, color: 'yellow' }
         ]
       } catch (error) {
-        response = `**Quick Analytics Summary**\n\n• Total Candidates: ${candidates.length}\n• Strong Matches: ${candidates.filter(c => c.status === 'Strong').length}\n• Average Score: ${(candidates.reduce((acc, c) => acc + c.matchScore, 0) / candidates.length).toFixed(1)}%`
+        response = `**Quick Analytics Summary**\n\n• Total Candidates: ${candidates.length}\n• Strong Matches: ${candidates.filter(c => c.status === 'Strong').length}\n• Average Score: ${candidates.length > 0 ? (candidates.reduce((acc, c) => acc + c.matchScore, 0) / candidates.length).toFixed(1) : '0.0'}%`
         filteredCandidates = []
       }
       

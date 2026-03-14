@@ -165,7 +165,7 @@ async def retrain_ml_model(current_user: dict = Depends(require_admin)):
     """Force retrain the ML ranking model"""
     try:
         service = get_ranking_model()
-        service.retrain()
+        await asyncio.to_thread(service.retrain)
         return {
             'status': 'success',
             'model_version': service.model_version,
@@ -301,7 +301,12 @@ async def merge_duplicates(request: MergeCandidatesRequest, current_user: dict =
         primary, duplicates = await asyncio.to_thread(_fetch_candidates_for_merge)
 
         merged = service.merge_candidates(primary, duplicates)
-        
+        # Save the merged candidate back to the database
+        await asyncio.to_thread(db_service.update_candidate, merged)
+        # Deactivate duplicate records
+        for dup_id in request.duplicate_candidate_ids:
+            await asyncio.to_thread(db_service.update_candidate, {'id': dup_id, 'is_active': 0})
+
         return {
             'status': 'success',
             'merged_candidate_id': request.primary_candidate_id,
@@ -422,139 +427,143 @@ async def get_pipeline_analytics():
     """
     try:
         db = get_db_service()
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            
-            # Total candidates
-            cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1")
-            total = cursor.fetchone()[0]
-            
-            # Average match score
-            cursor.execute("SELECT AVG(match_score) FROM candidates WHERE is_active = 1")
-            avg_score = cursor.fetchone()[0] or 0
-            
-            # Strong matches (score >= 70)
-            cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1 AND match_score >= 70")
-            strong = cursor.fetchone()[0]
-            
-            # New in last 24h
-            cursor.execute("""
-                SELECT COUNT(*) FROM candidates 
-                WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-24 hours')
-            """)
-            new_24h = cursor.fetchone()[0]
-            
-            # New in last 7 days
-            cursor.execute("""
-                SELECT COUNT(*) FROM candidates 
-                WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-7 days')
-            """)
-            new_7d = cursor.fetchone()[0]
-            
-            # Category distribution
-            cursor.execute("""
-                SELECT job_category, COUNT(*) as cnt, AVG(match_score) as avg_s
-                FROM candidates WHERE is_active = 1
-                GROUP BY job_category ORDER BY cnt DESC
-            """)
-            categories = {row[0] or 'General': {"count": row[1], "avg_score": round(row[2] or 0, 1)} for row in cursor.fetchall()}
-            
-            # Score distribution
-            cursor.execute("""
-                SELECT 
-                    SUM(CASE WHEN match_score >= 80 THEN 1 ELSE 0 END) as excellent,
-                    SUM(CASE WHEN match_score >= 60 AND match_score < 80 THEN 1 ELSE 0 END) as good,
-                    SUM(CASE WHEN match_score >= 40 AND match_score < 60 THEN 1 ELSE 0 END) as fair,
-                    SUM(CASE WHEN match_score < 40 THEN 1 ELSE 0 END) as low
-                FROM candidates WHERE is_active = 1
-            """)
-            dist = cursor.fetchone()
-            score_distribution = {
-                "excellent_80_plus": dist[0] or 0,
-                "good_60_79": dist[1] or 0,
-                "fair_40_59": dist[2] or 0,
-                "low_below_40": dist[3] or 0
+
+        def _do_pipeline_query():
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+
+                # Total candidates
+                cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1")
+                total = cursor.fetchone()[0]
+
+                # Average match score
+                cursor.execute("SELECT AVG(match_score) FROM candidates WHERE is_active = 1")
+                avg_score = cursor.fetchone()[0] or 0
+
+                # Strong matches (score >= 70)
+                cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1 AND match_score >= 70")
+                strong = cursor.fetchone()[0]
+
+                # New in last 24h
+                cursor.execute("""
+                    SELECT COUNT(*) FROM candidates
+                    WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-24 hours')
+                """)
+                new_24h = cursor.fetchone()[0]
+
+                # New in last 7 days
+                cursor.execute("""
+                    SELECT COUNT(*) FROM candidates
+                    WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-7 days')
+                """)
+                new_7d = cursor.fetchone()[0]
+
+                # Category distribution
+                cursor.execute("""
+                    SELECT job_category, COUNT(*) as cnt, AVG(match_score) as avg_s
+                    FROM candidates WHERE is_active = 1
+                    GROUP BY job_category ORDER BY cnt DESC
+                """)
+                categories = {row[0] or 'General': {"count": row[1], "avg_score": round(row[2] or 0, 1)} for row in cursor.fetchall()}
+
+                # Score distribution
+                cursor.execute("""
+                    SELECT
+                        SUM(CASE WHEN match_score >= 80 THEN 1 ELSE 0 END) as excellent,
+                        SUM(CASE WHEN match_score >= 60 AND match_score < 80 THEN 1 ELSE 0 END) as good,
+                        SUM(CASE WHEN match_score >= 40 AND match_score < 60 THEN 1 ELSE 0 END) as fair,
+                        SUM(CASE WHEN match_score < 40 THEN 1 ELSE 0 END) as low
+                    FROM candidates WHERE is_active = 1
+                """)
+                dist = cursor.fetchone()
+                score_distribution = {
+                    "excellent_80_plus": dist[0] or 0,
+                    "good_60_79": dist[1] or 0,
+                    "fair_40_59": dist[2] or 0,
+                    "low_below_40": dist[3] or 0
+                }
+
+                # Top skills (from skills JSON column)
+                cursor.execute("SELECT skills FROM candidates WHERE is_active = 1 AND skills IS NOT NULL")
+                import json as _json
+                skill_counts: Dict[str, int] = {}
+                for row in cursor.fetchall():
+                    try:
+                        skills = _json.loads(row[0]) if isinstance(row[0], str) else (row[0] or [])
+                        for s in skills:
+                            if isinstance(s, str) and s.strip():
+                                skill_counts[s.strip()] = skill_counts.get(s.strip(), 0) + 1
+                    except Exception:
+                        pass
+                top_skills = sorted(skill_counts.items(), key=lambda x: x[1], reverse=True)[:15]
+
+                # Status breakdown
+                cursor.execute("""
+                    SELECT status, COUNT(*) FROM candidates
+                    WHERE is_active = 1 GROUP BY status
+                """)
+                status_breakdown = {(row[0] or 'New'): row[1] for row in cursor.fetchall()}
+
+                # Recent activity (last 30 days by day)
+                cursor.execute("""
+                    SELECT date(applied_date) as day, COUNT(*) as cnt
+                    FROM candidates WHERE is_active = 1
+                    AND datetime(applied_date) > datetime('now', '-30 days')
+                    GROUP BY day ORDER BY day
+                """)
+                daily_activity = [{"date": row[0], "count": row[1]} for row in cursor.fetchall()]
+
+                # Generate bottlenecks and recommendations
+                bottlenecks = []
+                recommendations = []
+
+                if total > 0:
+                    strong_pct = (strong / total) * 100
+                    if strong_pct < 20:
+                        bottlenecks.append(f"Only {strong_pct:.0f}% of candidates are strong matches (score ≥ 70)")
+                        recommendations.append("Consider broadening job descriptions or adjusting match criteria")
+
+                    if avg_score < 50:
+                        bottlenecks.append(f"Average match score is low ({avg_score:.0f}%)")
+                        recommendations.append("Review and update job requirements to better align with candidate pool")
+
+                    if new_7d == 0:
+                        bottlenecks.append("No new candidates added in the last 7 days")
+                        recommendations.append("Set up email integration or upload more resumes to maintain pipeline flow")
+
+                    low_quality = score_distribution.get("low_below_40", 0)
+                    if low_quality > total * 0.3:
+                        bottlenecks.append(f"{low_quality} candidates ({(low_quality/total)*100:.0f}%) have very low scores")
+                        recommendations.append("Review sourcing channels - many candidates are poor matches")
+                else:
+                    bottlenecks.append("No candidates in the pipeline yet")
+                    recommendations.append("Upload resumes or connect email integration to start building your pipeline")
+                    recommendations.append("Use the AI Assistant to search for candidates matching your job descriptions")
+
+                # Calculate response rate proxy from email logs
+                cursor.execute("SELECT COUNT(*) FROM email_processing_log")
+                email_count = cursor.fetchone()[0]
+                avg_response_rate = min(email_count / max(total, 1), 1.0) if total > 0 else 0
+
+            return {
+                'total_candidates': total,
+                'strong_matches': strong,
+                'new_24h': new_24h,
+                'new_7d': new_7d,
+                'avg_score': round(avg_score, 1),
+                'avg_response_rate': round(avg_response_rate, 2),
+                'avg_interview_success': round(strong / max(total, 1), 2),
+                'categories': categories,
+                'category_count': len(categories),
+                'score_distribution': score_distribution,
+                'top_skills': [{"skill": s, "count": c} for s, c in top_skills],
+                'status_breakdown': status_breakdown,
+                'daily_activity': daily_activity,
+                'bottlenecks': bottlenecks,
+                'recommendations': recommendations
             }
-            
-            # Top skills (from skills JSON column)
-            cursor.execute("SELECT skills FROM candidates WHERE is_active = 1 AND skills IS NOT NULL")
-            import json as _json
-            skill_counts: Dict[str, int] = {}
-            for row in cursor.fetchall():
-                try:
-                    skills = _json.loads(row[0]) if isinstance(row[0], str) else (row[0] or [])
-                    for s in skills:
-                        if isinstance(s, str) and s.strip():
-                            skill_counts[s.strip()] = skill_counts.get(s.strip(), 0) + 1
-                except Exception:
-                    pass
-            top_skills = sorted(skill_counts.items(), key=lambda x: x[1], reverse=True)[:15]
-            
-            # Status breakdown
-            cursor.execute("""
-                SELECT status, COUNT(*) FROM candidates 
-                WHERE is_active = 1 GROUP BY status
-            """)
-            status_breakdown = {(row[0] or 'New'): row[1] for row in cursor.fetchall()}
-            
-            # Recent activity (last 30 days by day)
-            cursor.execute("""
-                SELECT date(applied_date) as day, COUNT(*) as cnt
-                FROM candidates WHERE is_active = 1 
-                AND datetime(applied_date) > datetime('now', '-30 days')
-                GROUP BY day ORDER BY day
-            """)
-            daily_activity = [{"date": row[0], "count": row[1]} for row in cursor.fetchall()]
-            
-            # Generate bottlenecks and recommendations
-            bottlenecks = []
-            recommendations = []
-            
-            if total > 0:
-                strong_pct = (strong / total) * 100
-                if strong_pct < 20:
-                    bottlenecks.append(f"Only {strong_pct:.0f}% of candidates are strong matches (score ≥ 70)")
-                    recommendations.append("Consider broadening job descriptions or adjusting match criteria")
-                
-                if avg_score < 50:
-                    bottlenecks.append(f"Average match score is low ({avg_score:.0f}%)")
-                    recommendations.append("Review and update job requirements to better align with candidate pool")
-                
-                if new_7d == 0:
-                    bottlenecks.append("No new candidates added in the last 7 days")
-                    recommendations.append("Set up email integration or upload more resumes to maintain pipeline flow")
-                
-                low_quality = score_distribution.get("low_below_40", 0)
-                if low_quality > total * 0.3:
-                    bottlenecks.append(f"{low_quality} candidates ({(low_quality/total)*100:.0f}%) have very low scores")
-                    recommendations.append("Review sourcing channels - many candidates are poor matches")
-            else:
-                bottlenecks.append("No candidates in the pipeline yet")
-                recommendations.append("Upload resumes or connect email integration to start building your pipeline")
-                recommendations.append("Use the AI Assistant to search for candidates matching your job descriptions")
-            
-            # Calculate response rate proxy from email logs
-            cursor.execute("SELECT COUNT(*) FROM email_processing_log")
-            email_count = cursor.fetchone()[0]
-            avg_response_rate = min(email_count / max(total, 1), 1.0) if total > 0 else 0
-        
-        return {
-            'total_candidates': total,
-            'strong_matches': strong,
-            'new_24h': new_24h,
-            'new_7d': new_7d,
-            'avg_score': round(avg_score, 1),
-            'avg_response_rate': round(avg_response_rate, 2),
-            'avg_interview_success': round(strong / max(total, 1), 2),
-            'categories': categories,
-            'category_count': len(categories),
-            'score_distribution': score_distribution,
-            'top_skills': [{"skill": s, "count": c} for s, c in top_skills],
-            'status_breakdown': status_breakdown,
-            'daily_activity': daily_activity,
-            'bottlenecks': bottlenecks,
-            'recommendations': recommendations
-        }
+
+        return await asyncio.to_thread(_do_pipeline_query)
     except Exception as e:
         logger.error(f"Analytics failed: {e}")
         raise HTTPException(500, _safe_error("Analytics failed", e))
@@ -627,7 +636,7 @@ async def get_email_template(template_id: str):
 
 
 @router.post("/templates")
-async def create_email_template(request: EmailTemplateCreate):
+async def create_email_template(request: EmailTemplateCreate, current_user: dict = Depends(require_admin)):
     """Create a new email template"""
     try:
         service = get_templates_service()
@@ -646,7 +655,7 @@ async def create_email_template(request: EmailTemplateCreate):
 
 
 @router.put("/templates/{template_id}")
-async def update_email_template(template_id: str, request: EmailTemplateUpdate):
+async def update_email_template(template_id: str, request: EmailTemplateUpdate, current_user: dict = Depends(require_admin)):
     """Update an email template"""
     try:
         service = get_templates_service()
@@ -658,7 +667,7 @@ async def update_email_template(template_id: str, request: EmailTemplateUpdate):
 
 
 @router.delete("/templates/{template_id}")
-async def delete_email_template(template_id: str):
+async def delete_email_template(template_id: str, current_user: dict = Depends(require_admin)):
     """Delete an email template"""
     try:
         service = get_templates_service()
@@ -835,19 +844,23 @@ async def get_campaign_stats(campaign_id: str):
     """Get statistics for a campaign (job category)"""
     try:
         db = get_db_service()
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status IN ('New','Reviewed') THEN 1 ELSE 0 END) as active,
-                    SUM(CASE WHEN status IN ('Hired','Offered') THEN 1 ELSE 0 END) as completed,
-                    SUM(CASE WHEN status = 'Withdrawn' THEN 1 ELSE 0 END) as cancelled,
-                    SUM(CASE WHEN status IN ('Shortlisted','Interviewing','Offered','Hired') THEN 1 ELSE 0 END) as responded
-                FROM candidates
-                WHERE is_active = 1 AND job_category = ?
-            """, (campaign_id,))
-            row = cursor.fetchone()
+
+        def _do_campaign_stats():
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status IN ('New','Reviewed') THEN 1 ELSE 0 END) as active,
+                        SUM(CASE WHEN status IN ('Hired','Offered') THEN 1 ELSE 0 END) as completed,
+                        SUM(CASE WHEN status = 'Withdrawn' THEN 1 ELSE 0 END) as cancelled,
+                        SUM(CASE WHEN status IN ('Shortlisted','Interviewing','Offered','Hired') THEN 1 ELSE 0 END) as responded
+                    FROM candidates
+                    WHERE is_active = 1 AND job_category = ?
+                """, (campaign_id,))
+                return cursor.fetchone()
+
+        row = await asyncio.to_thread(_do_campaign_stats)
         return CampaignStatsResponse(
             campaign_id=campaign_id,
             total_enrolled=row[0] or 0,
@@ -865,23 +878,27 @@ async def get_all_campaign_stats():
     """Get campaign performance stats derived from real candidate data, grouped by job category."""
     try:
         db = get_db_service()
-        with db.get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT
-                    COALESCE(job_category, 'General') as category,
-                    COUNT(*) as total,
-                    SUM(CASE WHEN status IN ('New','Reviewed') THEN 1 ELSE 0 END) as active,
-                    SUM(CASE WHEN status IN ('Hired','Offered') THEN 1 ELSE 0 END) as completed,
-                    SUM(CASE WHEN status = 'Withdrawn' THEN 1 ELSE 0 END) as cancelled,
-                    SUM(CASE WHEN status IN ('Shortlisted','Interviewing','Offered','Hired') THEN 1 ELSE 0 END) as responded
-                FROM candidates
-                WHERE is_active = 1
-                GROUP BY COALESCE(job_category, 'General')
-                HAVING COUNT(*) >= 1
-                ORDER BY COUNT(*) DESC
-            """)
-            rows = cursor.fetchall()
+
+        def _do_all_campaign_stats():
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT
+                        COALESCE(job_category, 'General') as category,
+                        COUNT(*) as total,
+                        SUM(CASE WHEN status IN ('New','Reviewed') THEN 1 ELSE 0 END) as active,
+                        SUM(CASE WHEN status IN ('Hired','Offered') THEN 1 ELSE 0 END) as completed,
+                        SUM(CASE WHEN status = 'Withdrawn' THEN 1 ELSE 0 END) as cancelled,
+                        SUM(CASE WHEN status IN ('Shortlisted','Interviewing','Offered','Hired') THEN 1 ELSE 0 END) as responded
+                    FROM candidates
+                    WHERE is_active = 1
+                    GROUP BY COALESCE(job_category, 'General')
+                    HAVING COUNT(*) >= 1
+                    ORDER BY COUNT(*) DESC
+                """)
+                return cursor.fetchall()
+
+        rows = await asyncio.to_thread(_do_all_campaign_stats)
 
         campaigns = {}
         total_enrollments = 0
@@ -925,7 +942,7 @@ async def get_campaign(campaign_id: str):
 
 
 @router.post("/campaigns")
-async def create_campaign(request: CampaignCreate):
+async def create_campaign(request: CampaignCreate, current_user: dict = Depends(require_admin)):
     """Create a new drip campaign"""
     try:
         service = get_followup_service()
@@ -946,7 +963,7 @@ async def create_campaign(request: CampaignCreate):
 
 
 @router.delete("/campaigns/{campaign_id}")
-async def delete_campaign(campaign_id: str):
+async def delete_campaign(campaign_id: str, current_user: dict = Depends(require_admin)):
     """Delete a campaign"""
     try:
         service = get_followup_service()

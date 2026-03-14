@@ -35,7 +35,7 @@ _db_backup_task = None
 # GCS configuration
 GCS_BUCKET_NAME = os.getenv("GCS_BUCKET_NAME", "efforts-recruitment-ai-data")
 GCS_DB_BLOB_PATH = "db/recruitment.db"
-LOCAL_DB_PATH = "./recruitment.db"
+LOCAL_DB_PATH = "/tmp/recruitment.db" if os.getenv("K_SERVICE") else "./recruitment.db"
 
 # ── Blocked email/name patterns (module-level for reuse) ─────────────────
 _BLOCKED_EMAIL_PATTERNS = [
@@ -1081,7 +1081,7 @@ async def _background_process_candidates(interval_minutes: int = 5):
                             OR match_score = 0 OR match_score IS NULL
                             OR job_category IS NULL OR job_category = ''
                         )
-                        ORDER BY created_at DESC
+                        ORDER BY created_at DESC LIMIT 100
                     """)
                     rows = [dict(r) for r in cursor.fetchall()]
                     return rows

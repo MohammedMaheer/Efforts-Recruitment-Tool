@@ -1010,7 +1010,7 @@ async def ai_chat(
 
     # ── Simple rate limiting (10 requests per minute per user) ──
     import time as _time
-    user_id = current_user.get("id", "anon")
+    user_id = current_user.get("sub", current_user.get("id", "anon"))
     now = _time.time()
     user_hits = _chat_rate_limits.get(user_id, [])
     user_hits = [t for t in user_hits if now - t < 60]  # Keep last 60s
@@ -1132,7 +1132,7 @@ async def ai_chat(
 
 
 @router.post("/api/candidates/{candidate_id}/rescore")
-async def rescore_single_candidate(candidate_id: str, current_user: dict = Depends(require_auth)):
+async def rescore_single_candidate(candidate_id: str, current_user: dict = Depends(require_admin)):
     """
     Re-run Gemini AI scoring for a single candidate.
     Updates matchScore, jobCategory, skills, experience in the database.

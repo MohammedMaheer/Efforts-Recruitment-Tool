@@ -570,7 +570,7 @@ async def get_search_history(limit: int = 50, current_user: dict = Depends(requi
 
 
 @router.delete("/api/search-history")
-async def clear_search_history(current_user: dict = Depends(require_auth)):
+async def clear_search_history(current_user: dict = Depends(require_admin)):
     """Clear all search history"""
     try:
         await asyncio.to_thread(_db().clear_search_history)

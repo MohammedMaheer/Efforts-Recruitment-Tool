@@ -95,7 +95,8 @@ export default function Settings() {
   const handleSyncNow = async () => {
     setIsSyncing(true)
     try {
-      await authFetch(`${config.apiUrl}/api/email/sync-now`, { method: 'POST' })
+      const response = await authFetch(`${config.apiUrl}/api/email/sync-now`, { method: 'POST' })
+      if (!response.ok) throw new Error(`Sync failed: ${response.status}`)
       addNotification({ type: 'success', title: 'Sync Started', message: 'Email sync triggered. New candidates will appear shortly.' })
     } catch (error) {
       addNotification({ type: 'error', title: 'Sync Failed', message: 'Could not start email sync' })
@@ -494,6 +495,7 @@ export default function Settings() {
                 {isSyncing ? 'Syncing...' : 'Sync Now'}
               </Button>
             </div>
+            {isAdmin && (<>
             <div className="border-t border-gray-100" />
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">
@@ -505,7 +507,6 @@ export default function Settings() {
                 {isRescoring ? 'Scoring...' : 'Re-score'}
               </Button>
             </div>
-            {isAdmin && (<>
             <div className="border-t border-gray-100" />
             <div className="flex items-start justify-between gap-4">
               <div className="flex-1">

@@ -239,6 +239,15 @@ def sanitize_candidate_data(candidate: Dict) -> Dict:
     
     return c
 
+def _safe_json(val, default=None):
+    """Encode val to a JSON string. If val is already a str, return it as-is
+    (prevents double-encoding values that were pre-serialised by a caller)."""
+    if val is None:
+        return json.dumps(default if default is not None else [])
+    if isinstance(val, str):
+        return val  # already JSON-encoded
+    return json.dumps(val)
+
 class DatabaseService:
     def __init__(self, db_path: str = "./recruitment.db"):
         self.db_path = db_path
@@ -987,12 +996,20 @@ class DatabaseService:
         try:
             cursor = conn.cursor()
             # Find emails that appear more than once (case-insensitive)
-            cursor.execute("""
-                SELECT LOWER(TRIM(email)) as norm_email, GROUP_CONCAT(id) as ids, COUNT(*) as cnt
-                FROM candidates WHERE is_active = 1
-                GROUP BY LOWER(TRIM(email))
-                HAVING COUNT(*) > 1
-            """)
+            if IS_POSTGRES:
+                cursor.execute("""
+                    SELECT LOWER(TRIM(email)) as norm_email, STRING_AGG(id::text, ',') as ids, COUNT(*) as cnt
+                    FROM candidates WHERE is_active = 1
+                    GROUP BY LOWER(TRIM(email))
+                    HAVING COUNT(*) > 1
+                """)
+            else:
+                cursor.execute("""
+                    SELECT LOWER(TRIM(email)) as norm_email, GROUP_CONCAT(id) as ids, COUNT(*) as cnt
+                    FROM candidates WHERE is_active = 1
+                    GROUP BY LOWER(TRIM(email))
+                    HAVING COUNT(*) > 1
+                """)
             dupes = cursor.fetchall()
             merged_count = 0
             for norm_email, ids_str, cnt in dupes:
@@ -1342,7 +1359,7 @@ class DatabaseService:
                     'id': row[0],
                     'name': row[1],
                     'email': row[2],
-                    'skills': json.loads(skills_raw) if skills_raw and isinstance(skills_raw, str) else (skills_raw or []),
+                    'skills': _jl(skills_raw),
                     'experience': row[4] or 0,
                     'education': _jl(edu_raw),
                     'matchScore': row[6] or 0,
@@ -1645,18 +1662,18 @@ class DatabaseService:
                             candidate['name'],
                             candidate.get('phone', ''),
                             candidate.get('location', ''),
-                            json.dumps(candidate.get('skills', [])),
+                            _safe_json(candidate.get('skills', [])),
                             candidate.get('experience', 0),
                             education_data,
                             candidate.get('summary', ''),
-                            json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
+                            _safe_json(candidate.get('workHistory') or candidate.get('work_history') or []),
                             candidate.get('linkedin', ''),
                             candidate.get('matchScore') or None,
                             candidate.get('job_category', 'General'),
                             candidate.get('job_subcategory', ''),
                             candidate.get('last_updated'),
-                            json.dumps(candidate.get('certifications', [])),
-                            json.dumps(candidate.get('languages', [])),
+                            _safe_json(candidate.get('certifications', [])),
+                            _safe_json(candidate.get('languages', [])),
                             candidate.get('nationality', ''),
                             candidate.get('notice_period', ''),
                             candidate.get('current_salary', ''),
@@ -1686,11 +1703,11 @@ class DatabaseService:
                             candidate['name'],
                             candidate.get('phone', ''),
                             candidate.get('location', ''),
-                            json.dumps(candidate.get('skills', [])),
+                            _safe_json(candidate.get('skills', [])),
                             candidate.get('experience', 0),
                             education_data,
                             candidate.get('summary', ''),
-                            json.dumps(candidate.get('workHistory') or candidate.get('work_history') or []),
+                            _safe_json(candidate.get('workHistory') or candidate.get('work_history') or []),
                             candidate.get('linkedin', ''),
                             candidate.get('status', 'New'),
                             candidate.get('matchScore') or 0,
@@ -1699,8 +1716,8 @@ class DatabaseService:
                             candidate.get('appliedDate'),
                             candidate.get('last_updated'),
                             candidate.get('raw_email_subject', ''),
-                            json.dumps(candidate.get('certifications', [])),
-                            json.dumps(candidate.get('languages', [])),
+                            _safe_json(candidate.get('certifications', [])),
+                            _safe_json(candidate.get('languages', [])),
                             candidate.get('resume_text', ''),
                             candidate.get('nationality', ''),
                             candidate.get('notice_period', ''),
@@ -1799,10 +1816,16 @@ class DatabaseService:
                 subcategory_stats[cat][sub] = row[2]
             
             # Recent (last 24 hours)
-            cursor.execute("""
-                SELECT COUNT(*) FROM candidates 
-                WHERE is_active = 1 AND datetime(last_updated) > datetime('now', '-1 day')
-            """)
+            if IS_POSTGRES:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM candidates
+                    WHERE is_active = 1 AND last_updated > (NOW() - INTERVAL '1 day')::text
+                """)
+            else:
+                cursor.execute("""
+                    SELECT COUNT(*) FROM candidates
+                    WHERE is_active = 1 AND datetime(last_updated) > datetime('now', '-1 day')
+                """)
             recent = cursor.fetchone()[0]
             
             return {
@@ -2292,7 +2315,10 @@ class DatabaseService:
             cursor = conn.cursor()
             
             # Clean old cache entries (keep 7 days) to prevent unbounded growth
-            cursor.execute("DELETE FROM ai_score_cache WHERE cached_at < datetime('now', '-7 days')")
+            if IS_POSTGRES:
+                cursor.execute("DELETE FROM ai_score_cache WHERE cached_at < to_char(NOW() - INTERVAL '7 days', 'YYYY-MM-DD\"T\"HH24:MI:SS')")
+            else:
+                cursor.execute("DELETE FROM ai_score_cache WHERE cached_at < datetime('now', '-7 days')")
             
             cursor.execute("""
                 INSERT OR REPLACE INTO ai_score_cache 
@@ -2398,18 +2424,6 @@ class DatabaseService:
         conn = self.get_connection_raw()
         try:
             cursor = conn.cursor()
-            # Ensure table exists (migration for existing DBs)
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS search_history (
-                    id TEXT PRIMARY KEY,
-                    query TEXT NOT NULL,
-                    description TEXT,
-                    result_count INTEGER DEFAULT 0,
-                    top_results TEXT,
-                    searched_at TEXT DEFAULT CURRENT_TIMESTAMP,
-                    user_id TEXT
-                )
-            """)
             cursor.execute("""
                 SELECT id, query, description, result_count, top_results, searched_at
                 FROM search_history ORDER BY searched_at DESC LIMIT ?

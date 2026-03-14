@@ -1777,27 +1777,28 @@ class EmailScraperService:
         
         for candidate in candidates:
             try:
-                # Check if candidate exists (by email hash) — sync DB calls
-                existing = db_service.get_candidate_by_email(candidate['email'])
-                
+                # Check if candidate exists (by email hash) — wrapped for async safety
+                existing = await asyncio.to_thread(db_service.get_candidate_by_email, candidate['email'])
+
                 if existing:
                     # UPDATE existing candidate
                     candidate['id'] = existing['id']
                     candidate['appliedDate'] = existing.get('appliedDate', '')
-                    db_service.update_candidate(candidate)
+                    await asyncio.to_thread(db_service.update_candidate, candidate)
                     updated.append(candidate)
                 else:
                     # INSERT new candidate
-                    db_service.insert_candidate(candidate)
+                    await asyncio.to_thread(db_service.insert_candidate, candidate)
                     new_candidates.append(candidate)
-                
+
                 # Store resume file if available
                 resume_data = candidate.get('resume_file_data')
                 resume_name = candidate.get('resume_filename')
                 if resume_data and resume_name:
                     try:
                         ct = 'application/pdf' if resume_name.lower().endswith('.pdf') else 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-                        db_service.save_resume(
+                        await asyncio.to_thread(
+                            db_service.save_resume,
                             candidate['id'],
                             resume_name,
                             resume_data,

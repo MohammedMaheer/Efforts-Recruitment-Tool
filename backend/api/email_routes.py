@@ -290,7 +290,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
                             logger.warning(f"Extraction failed #{trigger_reset_and_reparse._fail_count}: '{subject[:60]}' from {sender_email} (body: {len(body)} chars, attachments: {len(attachments)})")
                         continue
 
-                    if _db().is_blocked_email(candidate['email']):
+                    if await asyncio.to_thread(_db().is_blocked_email, candidate['email']):
                         if msg_id:
                             try:
                                 await asyncio.to_thread(_db().mark_email_processed, msg_id, '', 'blocked-relay')
@@ -305,7 +305,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
                     if not existing:
                         needs_ai = True
                     else:
-                        candidate = _db().smart_merge_candidate(existing, candidate)
+                        candidate = await asyncio.to_thread(_db().smart_merge_candidate, existing, candidate)
                         if (not existing.get('ai_analysis')
                                 and (existing.get('matchScore') or existing.get('match_score') or 0) <= 0):
                             needs_ai = True
@@ -752,7 +752,7 @@ async def _backfill_resumes_task(email_address: str):
 
 
 @router.post("/api/email/connect")
-async def connect_email_account(request: EmailConnectRequest, current_user: dict = Depends(require_auth)):
+async def connect_email_account(request: EmailConnectRequest, current_user: dict = Depends(require_admin)):
     """
     Connect email account (Gmail, Outlook, Yahoo, etc.)
     Supports OAuth2 and app passwords
@@ -779,7 +779,7 @@ async def connect_email_account(request: EmailConnectRequest, current_user: dict
 
 
 @router.post("/api/email/sync")
-async def sync_email_applications(request: EmailSyncRequest, current_user: dict = Depends(require_auth)):
+async def sync_email_applications(request: EmailSyncRequest, current_user: dict = Depends(require_admin)):
     """
     Sync and parse candidate applications from email
     Supports both OAuth2 (Microsoft Graph) and IMAP
@@ -981,7 +981,7 @@ async def sync_email_applications(request: EmailSyncRequest, current_user: dict 
 
 
 @router.post("/api/auth/auto-authenticate")
-async def auto_authenticate(current_user: dict = Depends(require_auth)):
+async def auto_authenticate(current_user: dict = Depends(require_admin)):
     """
     Automatically authenticate using credentials from .env
     Stores token for future use - no need to re-authenticate
@@ -1225,7 +1225,7 @@ async def oauth2_callback(request: OAuth2CallbackRequest):
 
 
 @router.post("/api/email/sync-now")
-async def sync_emails_now(current_user: dict = Depends(require_auth)):
+async def sync_emails_now(current_user: dict = Depends(require_admin)):
     """
     Trigger immediate email sync using saved OAuth2 token.
     Runs inline (completes before response) to work with CPU throttling.
@@ -1315,7 +1315,7 @@ async def deep_sync_emails(current_user: dict = Depends(require_admin)):
 
 
 @router.post("/api/email/cross-verify")
-async def cross_verify_inbox(current_user: dict = Depends(require_auth)):
+async def cross_verify_inbox(current_user: dict = Depends(require_admin)):
     """
     Full inbox cross-verify: fetch ALL inbox emails, compare against
     email_processing_log, and process any missing/unprocessed candidates.
@@ -2448,7 +2448,7 @@ async def smart_email_refetch(current_user: dict = Depends(require_auth)):
                     continue
                 
                 # Block check
-                if _db().is_blocked_email(candidate['email']):
+                if await asyncio.to_thread(_db().is_blocked_email, candidate['email']):
                     if msg_id:
                         try:
                             await asyncio.to_thread(_db().mark_email_processed, msg_id, '', 'blocked')
@@ -2507,7 +2507,7 @@ async def smart_email_refetch(current_user: dict = Depends(require_auth)):
                 else:
                     # Existing candidate — only update if they have gaps (no score, no skills, etc.)
                     if (existing.get('match_score', 0) or 0) <= 0 or not existing.get('skills'):
-                        merged = _db().smart_merge_candidate(existing, candidate)
+                        merged = await asyncio.to_thread(_db().smart_merge_candidate, existing, candidate)
                         resume_file = merged.pop('resume_file_data', None)
                         resume_filename = merged.pop('resume_filename', None)
                         await asyncio.to_thread(_db().update_candidate, merged)

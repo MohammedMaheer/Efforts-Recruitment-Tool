@@ -180,7 +180,7 @@ export default function CandidateDetail() {
   }, [id])
 
   // Merge full data over light store data — works even when lightCandidate is null (direct URL nav)
-  const candidate = (() => {
+  const candidate = useMemo(() => {
     const base = lightCandidate || (fullCandidateData ? {
       id: fullCandidateData.id,
       name: fullCandidateData.name || 'Unknown',
@@ -228,7 +228,7 @@ export default function CandidateDetail() {
         aiAnalysis: fullCandidateData.ai_analysis || fullCandidateData.aiAnalysis || base.aiAnalysis || null,
       } : {}),
     }
-  })()
+  }, [lightCandidate, fullCandidateData])
 
   const handleAIAnalysis = useCallback(async () => {
     if (!candidate) return
@@ -590,7 +590,7 @@ export default function CandidateDetail() {
               <div className="flex items-center gap-3 flex-shrink-0">
                 {/* Score badge */}
                 <div className="text-center px-4">
-                  <div className={`text-2xl font-bold ${scoreColor}`}>{(candidate.matchScore ?? 50).toFixed(0)}%</div>
+                  <div className={`text-2xl font-bold ${scoreColor}`}>{(candidate.matchScore ?? 0).toFixed(0)}%</div>
                   <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mt-0.5">Match</div>
                 </div>
                 <div className="h-10 w-px bg-gray-200" />
@@ -1070,7 +1070,7 @@ export default function CandidateDetail() {
               <div className="p-4 text-center">
                 <p className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Match Score</p>
                 <div className={`text-4xl font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
-                  {(candidate.matchScore ?? 50).toFixed(0)}%
+                  {(candidate.matchScore ?? 0).toFixed(0)}%
                 </div>
                 <Progress
                   value={candidate.matchScore}

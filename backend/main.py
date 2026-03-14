@@ -68,7 +68,11 @@ async def sanitized_http_exception_handler(request, exc: HTTPException):
     if not DEBUG and exc.status_code >= 500:
         logger.error(f"HTTP {exc.status_code} on {request.url.path}: {detail}")
         detail = "An internal error occurred. Please try again later."
-    return JSONResponse(status_code=exc.status_code, content={"detail": detail})
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": detail},
+        headers=dict(exc.headers) if exc.headers else None,
+    )
 
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request, exc: Exception):

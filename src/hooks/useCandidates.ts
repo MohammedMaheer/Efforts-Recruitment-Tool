@@ -110,7 +110,8 @@ const transformCandidate = (c: RawCandidate): Candidate => {
   
   // Get match score (matchScore from DB, or ai_score, or match_score) - ENSURE IT'S A NUMBER
   const rawScore = c.matchScore ?? c.ai_score ?? c.match_score ?? 0
-  const matchScore = typeof rawScore === 'number' ? rawScore : parseFloat(rawScore) ?? 0
+  const parsed = typeof rawScore === 'number' ? rawScore : parseFloat(String(rawScore))
+  const matchScore = Number.isFinite(parsed) ? parsed : 0
   
   // Determine status - use backend status if available, otherwise derive from score
   const backendStatus = c.status || c.candidate_status || ''

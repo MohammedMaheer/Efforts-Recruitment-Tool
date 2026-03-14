@@ -97,7 +97,7 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
             clean_name = re.sub(r'[^a-zA-Z]', '', parsed.get('name', ''))[:20] or 'candidate'
             parsed['email'] = f"{clean_name.lower()}.{file_hash}@uploaded.local"
 
-        candidate_id = f"upload_{parsed['email']}_{int(datetime.now().timestamp())}"
+        candidate_id = f"upload_{hashlib.sha256(parsed['email'].encode()).hexdigest()[:16]}_{int(datetime.now().timestamp())}"
 
         # AI analysis
         resume_text = parsed.get('raw_text', '') or parsed.get('summary', '')
@@ -277,7 +277,7 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
                 clean_name = re.sub(r'[^a-zA-Z]', '', parsed.get('name', ''))[:20] or 'candidate'
                 parsed['email'] = f"{clean_name.lower()}.{file_hash}@uploaded.local"
 
-            candidate_id = f"upload_{parsed['email']}_{int(datetime.now().timestamp())}"
+            candidate_id = f"upload_{hashlib.sha256(parsed['email'].encode()).hexdigest()[:16]}_{int(datetime.now().timestamp())}"
 
             resume_text = parsed.get('raw_text', '') or parsed.get('summary', '')
             ai_score = None
@@ -411,7 +411,7 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
 
         except Exception as e:
             logger.error(f"Error processing {file.filename}: {str(e)}")
-            results.append({"filename": file.filename or "unknown", "status": "error", "message": str(e)})
+            results.append({"filename": file.filename or "unknown", "status": "error", "message": "Processing failed"})
 
     success_count = sum(1 for r in results if r['status'] == 'success')
     return {

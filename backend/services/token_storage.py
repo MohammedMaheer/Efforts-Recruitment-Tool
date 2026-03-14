@@ -109,12 +109,13 @@ class TokenStorage:
     
     def save_token(self, email: str, access_token: str, refresh_token: Optional[str], expires_in: int, auth_type: str = 'delegated'):
         """Save OAuth2 token for an email account (local + GCS backup). Thread-safe."""
+        success = False
         with self._lock:
             try:
                 tokens = self._load_tokens()
-                
+
                 expiry_time = datetime.now() + timedelta(seconds=expires_in)
-                
+
                 tokens[email] = {
                     'access_token': access_token,
                     'refresh_token': refresh_token,
@@ -122,18 +123,18 @@ class TokenStorage:
                     'updated_at': datetime.now().isoformat(),
                     'auth_type': auth_type  # 'delegated' for user login, 'application' for client credentials
                 }
-                
+
                 with open(self.storage_file, 'w') as f:
                     json.dump(tokens, f, indent=2)
-                
-                # Backup to GCS so token survives Cloud Run restarts
-                self._backup_to_gcs()
-                
+
                 logger.info(f"✅ Saved OAuth2 token for {email} (auth_type={auth_type}, has_refresh={bool(refresh_token)})")
-                return True
+                success = True
             except Exception as e:
                 logger.error(f"Error saving token: {str(e)}")
-                return False
+        # Outside the lock — run GCS backup in background to avoid blocking token operations
+        if success:
+            threading.Thread(target=self._backup_to_gcs, daemon=True).start()
+        return success
     
     def get_token(self, email: str) -> Optional[Dict]:
         """Get OAuth2 token for an email account, with expiry status. Thread-safe."""
@@ -182,6 +183,7 @@ class TokenStorage:
         """Delete OAuth2 token for an email account. Thread-safe.
         Always syncs deletion to GCS backup (so deleted token isn't restored on restart).
         Only fully removes GCS file when delete_from_gcs=True."""
+        do_backup = False
         with self._lock:
             try:
                 tokens = self._load_tokens()
@@ -194,10 +196,13 @@ class TokenStorage:
                     if delete_from_gcs:
                         self._delete_from_gcs()
                     else:
-                        self._backup_to_gcs()
+                        do_backup = True
                     logger.info(f"Deleted token for {email} (gcs_delete={delete_from_gcs})")
             except Exception as e:
                 logger.error(f"Error deleting token: {str(e)}")
+        # Outside the lock — run GCS backup in background to avoid blocking token operations
+        if do_backup:
+            threading.Thread(target=self._backup_to_gcs, daemon=True).start()
     
     def _load_tokens(self) -> Dict:
         """Load all tokens from storage"""
