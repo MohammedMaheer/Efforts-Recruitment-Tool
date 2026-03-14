@@ -162,8 +162,12 @@ async def reset_and_reparse_all_emails(current_user: dict = Depends(require_admi
         tenant_id = os.getenv('MICROSOFT_TENANT_ID')
         
         graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id)
-        graph_service.access_token = token_data['access_token']
-        graph_service.token_expiry = datetime.fromisoformat(token_data['expires_at'])
+        graph_service.access_token = token_data.get('access_token', '')
+        try:
+            expires_str = (token_data.get('expires_at') or '').replace('Z', '+00:00')
+            graph_service.token_expiry = datetime.fromisoformat(expires_str) if expires_str else None
+        except (ValueError, TypeError):
+            graph_service.token_expiry = None
         
         # Fetch emails in batches to avoid OOM (max 5000 per batch, paginated)
         logger.info("📧 Fetching emails from inbox for re-parsing (paginated)...")
@@ -1389,8 +1393,7 @@ async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_
         
         # Backup after bulk reprocessing
         try:
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, backup_db_to_gcs)
+            await asyncio.to_thread(backup_db_to_gcs)
             logger.info("💾 Database backed up after Gemini reprocessing")
         except Exception as backup_err:
             logger.warning(f"Backup after reprocess failed: {backup_err}")

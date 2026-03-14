@@ -257,7 +257,9 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
     results = []
     for file in files:
         try:
-            filename = file.filename or "unknown.pdf"
+            raw_filename = file.filename or "unknown.pdf"
+            filename = os.path.basename(raw_filename)
+            filename = re.sub(r'[^a-zA-Z0-9._-]', '_', filename) or "upload.pdf"
             ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
             if ext not in ('pdf', 'docx'):
                 results.append({"filename": filename, "status": "error", "message": "Unsupported format. Only PDF/DOCX."})

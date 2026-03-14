@@ -375,7 +375,7 @@ async def test_service_connection(service: str, current_user: dict = Depends(req
 
 
 @router.post("/api/scraper/start")
-async def start_scraper(background_tasks: BackgroundTasks, current_user: dict = Depends(require_auth)):
+async def start_scraper(background_tasks: BackgroundTasks, current_user: dict = Depends(require_admin)):
     """Start the email scraper manually"""
     global scraper_task
     if scraper_task and not scraper_task.done():
@@ -387,7 +387,7 @@ async def start_scraper(background_tasks: BackgroundTasks, current_user: dict = 
 
 
 @router.post("/api/scraper/stop")
-async def stop_scraper(current_user: dict = Depends(require_auth)):
+async def stop_scraper(current_user: dict = Depends(require_admin)):
     """Stop the email scraper"""
     global scraper_task
     if scraper_task:

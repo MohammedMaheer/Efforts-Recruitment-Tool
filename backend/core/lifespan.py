@@ -880,7 +880,10 @@ async def auto_sync_emails():
                 continue
 
             if _is_first_sync:
-                await _run_single_sync()
+                try:
+                    await asyncio.wait_for(_run_single_sync(), timeout=600)
+                except asyncio.TimeoutError:
+                    logger.error("First email sync timed out after 600s — will retry next cycle")
             else:
                 try:
                     await asyncio.wait_for(_run_single_sync(), timeout=600)
@@ -1454,14 +1457,21 @@ async def lifespan(app):
     # Shutdown
     logger.info("Shutting down gracefully...")
 
-    if _settings.is_production:
-        logger.info("Saving database to GCS before shutdown...")
-        backup_db_to_gcs()
+    # Cancel all tracked background tasks to prevent mid-write DB corruption
+    tasks_to_cancel = [t for t in _persistent_tasks if not t.done()]
+    for t in tasks_to_cancel:
+        t.cancel()
+    if tasks_to_cancel:
+        await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
-    if _db_backup_task:
-        _db_backup_task.cancel()
     if oauth_automation_service:
         await oauth_automation_service.stop()
-    if background_sync_task:
-        background_sync_task.cancel()
+
+    if _settings.is_production:
+        logger.info("Saving database to GCS before shutdown...")
+        try:
+            await asyncio.wait_for(asyncio.to_thread(backup_db_to_gcs), timeout=8.0)
+        except (asyncio.TimeoutError, Exception) as e:
+            logger.warning(f"GCS shutdown backup skipped: {e}")
+
     response_cache.clear()

@@ -1724,9 +1724,10 @@ async def email_webhook(request: Request):
         logger.info(f"📬 Received {len(notifications)} webhook notification(s)")
         
         for notification in notifications:
-            # Validate clientState to prevent forged webhook calls
+            # Validate clientState using constant-time comparison to prevent timing attacks
             expected_state = os.getenv('WEBHOOK_CLIENT_STATE', 'recruitment-tool-secret')
-            if notification.get('clientState') != expected_state:
+            client_state = notification.get('clientState') or ''
+            if not hmac.compare_digest(client_state, expected_state):
                 logger.warning(f"Invalid clientState in webhook notification — ignoring")
                 continue
             

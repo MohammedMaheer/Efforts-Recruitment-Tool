@@ -963,81 +963,80 @@ class DatabaseService:
     def deduplicate_candidates(self) -> Dict:
         """Find and merge duplicate candidates (same email, different case → different IDs).
         Keeps the record with the most data, merges the other into it, then deactivates the dupe."""
-        with self.connection_lock:
-            conn = self.get_connection_raw()
-            try:
-                cursor = conn.cursor()
-                # Find emails that appear more than once (case-insensitive)
-                cursor.execute("""
-                    SELECT LOWER(TRIM(email)) as norm_email, GROUP_CONCAT(id) as ids, COUNT(*) as cnt
-                    FROM candidates WHERE is_active = 1
-                    GROUP BY LOWER(TRIM(email))
-                    HAVING COUNT(*) > 1
-                """)
-                dupes = cursor.fetchall()
-                merged_count = 0
-                for norm_email, ids_str, cnt in dupes:
-                    ids = ids_str.split(',')
-                    # Get all duplicate rows
-                    placeholders = ','.join(['?'] * len(ids))
-                    cursor.execute(f"SELECT * FROM candidates WHERE id IN ({placeholders})", ids)
-                    rows = cursor.fetchall()
-                    candidates = [self._row_to_candidate(r, check_resume=False) for r in rows]
-                    
-                    # Pick the one with the most data (highest matchScore, then most skills, then most recent)
-                    candidates.sort(key=lambda c: (
-                        c.get('matchScore', 0),
-                        len(c.get('skills', [])),
-                        c.get('resume_text', '') or '',
-                        c.get('last_updated', '') or ''
-                    ), reverse=True)
-                    
-                    keep = candidates[0]
-                    # Generate the canonical ID (lowercase email md5)
-                    canonical_id = hashlib.md5(norm_email.encode()).hexdigest()
-                    
-                    # Merge all duplicates into the keeper
-                    for dupe in candidates[1:]:
-                        keep = self.smart_merge_candidate(keep, dupe)
-                        # Copy resume if the keeper doesn't have one but dupe does
-                        try:
-                            cursor.execute("SELECT 1 FROM resumes WHERE candidate_id = ?", (keep['id'],))
-                            keeper_has_resume = cursor.fetchone() is not None
-                            if not keeper_has_resume:
-                                cursor.execute("SELECT * FROM resumes WHERE candidate_id = ?", (dupe['id'],))
-                                dupe_resume = cursor.fetchone()
-                                if dupe_resume:
-                                    cursor.execute("""
-                                        INSERT OR REPLACE INTO resumes (candidate_id, filename, content_type, file_data, uploaded_at)
-                                        VALUES (?, ?, ?, ?, ?)
-                                    """, (keep['id'], dupe_resume[1], dupe_resume[2], dupe_resume[3], dupe_resume[4]))
-                        except Exception:
-                            pass
-                        # Deactivate the duplicate
-                        cursor.execute("UPDATE candidates SET is_active = 0 WHERE id = ?", (dupe['id'],))
-                    
-                    # If keeper ID != canonical ID, we need to update it
-                    if keep['id'] != canonical_id:
-                        old_id = keep['id']
-                        # Update resumes FK
-                        cursor.execute("UPDATE resumes SET candidate_id = ? WHERE candidate_id = ?", (canonical_id, old_id))
-                        # Delete old row, insert with canonical ID
-                        cursor.execute("DELETE FROM candidates WHERE id = ?", (old_id,))
-                        keep['id'] = canonical_id
-                        keep['email'] = norm_email
-                    
-                    # Update the keeper with merged data
-                    self._update_candidate_row(cursor, keep)
-                    merged_count += 1
-                
-                conn.commit()
-                return {'duplicates_found': len(dupes), 'merged': merged_count}
-            except Exception as e:
-                conn.rollback()
-                logger.error(f"Dedup transaction failed, rolled back: {e}")
-                raise
-            finally:
-                self.return_connection(conn)
+        conn = self.get_connection_raw()
+        try:
+            cursor = conn.cursor()
+            # Find emails that appear more than once (case-insensitive)
+            cursor.execute("""
+                SELECT LOWER(TRIM(email)) as norm_email, GROUP_CONCAT(id) as ids, COUNT(*) as cnt
+                FROM candidates WHERE is_active = 1
+                GROUP BY LOWER(TRIM(email))
+                HAVING COUNT(*) > 1
+            """)
+            dupes = cursor.fetchall()
+            merged_count = 0
+            for norm_email, ids_str, cnt in dupes:
+                ids = ids_str.split(',')
+                # Get all duplicate rows
+                placeholders = ','.join(['?'] * len(ids))
+                cursor.execute(f"SELECT * FROM candidates WHERE id IN ({placeholders})", ids)
+                rows = cursor.fetchall()
+                candidates = [self._row_to_candidate(r, check_resume=False) for r in rows]
+
+                # Pick the one with the most data (highest matchScore, then most skills, then most recent)
+                candidates.sort(key=lambda c: (
+                    c.get('matchScore', 0),
+                    len(c.get('skills', [])),
+                    c.get('resume_text', '') or '',
+                    c.get('last_updated', '') or ''
+                ), reverse=True)
+
+                keep = candidates[0]
+                # Generate the canonical ID (lowercase email md5)
+                canonical_id = hashlib.md5(norm_email.encode()).hexdigest()
+
+                # Merge all duplicates into the keeper
+                for dupe in candidates[1:]:
+                    keep = self.smart_merge_candidate(keep, dupe)
+                    # Copy resume if the keeper doesn't have one but dupe does
+                    try:
+                        cursor.execute("SELECT 1 FROM resumes WHERE candidate_id = ?", (keep['id'],))
+                        keeper_has_resume = cursor.fetchone() is not None
+                        if not keeper_has_resume:
+                            cursor.execute("SELECT * FROM resumes WHERE candidate_id = ?", (dupe['id'],))
+                            dupe_resume = cursor.fetchone()
+                            if dupe_resume:
+                                cursor.execute("""
+                                    INSERT OR REPLACE INTO resumes (candidate_id, filename, content_type, file_data, uploaded_at)
+                                    VALUES (?, ?, ?, ?, ?)
+                                """, (keep['id'], dupe_resume[1], dupe_resume[2], dupe_resume[3], dupe_resume[4]))
+                    except Exception:
+                        pass
+                    # Deactivate the duplicate
+                    cursor.execute("UPDATE candidates SET is_active = 0 WHERE id = ?", (dupe['id'],))
+
+                # If keeper ID != canonical ID, we need to update it
+                if keep['id'] != canonical_id:
+                    old_id = keep['id']
+                    # Update resumes FK
+                    cursor.execute("UPDATE resumes SET candidate_id = ? WHERE candidate_id = ?", (canonical_id, old_id))
+                    # Delete old row, insert with canonical ID
+                    cursor.execute("DELETE FROM candidates WHERE id = ?", (old_id,))
+                    keep['id'] = canonical_id
+                    keep['email'] = norm_email
+
+                # Update the keeper with merged data
+                self._update_candidate_row(cursor, keep)
+                merged_count += 1
+
+            conn.commit()
+            return {'duplicates_found': len(dupes), 'merged': merged_count}
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Dedup transaction failed, rolled back: {e}")
+            raise
+        finally:
+            self.return_connection(conn)
     
     def _update_candidate_row(self, cursor, candidate: Dict):
         """Update or insert a candidate row using all merged data (includes v2.1 enriched fields)."""
@@ -1281,6 +1280,17 @@ class DatabaseService:
             cursor.execute(query, params)
             rows = cursor.fetchall()
             results = []
+
+            def _jl(raw):
+                """Safely JSON-parse raw DB value to a list; return [] on any issue."""
+                if not raw or not isinstance(raw, str):
+                    return []
+                try:
+                    v = json.loads(raw)
+                    return v if isinstance(v, list) else []
+                except (json.JSONDecodeError, ValueError):
+                    return []
+
             for row in rows:
                 skills_raw = row[3]
                 edu_raw = row[5]
@@ -1293,7 +1303,7 @@ class DatabaseService:
                     'email': row[2],
                     'skills': json.loads(skills_raw) if skills_raw and isinstance(skills_raw, str) else (skills_raw or []),
                     'experience': row[4] or 0,
-                    'education': json.loads(edu_raw) if edu_raw and isinstance(edu_raw, str) and edu_raw.startswith('[') else [],
+                    'education': _jl(edu_raw),
                     'matchScore': row[6] or 0,
                     'match_score': row[6] or 0,
                     'job_category': row[7] or 'General',
@@ -1301,9 +1311,9 @@ class DatabaseService:
                     'status': row[9] or 'New',
                     'location': _clean_loc(row[10] or ''),
                     'summary': row[11] or '',
-                    'work_history': json.loads(wh_raw) if wh_raw and isinstance(wh_raw, str) and wh_raw.startswith('[') else [],
-                    'certifications': json.loads(cert_raw) if cert_raw and isinstance(cert_raw, str) and cert_raw.startswith('[') else [],
-                    'languages': json.loads(lang_raw) if lang_raw and isinstance(lang_raw, str) and lang_raw.startswith('[') else [],
+                    'work_history': _jl(wh_raw),
+                    'certifications': _jl(cert_raw),
+                    'languages': _jl(lang_raw),
                     'phone': row[15] or '',
                     'linkedin': row[16] or '',
                     'created_at': row[17] or '',
@@ -1528,12 +1538,10 @@ class DatabaseService:
         Uses transactions for speed and atomicity
         """
         conn = self.get_connection_raw()
-        cursor = conn.cursor()
-        
         inserted = 0
         updated = 0
-        
         try:
+            cursor = conn.cursor()
             # Process in batches
             for i in range(0, len(candidates), batch_size):
                 batch = candidates[i:i + batch_size]
@@ -1799,15 +1807,16 @@ class DatabaseService:
     
     def get_processed_email_count(self) -> int:
         """Get total number of processed emails in the log"""
+        conn = self.get_connection_raw()
         try:
-            conn = self.get_connection_raw()
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM email_processing_log")
             result = cursor.fetchone()
-            self.return_connection(conn)
             return result[0] if result else 0
         except Exception:
             return 0
+        finally:
+            self.return_connection(conn)
     
     def get_all_processed_message_ids(self) -> set:
         """Return set of all processed email message_ids for fast cross-verify lookup."""

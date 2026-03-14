@@ -115,8 +115,7 @@ async def reset_database(auth=Depends(require_admin)):
 async def manual_backup_db(auth=Depends(require_admin)):
     """Manually trigger a database backup to GCS"""
     try:
-        loop = asyncio.get_event_loop()
-        success = await loop.run_in_executor(None, backup_db_to_gcs)
+        success = await asyncio.to_thread(backup_db_to_gcs)
         if success:
             size_mb = os.path.getsize(LOCAL_DB_PATH) / (1024 * 1024) if os.path.exists(LOCAL_DB_PATH) else 0
             return {"status": "success", "message": f"Database backed up to GCS ({size_mb:.1f} MB)"}

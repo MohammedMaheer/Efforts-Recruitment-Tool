@@ -517,6 +517,64 @@ async def match_candidates_to_job_file(
 
         total_searched = len(candidates_list)
 
+        # TIER 0: Try Gemini (primary AI — always available in production)
+        try:
+            from services.gemini_service import get_gemini_service
+            gemini_svc = get_gemini_service()
+            if gemini_svc and gemini_svc.available:
+                ranked = await asyncio.wait_for(
+                    gemini_svc.rank_candidates_for_job(candidates_list, jd_text, top_n),
+                    timeout=_deps().AI_ANALYSIS_TIMEOUT
+                )
+                if ranked:
+                    formatted_rankings = []
+                    for i, r in enumerate(ranked):
+                        c = r.get('candidate', {})
+                        m = r.get('match', {})
+                        formatted_rankings.append({
+                            'rank': i + 1,
+                            'candidate_id': c.get('id', ''),
+                            'candidate_name': c.get('name', 'Unknown'),
+                            'job_fit_score': round(m.get('match_score', r.get('score', 50)), 1),
+                            'overall_fit': m.get('overall_fit', 'Review Needed'),
+                            'matched_skills': m.get('matched_skills', []),
+                            'missing_skills': m.get('missing_skills', []),
+                            'strengths': m.get('strengths', []),
+                            'gaps': m.get('gaps', []),
+                            'recommendation': m.get('recommendation', 'Review candidate profile'),
+                            'match_reasons': m.get('strengths', [])[:3] or [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
+                            'interview_questions': m.get('interview_questions', []),
+                            'candidate_data': {
+                                'id': c.get('id', ''),
+                                'name': c.get('name', 'Unknown'),
+                                'email': c.get('email', ''),
+                                'phone': c.get('phone', ''),
+                                'location': c.get('location', ''),
+                                'experience': c.get('experience', 0),
+                                'matchScore': round(m.get('match_score', r.get('score', 50)), 1),
+                                'status': c.get('status', 'New'),
+                                'skills': c.get('skills', []),
+                                'summary': c.get('summary', ''),
+                                'jobCategory': c.get('jobCategory', c.get('job_category', 'General')),
+                                'jobSubcategory': c.get('jobSubcategory', c.get('job_subcategory', '')),
+                                'education': c.get('education', []),
+                                'workHistory': c.get('workHistory', c.get('work_history', [])),
+                                'hasResume': bool(c.get('resume_text') or c.get('hasResume')),
+                                'appliedDate': c.get('appliedDate', c.get('applied_date', '')),
+                                'isShortlisted': c.get('status', '') == 'Shortlisted',
+                            },
+                        })
+                    return {
+                        "status": "success",
+                        "rankings": formatted_rankings,
+                        "ai_powered": True,
+                        "source": "gemini",
+                        "total_candidates_searched": total_searched,
+                        "jd_text_length": len(jd_text)
+                    }
+        except (asyncio.TimeoutError, Exception) as gemini_err:
+            logger.warning(f"Gemini job file matching failed: {gemini_err}")
+
         # TIER 1: Try Local LLM (Ollama)
         try:
             from services.llm_service import get_llm_service
@@ -650,7 +708,64 @@ async def match_candidates_to_job_description(
                 "rankings": [],
                 "job_analysis": {}
             }
-        
+
+        # TIER 0: Try Gemini (primary AI — always available in production)
+        try:
+            from services.gemini_service import get_gemini_service
+            gemini_svc = get_gemini_service()
+            if gemini_svc and gemini_svc.available:
+                ranked = await asyncio.wait_for(
+                    gemini_svc.rank_candidates_for_job(candidates, job_description, top_n),
+                    timeout=_deps().AI_ANALYSIS_TIMEOUT
+                )
+                if ranked:
+                    formatted_rankings = []
+                    for i, r in enumerate(ranked):
+                        c = r.get('candidate', {})
+                        m = r.get('match', {})
+                        formatted_rankings.append({
+                            'rank': i + 1,
+                            'candidate_id': c.get('id', ''),
+                            'candidate_name': c.get('name', 'Unknown'),
+                            'job_fit_score': round(m.get('match_score', r.get('score', 50)), 1),
+                            'overall_fit': m.get('overall_fit', 'Review Needed'),
+                            'matched_skills': m.get('matched_skills', []),
+                            'missing_skills': m.get('missing_skills', []),
+                            'strengths': m.get('strengths', []),
+                            'gaps': m.get('gaps', []),
+                            'recommendation': m.get('recommendation', 'Review candidate profile'),
+                            'match_reasons': m.get('strengths', [])[:3] or [f"Skills: {', '.join(c.get('skills', [])[:5])}"],
+                            'interview_questions': m.get('interview_questions', []),
+                            'candidate_data': {
+                                'id': c.get('id', ''),
+                                'name': c.get('name', 'Unknown'),
+                                'email': c.get('email', ''),
+                                'phone': c.get('phone', ''),
+                                'location': c.get('location', ''),
+                                'experience': c.get('experience', 0),
+                                'matchScore': round(m.get('match_score', r.get('score', 50)), 1),
+                                'status': c.get('status', 'New'),
+                                'skills': c.get('skills', []),
+                                'summary': c.get('summary', ''),
+                                'jobCategory': c.get('jobCategory', c.get('job_category', 'General')),
+                                'jobSubcategory': c.get('jobSubcategory', c.get('job_subcategory', '')),
+                                'education': c.get('education', []),
+                                'workHistory': c.get('workHistory', c.get('work_history', [])),
+                                'hasResume': bool(c.get('resume_text') or c.get('hasResume')),
+                                'appliedDate': c.get('appliedDate', c.get('applied_date', '')),
+                                'isShortlisted': c.get('status', '') == 'Shortlisted',
+                            },
+                        })
+                    return {
+                        "status": "success",
+                        "rankings": formatted_rankings,
+                        "ai_powered": True,
+                        "source": "gemini",
+                        "total_candidates_searched": len(candidates),
+                    }
+        except (asyncio.TimeoutError, Exception) as gemini_err:
+            logger.warning(f"Gemini job matching failed: {gemini_err}")
+
         # TIER 1: Try Local LLM (Ollama) — Free
         try:
             from services.llm_service import get_llm_service
@@ -869,7 +984,7 @@ async def ai_chat(
             # and only sends the top 150 most relevant to the Gemini prompt.
             # Token cost stays the same (~$0.001/request) regardless of DB size.
             candidates = await asyncio.to_thread(
-                _db().get_candidates_for_ai, {}, None
+                _db().get_candidates_for_ai, {}, 5000
             )
             candidates_data = candidates
             context = {
@@ -1366,7 +1481,7 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
             "analyzed_count": analyzed_count,
             "failed_count": failed_count,
             "fallback_used": fallback_used,
-            "ai_engine": "gemini_primary_ollama_fallback",
+            "ai_engine": "local_ai",
             "concurrent_processing": True
         }
     except Exception as e:

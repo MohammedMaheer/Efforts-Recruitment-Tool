@@ -404,8 +404,7 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
         # Persist to GCS immediately so status survives redeploys
         if _settings.is_production:
             try:
-                loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, backup_db_to_gcs)
+                await asyncio.to_thread(backup_db_to_gcs)
             except Exception as gcs_err:
                 logger.warning(f"⚠️ Post-status-update GCS backup failed (non-fatal): {gcs_err}")
 
