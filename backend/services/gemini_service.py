@@ -729,7 +729,7 @@ class GeminiService:
         self._budget_lock = threading.Lock()
         self._daily_call_count = 0
         self._daily_call_date = ''  # YYYY-MM-DD
-        self._daily_call_limit = int(os.environ.get('GEMINI_DAILY_LIMIT', '2000'))  # Max API calls/day
+        self._daily_call_limit = int(os.environ.get('GEMINI_DAILY_LIMIT', '50000'))  # Max API calls/day (0 = unlimited)
 
         if not GEMINI_AVAILABLE:
             logger.warning("⚠️ google-genai package not installed. Run: pip install google-genai")
