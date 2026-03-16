@@ -18,8 +18,9 @@ class AdvancedSkillExtractor:
     - Skill level assessment (beginner/intermediate/expert)
     - Technology stack grouping
     - Soft skills detection
+    - Work history skill inference (job titles → implied skills)
     """
-    
+
     # Technology relationships for inference
     SKILL_RELATIONSHIPS = {
         # Frontend implies
@@ -89,7 +90,21 @@ class AdvancedSkillExtractor:
         'creativity': ['creative', 'innovative', 'design thinking', 'ideation'],
         'attention to detail': ['detail-oriented', 'meticulous', 'thorough', 'quality'],
     }
-    
+
+    # Achievement patterns for skill inference from work history (Phase 2.1)
+    ACHIEVEMENT_PATTERNS = {
+        r'led|managed|directed|oversaw|supervised|headed': ['leadership', 'team management', 'delegation'],
+        r'architected|designed|built|implemented|developed|created': ['system design', 'architecture', 'technical depth'],
+        r'optimized|improved|enhanced|accelerated|boosted|increased': ['optimization', 'performance tuning', 'system optimization'],
+        r'mentored|coached|trained|developed|taught|upskilled': ['mentoring', 'technical leadership', 'knowledge sharing'],
+        r'reduced|decreased|cut|eliminated|minimized|lowered': ['cost optimization', 'efficiency improvement'],
+        r'automated|scripted|orchestrated': ['automation', 'devops', 'infrastructure as code'],
+        r'deployed|released|rolled out|launched|shipped': ['deployment', 'ci/cd', 'release management'],
+        r'integrated|connected|bridged|unified': ['system integration', 'api design', 'microservices'],
+        r'secured|hardened|protected|encrypted': ['security', 'cybersecurity', 'compliance'],
+        r'analyzed|investigated|diagnosed|debugged|resolved': ['problem solving', 'troubleshooting', 'debugging'],
+    }
+
     def __init__(self):
         pass
 
@@ -274,7 +289,68 @@ class AdvancedSkillExtractor:
                 languages.append(lang.title())
         
         return languages
-    
+
+    def infer_skills_from_work_history(self, work_history: List[Dict] = None, job_text: str = "") -> List[str]:
+        """
+        Infer technical and soft skills from work history job titles and descriptions.
+
+        Phase 2.1: Enhanced resume parsing
+        - Extracts skills from job titles (e.g., "Senior DevOps Engineer" → devops, kubernetes, docker)
+        - Matches achievement patterns in descriptions (e.g., "led team of 5" → leadership)
+        - Expands matched skills using SKILL_RELATIONSHIPS
+
+        Args:
+            work_history: List of work experience dicts with 'title', 'company', 'description'
+            job_text: Optional combined work history text for fallback
+
+        Returns:
+            List of inferred skills
+        """
+        inferred = set()
+
+        if not work_history and not job_text:
+            return list(inferred)
+
+        # Process work history if available
+        if work_history:
+            for job in work_history[:5]:  # Analyze last 5 roles for efficiency
+                if not isinstance(job, dict):
+                    continue
+
+                title = job.get('title', '').lower()
+                description = job.get('description', '').lower()
+                company = job.get('company', '').lower()
+
+                # 1. Extract skills from job title
+                if title:
+                    title_skills = self.extract_skills_from_text(title)
+                    inferred.update(title_skills)
+
+                # 2. Match achievement patterns in description
+                if description:
+                    for pattern, skills in self.ACHIEVEMENT_PATTERNS.items():
+                        if re.search(pattern, description, re.IGNORECASE):
+                            inferred.update(skills)
+
+                # 3. Expand inferred skills using SKILL_RELATIONSHIPS
+                expanded = set()
+                for skill in list(inferred):
+                    if skill.lower() in self.SKILL_RELATIONSHIPS:
+                        expanded.update(self.SKILL_RELATIONSHIPS[skill.lower()])
+                inferred.update(expanded)
+
+        # Fallback: process job_text if provided
+        if job_text and not inferred:
+            inferred.update(self.extract_skills_from_text(job_text))
+
+            # Match achievement patterns
+            for pattern, skills in self.ACHIEVEMENT_PATTERNS.items():
+                if re.search(pattern, job_text, re.IGNORECASE):
+                    inferred.update(skills)
+
+        # Remove duplicates and return sorted
+        return sorted(list(inferred))
+
     async def analyze_skill_gaps(self, candidate_skills: List[str], job_skills: List[str]) -> Dict:
         """
         Analyze gaps between candidate skills and job requirements.

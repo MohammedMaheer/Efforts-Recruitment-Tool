@@ -1641,8 +1641,19 @@ async def ai_smart_search(
             except Exception as gemini_err:
                 logger.warning(f"Constraint-aware Gemini ranking failed: {gemini_err}")
 
-            # Fallback: Return filtered results ranked by semantic score
+            # Fallback: Return filtered results ranked by semantic score + seniority weighting (Phase 2.2)
             filtered.sort(key=lambda x: x.get('semantic_score', 0), reverse=True)
+
+            # Apply seniority-based scoring if constraint includes seniority (Phase 2.2)
+            seniority = constraints.seniority_level or 'mid'
+            try:
+                from services.scoring_service import get_scoring_service
+                scoring_service = get_scoring_service()
+                filtered = scoring_service.score_candidates_for_role(filtered, seniority)
+                logger.debug(f"Applied role-based scoring for seniority={seniority}")
+            except Exception as score_err:
+                logger.debug(f"Role-based scoring failed, using semantic scores: {score_err}")
+
             formatted = _format_search_results(filtered[:top_n], candidates)
             # Log search to history (Phase 1.3)
             asyncio.create_task(_log_search(

@@ -100,6 +100,7 @@ from api.auth_routes import router as auth_router, user_router
 from api.admin_routes import router as admin_router
 from api.ai_routes import router as ai_router
 from api.advanced_routes import router as advanced_router
+from api.analytics_routes import router as analytics_router  # Phase 2.3: Analytics endpoints
 from api.candidates_routes import router as candidates_router
 from api.email_routes import router as email_router
 from api.job_routes import router as job_router
@@ -112,6 +113,7 @@ app.include_router(user_router)
 app.include_router(admin_router)
 app.include_router(ai_router)
 app.include_router(advanced_router)
+app.include_router(analytics_router)  # Phase 2.3: Analytics endpoints
 app.include_router(candidates_router)
 app.include_router(email_router)
 app.include_router(job_router)
