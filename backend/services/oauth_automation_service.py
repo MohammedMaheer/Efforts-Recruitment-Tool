@@ -185,7 +185,7 @@ class OAuthAutomationService:
                 # Check if approaching expiry
                 expires_at = token_data.get('expires_at_dt')
                 if expires_at:
-                    time_to_expiry = (expires_at - datetime.now()).total_seconds() / 60
+                    time_to_expiry = (expires_at - datetime.utcnow()).total_seconds() / 60
                     if time_to_expiry < self._token_refresh_margin_minutes:
                         # Token about to expire - refresh proactively
                         if has_refresh:

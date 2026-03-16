@@ -114,13 +114,13 @@ class TokenStorage:
             try:
                 tokens = self._load_tokens()
 
-                expiry_time = datetime.now() + timedelta(seconds=expires_in)
+                expiry_time = datetime.utcnow() + timedelta(seconds=expires_in)
 
                 tokens[email] = {
                     'access_token': access_token,
                     'refresh_token': refresh_token,
                     'expires_at': expiry_time.isoformat(),
-                    'updated_at': datetime.now().isoformat(),
+                    'updated_at': datetime.utcnow().isoformat(),
                     'auth_type': auth_type  # 'delegated' for user login, 'application' for client credentials
                 }
 
@@ -159,7 +159,7 @@ class TokenStorage:
 
                 # Check if token is expired
                 expires_at = datetime.fromisoformat(token_data['expires_at'])
-                is_expired = datetime.now() >= expires_at
+                is_expired = datetime.utcnow() >= expires_at
 
                 # Return token data with expiry status - let caller decide to refresh
                 return {

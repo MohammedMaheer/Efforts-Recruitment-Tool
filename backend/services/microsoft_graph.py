@@ -50,8 +50,8 @@ class MicrosoftGraphService:
             
             # Calculate token expiry
             expires_in = token_data.get('expires_in', 3600)
-            self.token_expiry = datetime.now() + timedelta(seconds=expires_in)
-            
+            self.token_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+
             logger.info(f"✅ OAuth2 authentication successful. Refresh token present: {bool(token_data.get('refresh_token'))}")
             
             return {
@@ -93,8 +93,8 @@ class MicrosoftGraphService:
             
             # Calculate token expiry
             expires_in = token_data.get('expires_in', 3600)
-            self.token_expiry = datetime.now() + timedelta(seconds=expires_in)
-            
+            self.token_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+
             return {
                 'status': 'success',
                 'access_token': self.access_token,
@@ -513,8 +513,8 @@ class MicrosoftGraphService:
         """Check if access token is still valid"""
         if not self.access_token or not self.token_expiry:
             return False
-        
-        return datetime.now() < self.token_expiry
+
+        return datetime.utcnow() < self.token_expiry
     
     async def refresh_access_token(self, refresh_token: str) -> Dict[str, Any]:
         """
@@ -541,8 +541,8 @@ class MicrosoftGraphService:
             
             # Calculate token expiry
             expires_in = token_data.get('expires_in', 3600)
-            self.token_expiry = datetime.now() + timedelta(seconds=expires_in)
-            
+            self.token_expiry = datetime.utcnow() + timedelta(seconds=expires_in)
+
             logger.info("✅ Successfully refreshed OAuth2 access token")
             
             return {
