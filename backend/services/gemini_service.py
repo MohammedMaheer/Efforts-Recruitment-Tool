@@ -1849,6 +1849,190 @@ Return JSON:
         logger.info(f"⚡ [Gemini] Ranking done: {len(results)} results in {elapsed:.1f}s")
         return results[:top_n]
 
+    async def rank_candidates_with_constraints(
+        self,
+        candidates: List[Dict],
+        constraints: 'ParsedConstraints',  # From constraint_parser
+        job_description: str,
+        top_n: int = 10
+    ) -> List[Dict]:
+        """
+        Option C: Rank pre-filtered candidates using constraint-aware Gemini scoring.
+
+        This assumes Stage 1 (constraint filtering + semantic search) already happened.
+        We skip keyword pre-filtering and go straight to Gemini batch scoring with
+        constraint hints in the system prompt.
+
+        Args:
+            candidates: Pre-filtered list from semantic search (200-500 candidates)
+            constraints: ParsedConstraints from natural language query
+            job_description: Original query (used as JD for Gemini)
+            top_n: Number of top candidates to return
+
+        Returns:
+            Top N candidates ranked by Gemini fit score
+        """
+        if not candidates:
+            return []
+
+        start = time.time()
+        logger.info(f"Ranking {len(candidates)} pre-filtered candidates with constraints")
+
+        # Build constraint hint string for Gemini prompt
+        constraint_hints = self._build_constraint_hints(constraints)
+
+        # Stage 2: Batch Gemini scoring on pre-filtered pool (no keyword filtering)
+        batch_size = 5
+        scored_candidates = []
+
+        for i in range(0, len(candidates), batch_size):
+            batch = candidates[i : i + batch_size]
+            try:
+                batch_results = await self._batch_match_with_constraints(
+                    batch, job_description, constraint_hints
+                )
+                if isinstance(batch_results, list):
+                    scored_candidates.extend(batch_results)
+                else:
+                    logger.warning(f"Batch {i} returned non-list: {type(batch_results)}")
+                    scored_candidates.extend(batch)
+            except Exception as e:
+                logger.error(f"Batch {i} scoring failed: {e}")
+                scored_candidates.extend(batch)
+
+        # Sort by Gemini score (descending) and cap to top_n
+        scored_candidates.sort(key=lambda x: x.get('match_score', 0), reverse=True)
+        results = scored_candidates[:top_n]
+
+        elapsed = time.time() - start
+        logger.info(f"Ranked {len(candidates)} candidates in {elapsed:.2f}s, returned {len(results)}")
+
+        return results
+
+    def _build_constraint_hints(self, constraints: 'ParsedConstraints') -> str:
+        """Build a constraint hint string for Gemini prompts."""
+        hints = []
+
+        if constraints.required_skills:
+            hints.append(f"Required skills: {', '.join(constraints.required_skills)}")
+
+        if constraints.nice_to_have_skills:
+            hints.append(f"Nice to have: {', '.join(constraints.nice_to_have_skills)}")
+
+        if constraints.min_experience and constraints.max_experience:
+            hints.append(f"Experience: {constraints.min_experience}-{constraints.max_experience} years")
+        elif constraints.min_experience:
+            hints.append(f"Experience: {constraints.min_experience}+ years")
+        elif constraints.max_experience:
+            hints.append(f"Experience: up to {constraints.max_experience} years")
+
+        if constraints.seniority_level:
+            hints.append(f"Level: {constraints.seniority_level}")
+
+        if constraints.locations:
+            hints.append(f"Location: {', '.join(constraints.locations)}")
+
+        if constraints.remote_type:
+            hints.append(f"Remote: {constraints.remote_type}")
+
+        if constraints.min_salary and constraints.max_salary:
+            hints.append(f"Salary: ${constraints.min_salary}-${constraints.max_salary}")
+        elif constraints.min_salary:
+            hints.append(f"Min salary: ${constraints.min_salary}")
+
+        if constraints.education_level:
+            hints.append(f"Education: {constraints.education_level}")
+
+        if constraints.languages:
+            hints.append(f"Languages: {', '.join(constraints.languages)}")
+
+        return " | ".join(hints)
+
+    async def _batch_match_with_constraints(
+        self, batch: List[Dict], job_description: str, constraint_hints: str
+    ) -> List[Dict]:
+        """
+        Score batch of candidates with constraint hints in system prompt.
+
+        Similar to _batch_match but includes constraint information.
+        """
+        candidates_text = ""
+        for idx, c in enumerate(batch, 1):
+            candidate_no = f"[C{idx}] "
+            name = (c.get("name") or c.get("firstName") or "Candidate").title()
+            summary = (c.get("summary") or "No summary")[:300]
+            skills = c.get("skills") or []
+            exp = c.get("experience", 0) or 0
+            salary = c.get("current_salary") or c.get("expected_salary") or "Not disclosed"
+            location = c.get("location") or "Unknown"
+            notice = c.get("notice_period") or "Unknown"
+
+            # Include work history if available
+            work_text = ""
+            work_history = c.get("work_history", []) or []
+            if work_history:
+                recent_jobs = work_history[:3]
+                work_text = " | Recent: " + "; ".join(
+                    [
+                        f"{j.get('title')} @ {j.get('company')}"
+                        for j in recent_jobs
+                        if j.get("title") or j.get("company")
+                    ]
+                )
+
+            candidate_str = (
+                f"{candidate_no}{name} | Exp: {exp}y | Skills: {', '.join(skills[:10])} | "
+                f"Salary: {salary} | Location: {location} | Notice: {notice}"
+                f"{work_text}\n"
+                f"  Summary: {summary}\n\n"
+            )
+            candidates_text += candidate_str
+
+        system_prompt = f"""You are an expert recruiter. Rank the following candidates by fit to the requirements.
+
+CONSTRAINTS:
+{constraint_hints}
+
+Consider candidates' experience, skills match, location fit, salary expectations, and overall suitability.
+Prioritize candidates who match the constraints exactly."""
+
+        user_prompt = f"""JOB REQUIREMENT:
+{job_description[:3000]}
+
+CANDIDATES:
+{candidates_text}
+
+Score each candidate [C1], [C2], etc. on a scale 0-100. Provide ONLY the scores in JSON format:
+{{"[C1]": 85, "[C2]": 72, ...}}"""
+
+        try:
+            response = await self._agenerate(
+                prompt=system_prompt + "\n\n" + user_prompt,
+                temperature=0.0,
+                max_tokens=2048,
+            )
+
+            # Parse JSON scores
+            scores_match = re.search(r'\{[^}]*\}', response, re.DOTALL)
+            if scores_match:
+                import json
+                scores = json.loads(scores_match.group())
+                # Assign scores back to candidates
+                for idx, candidate in enumerate(batch, 1):
+                    key = f"[C{idx}]"
+                    candidate['match_score'] = max(0, min(100, scores.get(key, 50)))
+            else:
+                logger.warning("Failed to parse Gemini JSON scores")
+                for c in batch:
+                    c['match_score'] = 50
+
+        except Exception as e:
+            logger.error(f"Batch scoring failed: {e}")
+            for c in batch:
+                c['match_score'] = 50
+
+        return batch
+
     async def _batch_match(self, batch: List[Dict], job_description: str) -> List[Dict]:
         """Score multiple candidates in a single Gemini call."""
         candidates_text = ""

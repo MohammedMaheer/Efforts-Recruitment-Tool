@@ -1516,25 +1516,106 @@ async def ai_smart_search(
     current_user: dict = Depends(require_admin)
 ):
     """
-    LLM-powered smart search: takes a natural language query and returns
-    the best-matching candidates using semantic understanding.
-    Scans the ENTIRE database using efficient pre-filtering.
+    Option C: Two-stage LLM-powered smart search for 5000+ candidates.
+
+    Stage 1: Constraint parsing → semantic similarity filtering (200-500 candidates)
+    Stage 2: Gemini ranks the filtered pool with constraint-aware hints
+
+    Takes natural language query and returns best-matching candidates using semantic
+    understanding + Gemini AI + constraint awareness.
     """
     # Validate inputs
     if not query or not query.strip():
         raise HTTPException(400, "Query cannot be empty")
     query = query.strip()[:2000]
     top_n = max(1, min(100, top_n))
-    
+
     try:
-        # 1. Get active candidates (enriched: includes work_history, certifications, languages, etc.)
+        # Stage 1A: Parse constraints from query
+        from services.constraint_parser import get_constraint_parser
+        constraint_parser = get_constraint_parser()
+        constraints = await asyncio.to_thread(constraint_parser.parse_query, query)
+        logger.info(f"Parsed constraints: {constraints.dict()}")
+
+        # Get all candidates (enriched)
         candidates = await asyncio.to_thread(
             _db().get_candidates_for_ai, {}, 5000
         )
         if not candidates:
-            return {"results": [], "total": 0, "query": query, "message": "No candidates in database"}
+            return {
+                "results": [],
+                "total": 0,
+                "query": query,
+                "constraints": constraints.dict(),
+                "message": "No candidates in database"
+            }
 
-        # 2. Try Gemini-based matching first (cost-effective, always available)
+        # Stage 1B+C: Apply two-stage filtering + semantic search
+        try:
+            from services.semantic_search_service import get_semantic_search_service
+            semantic_search = get_semantic_search_service()
+
+            filtered = await asyncio.wait_for(
+                semantic_search.filter_stage_1(
+                    candidates,
+                    query,
+                    constraints,
+                    target_pool_size=300
+                ),
+                timeout=_deps().AI_ANALYSIS_TIMEOUT
+            )
+            logger.info(f"Filtered to {len(filtered)} candidates after constraints + semantic search")
+
+            # Stage 2: Try constraint-aware Gemini ranking
+            try:
+                from services.gemini_service import get_gemini_service
+                gemini_svc = get_gemini_service()
+                if gemini_svc and gemini_svc.available and filtered:
+                    ranked = await asyncio.wait_for(
+                        gemini_svc.rank_candidates_with_constraints(
+                            filtered,
+                            constraints,
+                            query,
+                            top_n
+                        ),
+                        timeout=_deps().AI_ANALYSIS_TIMEOUT
+                    )
+                    if ranked:
+                        formatted = _format_search_results(ranked, candidates)
+                        return {
+                            "results": formatted,
+                            "total_candidates": len(candidates),
+                            "after_constraints": len(filtered),
+                            "for_gemini": len(filtered),
+                            "query": query,
+                            "constraints": constraints.dict(),
+                            "source": "two-stage-semantic+gemini",
+                            "message": f"Found {len(formatted)} matches using two-stage search"
+                        }
+            except asyncio.TimeoutError:
+                logger.warning(f"Constraint-aware Gemini ranking timed out after {_deps().AI_ANALYSIS_TIMEOUT}s")
+            except Exception as gemini_err:
+                logger.warning(f"Constraint-aware Gemini ranking failed: {gemini_err}")
+
+            # Fallback: Return filtered results ranked by semantic score
+            filtered.sort(key=lambda x: x.get('semantic_score', 0), reverse=True)
+            formatted = _format_search_results(filtered[:top_n], candidates)
+            return {
+                "results": formatted,
+                "total_candidates": len(candidates),
+                "after_constraints": len(filtered),
+                "query": query,
+                "constraints": constraints.dict(),
+                "source": "semantic-only",
+                "message": f"Found {len(formatted)} matches using semantic filtering (Gemini unavailable)"
+            }
+
+        except asyncio.TimeoutError:
+            logger.warning(f"Two-stage search timed out after {_deps().AI_ANALYSIS_TIMEOUT}s")
+        except Exception as semantic_err:
+            logger.warning(f"Two-stage search failed: {semantic_err}")
+
+        # Fallback to legacy Gemini ranking (no semantic filtering)
         try:
             from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()
@@ -1549,15 +1630,13 @@ async def ai_smart_search(
                         "results": formatted,
                         "total_searched": len(candidates),
                         "query": query,
-                        "source": "gemini",
-                        "message": f"Found {len(formatted)} matches using Gemini AI search"
+                        "source": "gemini-legacy",
+                        "message": f"Found {len(formatted)} matches using Gemini (semantic filtering unavailable)"
                     }
-        except asyncio.TimeoutError:
-            logger.warning(f"Gemini smart search timed out after {_deps().AI_ANALYSIS_TIMEOUT}s")
         except Exception as gemini_err:
-            logger.warning(f"Gemini smart search failed: {gemini_err}")
+            logger.warning(f"Legacy Gemini fallback failed: {gemini_err}")
 
-        # 3. Try matching engine (semantic / TF-IDF)
+        # Final fallback: matching engine (semantic / TF-IDF)
         try:
             results = await asyncio.wait_for(
                 _matching_engine().match_candidates(query, candidates, top_n),
@@ -1576,7 +1655,7 @@ async def ai_smart_search(
         except Exception as sem_err:
             logger.warning(f"Semantic search failed: {sem_err}")
 
-        # 4. Tokenized keyword fallback (individual tokens, not full-string match)
+        # Tokenized keyword fallback (individual tokens, not full-string match)
         _STOP_WORDS = {'with', 'and', 'the', 'for', 'years', 'year', 'who', 'has', 'have', 'are', 'that', 'from', 'this', 'those', 'any', 'all'}
         q_lower = query.lower()
         tokens = [t for t in re.split(r'\W+', q_lower) if len(t) > 2 and t not in _STOP_WORDS]
