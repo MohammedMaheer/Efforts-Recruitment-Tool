@@ -1,6 +1,7 @@
 """Authentication routes — login, register, profile, password management."""
 import os
 import time
+import asyncio
 import logging
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
@@ -59,7 +60,7 @@ async def login(request: LoginRequest):
 
         try:
             auth_service = get_auth()
-            result = auth_service.login(request.email, request.password)
+            result = await asyncio.to_thread(auth_service.login, request.email, request.password)
             _login_attempts.pop(login_key, None)
             return result
         except ValueError:
@@ -95,7 +96,8 @@ async def register(request: RegisterRequest):
             raise HTTPException(400, "Name, email and password are required")
 
         auth_service = get_auth()
-        result = auth_service.register(
+        result = await asyncio.to_thread(
+            auth_service.register,
             email=request.email,
             password=request.password,
             name=request.name,
@@ -105,7 +107,7 @@ async def register(request: RegisterRequest):
         return result
 
     except ValueError as e:
-        raise HTTPException(400, str(e) if str(e) else "Invalid registration data")
+        raise HTTPException(400, "Email already in use or invalid data")
     except HTTPException:
         raise
     except Exception as e:
@@ -126,7 +128,7 @@ async def update_profile(profile: UserProfile, current_user: dict = Depends(requ
     """Update user profile information."""
     try:
         auth_service = get_auth()
-        updated_user = auth_service.update_profile(current_user['id'], {
+        updated_user = await asyncio.to_thread(auth_service.update_profile, current_user['id'], {
             'name': f"{profile.firstName} {profile.lastName}",
             'first_name': profile.firstName,
             'company': profile.company,
@@ -136,7 +138,7 @@ async def update_profile(profile: UserProfile, current_user: dict = Depends(requ
     except HTTPException:
         raise
     except ValueError as e:
-        raise HTTPException(400, str(e) if str(e) else "Invalid profile data")
+        raise HTTPException(400, "Invalid profile data")
     except Exception as e:
         logger.error(f"Profile update error: {e}")
         raise HTTPException(500, "Error updating profile")
@@ -147,14 +149,15 @@ async def update_password(password_update: PasswordUpdate, current_user: dict = 
     """Update user password."""
     try:
         auth_service = get_auth()
-        auth_service.change_password(
+        await asyncio.to_thread(
+            auth_service.change_password,
             current_user['id'],
             password_update.currentPassword,
             password_update.newPassword,
         )
         return {'status': 'success', 'message': 'Password updated successfully'}
     except ValueError as e:
-        raise HTTPException(400, str(e) if str(e) else "Invalid password data")
+        raise HTTPException(400, "Invalid password data")
     except HTTPException:
         raise
     except Exception as e:

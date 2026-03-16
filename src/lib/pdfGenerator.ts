@@ -560,7 +560,7 @@ function drawAnalysisSummary(
    Detailed Score Analysis — 3 Cards
    ═══════════════════════════════════════════════════════════════════ */
 function deriveScores(matchScore: number, skills: string[], exp: number, conf: number) {
-  const base = matchScore || 0
+  const base = matchScore ?? 0
   const skillFactor = Math.min(skills.length, 10) / 10 * 8 - 4
   const expFactor = Math.min(exp, 15) / 15 * 10 - 3
   const confBase = conf > 0 ? conf : base

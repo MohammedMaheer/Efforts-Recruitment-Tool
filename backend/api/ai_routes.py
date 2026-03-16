@@ -133,7 +133,7 @@ async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
             if gemini_svc and gemini_svc.available:
                 analysis = await asyncio.wait_for(
                     gemini_svc.analyze_candidate_deep(candidate_for_analysis),
-                    timeout=15.0
+                    timeout=45.0
                 )
                 if analysis:
                     analysis['source'] = 'gemini'
@@ -766,7 +766,7 @@ async def compare_candidates(
             from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()
             if gemini_svc and gemini_svc.available:
-                jd_part = f" against this job: {job_description[:500]}" if job_description else ""
+                jd_part = f" against this job: {job_description[:3000]}" if job_description else ""
                 cand_summaries = [
                     f"{c.get('name','?')}: {c.get('experience',0)}yr exp, skills: {', '.join(c.get('skills',[])[:5])}"
                     for c in candidates
@@ -1367,7 +1367,7 @@ async def summarize_resume(request: SummarizeResumeRequest, current_user: dict =
 
 
 @router.post("/api/ai/batch-analyze")
-async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int = 50, current_user: dict = Depends(require_auth)):
+async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int = 50, current_user: dict = Depends(require_admin)):
     """
     Batch analyze ONLY NEW candidates with CONCURRENT processing
     PRIMARY: Local AI (FREE, handles 100+ concurrent requests)
@@ -1390,6 +1390,7 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
         failed_count = 0
         fallback_used = 0
         gemini_count = 0
+        _batch_sem = asyncio.Semaphore(5)
 
         # Process batch_size candidates at a time (default 50 for high throughput)
         batch = new_candidates[:batch_size]
@@ -1408,10 +1409,11 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
                         from services.gemini_service import get_gemini_service
                         _ai_gemini = get_gemini_service()
                         if _ai_gemini and _ai_gemini.available:
-                            gemini_result = await asyncio.wait_for(
-                                _ai_gemini.analyze_candidate(analysis_text, job_context=_job_ctx),
-                                timeout=_deps().AI_ANALYSIS_TIMEOUT
-                            )
+                            async with _batch_sem:
+                                gemini_result = await asyncio.wait_for(
+                                    _ai_gemini.analyze_candidate(analysis_text, job_context=_job_ctx),
+                                    timeout=_deps().AI_ANALYSIS_TIMEOUT
+                                )
                             if gemini_result and gemini_result.get('quality_score', 0) > 0:
                                 result = gemini_result
                                 engine = 'gemini'
@@ -1511,7 +1513,7 @@ async def ai_status(current_user: dict = Depends(require_auth)):
 async def ai_smart_search(
     query: str = Body(..., embed=True),
     top_n: int = Body(20, embed=True),
-    current_user: dict = Depends(require_auth)
+    current_user: dict = Depends(require_admin)
 ):
     """
     LLM-powered smart search: takes a natural language query and returns

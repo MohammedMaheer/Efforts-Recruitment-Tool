@@ -9,6 +9,7 @@ import {
 import { Card, CardContent } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { useAuthStore } from '@/store/authStore'
+import { toast } from '@/components/ui/Toast'
 
 interface SearchHistoryEntry {
   id: string
@@ -52,7 +53,7 @@ export default function SearchReports() {
       const res = await authFetch(`${config.apiUrl}/api/search-history`, { method: 'DELETE' })
       if (!res.ok) throw new Error('Server error')
       setSearches([])
-    } catch (err) { console.error('Failed to clear search history:', err) }
+    } catch (err) { console.error('Failed to clear search history:', err); toast.error('Failed to clear search history') }
     finally { setClearing(false) }
   }
 
@@ -62,7 +63,7 @@ export default function SearchReports() {
       if (res.ok) {
         setSearches(prev => prev.filter(s => (s.id || s._id) !== id))
       }
-    } catch (err) { console.error('Failed to delete search entry:', err) }
+    } catch (err) { console.error('Failed to delete search entry:', err); toast.error('Failed to delete search entry') }
   }
 
   const fmtDate = (iso: string) => {
@@ -181,9 +182,11 @@ export default function SearchReports() {
                             <button onClick={() => navigate('/ai-assistant', { state: { restoreSessionQuery: s.query } })} className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-600 transition-colors" title="View Results in AI Search">
                               <Eye className="w-4 h-4" />
                             </button>
+                            {isAdmin && (
                             <button onClick={() => { const id = s.id || s._id; if (id) handleDeleteOne(id) }} className="p-1.5 rounded-lg hover:bg-red-50 text-red-400 hover:text-red-600 transition-colors" title="Delete">
                               <Trash2 className="w-4 h-4" />
                             </button>
+                            )}
                           </div>
                         </td>
                       </tr>

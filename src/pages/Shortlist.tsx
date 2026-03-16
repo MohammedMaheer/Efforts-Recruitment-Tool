@@ -111,6 +111,7 @@ export default function Shortlist() {
   }, [shortlistedCandidates])
 
   const handleRemove = useCallback(async (candidate: Candidate) => {
+    if (!isAdmin) { toast.error('Permission Required', 'Only admins can remove candidates from shortlist.'); return }
     setRemoving(candidate.id)
     try {
       await candidateApi.updateStatus(candidate.id, 'Reviewed')
@@ -124,9 +125,10 @@ export default function Shortlist() {
     } finally {
       setRemoving(null)
     }
-  }, [shortlistedIds, toggleShortlist, refetch, addNotification, selectedCandidate])
+  }, [isAdmin, shortlistedIds, toggleShortlist, refetch, addNotification, selectedCandidate])
 
   const handleBulkRemove = useCallback(async () => {
+    if (!isAdmin) { toast.error('Permission Required', 'Only admins can remove candidates from shortlist.'); return }
     if (selectedIds.size === 0) return
     setBulkRemoving(true)
     const idsToRemove = [...selectedIds]
@@ -142,7 +144,7 @@ export default function Shortlist() {
     await refetch()
     setBulkRemoving(false)
     addNotification({ type: 'info', title: 'Removed', message: `${removed} candidate(s) removed` })
-  }, [selectedIds, shortlistedIds, toggleShortlist, refetch, addNotification, selectedCandidate])
+  }, [isAdmin, selectedIds, shortlistedIds, toggleShortlist, refetch, addNotification, selectedCandidate])
 
   const handleScheduleInterview = useCallback((candidate: Candidate) => {
     const start = new Date()
@@ -235,7 +237,7 @@ export default function Shortlist() {
           </div>
           <div className="flex items-center gap-2">
             {selectedIds.size > 0 && (
-              <Button variant="outline" size="sm" onClick={handleBulkRemove} disabled={bulkRemoving}
+              <Button variant="outline" size="sm" onClick={handleBulkRemove} disabled={bulkRemoving || !isAdmin}
                 className="text-red-600 border-red-200 hover:bg-red-50">
                 {bulkRemoving ? <Loader2 className="w-3.5 h-3.5 mr-1 animate-spin" /> : <Trash2 className="w-3.5 h-3.5 mr-1" />}
                 Remove {selectedIds.size}

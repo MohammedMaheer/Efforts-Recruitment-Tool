@@ -103,8 +103,8 @@ async def rank_candidates(request: MLRankRequest):
         candidates = await asyncio.to_thread(_fetch_candidates_for_ranking)
         
         job = {'id': request.job_id} if request.job_id else None
-        
-        rankings = service.rank_candidates(candidates, job)
+
+        rankings = await asyncio.to_thread(service.rank_candidates, candidates, job)
         
         results = [
             MLRankResult(
@@ -145,8 +145,8 @@ async def record_hiring_decision(request: HiringDecisionRequest, current_user: d
             'experience': db_candidate.get('experience', 0) if db_candidate else 0,
         }
         job = {'id': request.job_id}
-        
-        service.record_hiring_decision(candidate, job, request.was_hired)
+
+        await asyncio.to_thread(service.record_hiring_decision, candidate, job, request.was_hired)
         
         return {
             'status': 'recorded',
@@ -254,7 +254,7 @@ async def check_duplicates(request: DuplicateCheckRequest):
         db_service = get_db_service()
         all_candidates, _ = await asyncio.to_thread(db_service.get_candidates_paginated, 1, 5000, {})
 
-        duplicates = service.find_duplicates(candidate, all_candidates, request.threshold)
+        duplicates = await asyncio.to_thread(service.find_duplicates, candidate, all_candidates, request.threshold)
 
         # Map duplicates to response schema
         duplicate_matches = [
@@ -336,7 +336,7 @@ async def match_candidate_to_jobs(request: JobMatchRequest):
         
         matches = []
         for job in jobs:
-            score = service.calculate_candidate_fit(candidate, job)
+            score = await asyncio.to_thread(service.calculate_candidate_fit, candidate, job)
             matches.append(score)
         
         return JobMatchResponse(
@@ -366,7 +366,7 @@ async def match_job_to_candidates(request: CandidateMatchRequest):
         
         matches = []
         for candidate in candidates:
-            score = service.calculate_job_fit(candidate, job)
+            score = await asyncio.to_thread(service.calculate_job_fit, candidate, job)
             if score.get('overall_score', 0) >= request.min_score:
                 matches.append(score)
         
@@ -398,11 +398,11 @@ async def predict_candidate_outcomes(request: PredictionRequest):
         candidate = {'id': request.candidate_id}
         job = {'id': request.job_id} if request.job_id else None
         
-        response_rate = service.predict_response_rate(candidate)
-        interview_success = service.predict_interview_success(candidate, job)
-        offer_acceptance = service.predict_offer_acceptance(candidate, job)
-        retention = service.predict_retention_risk(candidate)
-        time_to_hire = service.estimate_time_to_hire(candidate, job)
+        response_rate = await asyncio.to_thread(service.predict_response_rate, candidate)
+        interview_success = await asyncio.to_thread(service.predict_interview_success, candidate, job)
+        offer_acceptance = await asyncio.to_thread(service.predict_offer_acceptance, candidate, job)
+        retention = await asyncio.to_thread(service.predict_retention_risk, candidate)
+        time_to_hire = await asyncio.to_thread(service.estimate_time_to_hire, candidate, job)
         
         return PredictionResponse(
             candidate_id=request.candidate_id,
@@ -447,14 +447,14 @@ async def get_pipeline_analytics():
                 # New in last 24h
                 cursor.execute("""
                     SELECT COUNT(*) FROM candidates
-                    WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-24 hours')
+                    WHERE is_active = 1 AND applied_date > NOW() - INTERVAL '24 hours'
                 """)
                 new_24h = cursor.fetchone()[0]
 
                 # New in last 7 days
                 cursor.execute("""
                     SELECT COUNT(*) FROM candidates
-                    WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-7 days')
+                    WHERE is_active = 1 AND applied_date > NOW() - INTERVAL '7 days'
                 """)
                 new_7d = cursor.fetchone()[0]
 
@@ -506,9 +506,9 @@ async def get_pipeline_analytics():
 
                 # Recent activity (last 30 days by day)
                 cursor.execute("""
-                    SELECT date(applied_date) as day, COUNT(*) as cnt
+                    SELECT applied_date::date as day, COUNT(*) as cnt
                     FROM candidates WHERE is_active = 1
-                    AND datetime(applied_date) > datetime('now', '-30 days')
+                    AND applied_date > NOW() - INTERVAL '30 days'
                     GROUP BY day ORDER BY day
                 """)
                 daily_activity = [{"date": row[0], "count": row[1]} for row in cursor.fetchall()]
@@ -978,7 +978,7 @@ async def delete_campaign(campaign_id: str, current_user: dict = Depends(require
 
 
 @router.post("/campaigns/enroll", response_model=EnrollmentResponse)
-async def enroll_in_campaign(request: EnrollCandidateRequest):
+async def enroll_in_campaign(request: EnrollCandidateRequest, current_user: dict = Depends(require_admin)):
     """Enroll a candidate in a drip campaign"""
     try:
         service = get_followup_service()
@@ -1000,7 +1000,7 @@ async def enroll_in_campaign(request: EnrollCandidateRequest):
 
 
 @router.post("/campaigns/unenroll")
-async def unenroll_from_campaign(request: UnenrollRequest):
+async def unenroll_from_campaign(request: UnenrollRequest, current_user: dict = Depends(require_admin)):
     """Remove candidate from campaign(s)"""
     try:
         service = get_followup_service()
@@ -1017,7 +1017,7 @@ async def unenroll_from_campaign(request: UnenrollRequest):
 
 
 @router.post("/campaigns/mark-responded")
-async def mark_candidate_responded(candidate_id: str, campaign_id: Optional[str] = None):
+async def mark_candidate_responded(candidate_id: str, campaign_id: Optional[str] = None, current_user: dict = Depends(require_admin)):
     """Mark that candidate has responded (stops campaign)"""
     try:
         service = get_followup_service()
@@ -1039,7 +1039,7 @@ async def get_candidate_enrollments(candidate_id: str):
 
 
 @router.post("/campaigns/process")
-async def process_campaign_steps(background_tasks: BackgroundTasks):
+async def process_campaign_steps(background_tasks: BackgroundTasks, current_user: dict = Depends(require_admin)):
     """Manually trigger processing of due campaign steps"""
     try:
         service = get_followup_service()

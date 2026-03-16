@@ -152,7 +152,7 @@ async def health_check():
 
 
 @router.get("/api/setup/verify")
-async def verify_setup(current_user: dict = Depends(require_auth)):
+async def verify_setup(current_user: dict = Depends(require_admin)):
     """
     Run comprehensive setup verification
     Returns detailed status of all configuration items
@@ -336,7 +336,7 @@ async def get_setup_instructions(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/setup/test-connection/{service}")
-async def test_service_connection(service: str, current_user: dict = Depends(require_auth)):
+async def test_service_connection(service: str, current_user: dict = Depends(require_admin)):
     """
     Test connection to a specific service
     """
@@ -477,7 +477,7 @@ async def trigger_manual_scrape(
             except Exception as e:
                 results_by_account.append({
                     "account": account.name,
-                    "error": str(e)
+                    "error": "Scrape failed"
                 })
         
         return {
@@ -509,8 +509,8 @@ async def get_live_stats(current_user: dict = Depends(require_auth)):
                 total = cursor.fetchone()[0]
                 
                 cursor.execute("""
-                    SELECT COUNT(*) FROM candidates 
-                    WHERE is_active = 1 AND datetime(applied_date) > datetime('now', '-24 hours')
+                    SELECT COUNT(*) FROM candidates
+                    WHERE is_active = 1 AND applied_date > NOW() - INTERVAL '24 hours'
                 """)
                 new_24h = cursor.fetchone()[0]
                 
@@ -646,7 +646,73 @@ async def get_stats(current_user: dict = Depends(require_auth)):
         raise HTTPException(status_code=500, detail="Failed to retrieve statistics")
 
 
+@router.post("/api/admin/factory-reset")
+async def factory_reset(
+    confirm: str = Body(..., embed=True),
+    current_user: dict = Depends(require_admin),
+):
+    """
+    Full database wipe — deletes all candidates, resumes, email logs,
+    AI cache, search history. Keeps users, job_descriptions, email_templates,
+    campaign_definitions intact so the app stays configured.
 
+    Body: {"confirm": "WIPE EVERYTHING"}
+    """
+    if confirm != "WIPE EVERYTHING":
+        raise HTTPException(400, "Send confirm='WIPE EVERYTHING' to proceed")
 
+    def _wipe():
+        with _db().get_connection() as conn:
+            cursor = conn.cursor()
+            counts = {}
+
+            tables_to_wipe = [
+                "resumes",
+                "ai_score_cache",
+                "email_processing_log",
+                "sync_metadata",
+                "search_history",
+                "campaign_enrollments",
+                "candidates",
+            ]
+
+            for table in tables_to_wipe:
+                try:
+                    cursor.execute(f"SELECT COUNT(*) FROM {table}")
+                    row = cursor.fetchone()
+                    counts[table] = row[0] if row else 0
+                    cursor.execute(f"DELETE FROM {table}")
+                except Exception:
+                    counts[table] = 0  # table may not exist yet
+
+            conn.commit()
+            return counts
+
+    try:
+        counts = await asyncio.to_thread(_wipe)
+
+        # Clear in-memory caches
+        try:
+            _cache().clear()
+        except Exception:
+            pass
+        try:
+            from services.gemini_service import get_gemini_service
+            svc = get_gemini_service()
+            if svc:
+                svc._cache.clear()
+                svc._search_cache.clear()
+        except Exception:
+            pass
+
+        logger.warning(f"FACTORY RESET by {current_user.get('email')} — wiped: {counts}")
+        return {
+            "status": "wiped",
+            "message": "Database fully reset. All candidates, resumes, email logs and caches cleared.",
+            "deleted": counts,
+        }
+    except Exception as e:
+        logger.error(f"Factory reset error: {e}")
+        raise HTTPException(500, "Factory reset failed")
 
 

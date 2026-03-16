@@ -745,6 +745,7 @@ export default function AIAssistant() {
   }
 
   const handleShortlistInResults = async (candidate: Candidate, idx: number) => {
+    if (!isAdmin) { toast.error('Admin privileges required'); return; }
     if (!confirm(`Shortlist ${candidate.name}? A notification email will be sent.`)) return
     setShortlistingId(candidate.id)
     try {
@@ -1032,7 +1033,7 @@ export default function AIAssistant() {
           insights = [
             { title: 'Analyzed', value: candidateIds.length, icon: Brain, color: 'indigo' },
             { title: 'Top Score', value: `${(rankings[0]?.score * 100 || 0).toFixed(0)}%`, icon: Star, color: 'yellow' },
-            { title: 'Avg Score', value: `${(rankings.reduce((a, r) => a + r.score, 0) / rankings.length * 100).toFixed(0)}%`, icon: TrendingUp, color: 'green' }
+            { title: 'Avg Score', value: `${(rankings.reduce((a, r) => a + r.score, 0) / Math.max(rankings.length, 1) * 100).toFixed(0)}%`, icon: TrendingUp, color: 'green' }
           ]
         }
       } catch (error) {
@@ -1122,6 +1123,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
       
       actions = [
         { label: 'Merge Duplicates', icon: Users, action: async () => {
+          if (!isAdmin) { toast.error('Permission Required', 'Only admins can merge duplicates.'); return }
           try {
             const result = await candidateApi.deduplicate()
             toast.success('Deduplication', `${(result as any)?.data?.merged || 0} duplicate(s) merged successfully.`)
@@ -1642,6 +1644,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
               label: 'Shortlist Top Matches',
               icon: CheckCircle2,
               action: async () => {
+                if (!isAdmin) { toast.error('Admin privileges required'); return; }
                 if (!confirm(`Are you sure you want to shortlist ${matchedCandidates.length} top matches? This will also send notification emails.`)) return
                 let shortlisted = 0
                 for (const c of matchedCandidates) {
@@ -2093,6 +2096,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                 {selectedIds.size > 0 && [...selectedIds].some(id => resultsCandidates.some(c => c.id === id)) ? (
                   <button
                     onClick={async () => {
+                      if (!isAdmin) { toast.error('Admin required'); return; }
                       const toShortlist = resultsCandidates.filter(c => selectedIds.has(c.id) && c.status !== 'Shortlisted')
                       if (toShortlist.length === 0) return
                       if (!confirm(`Are you sure you want to shortlist ${toShortlist.length} selected candidates? This will also send notification emails.`)) return
@@ -2119,6 +2123,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                 ) : (
                   <button
                     onClick={async () => {
+                      if (!isAdmin) { toast.error('Admin required'); return; }
                       const toShortlist = resultsCandidates.filter(c => c.status !== 'Shortlisted')
                       if (toShortlist.length === 0) return
                       const typed = prompt(`⚠️ This will shortlist ALL ${toShortlist.length} candidates and send notification emails.\n\nType "${toShortlist.length}" to confirm:`)
@@ -2292,6 +2297,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                         : 'bg-amber-500 hover:bg-amber-600 text-white shadow-sm'}
                       disabled={resultDetailCandidate.status === 'Shortlisted'}
                       onClick={async () => {
+                        if (!isAdmin) { toast.error('Admin privileges required'); return; }
                         if (!confirm(`Shortlist ${resultDetailCandidate!.name}? A notification email will be sent.`)) return
                         try {
                           const result = await candidateApi.updateStatus(resultDetailCandidate!.id, 'Shortlisted')
@@ -2318,6 +2324,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                         : 'bg-red-500 hover:bg-red-600 text-white shadow-sm'}
                       disabled={resultDetailCandidate.status === 'Rejected'}
                       onClick={async () => {
+                        if (!isAdmin) { toast.error('Admin privileges required'); return; }
                         if (!confirm(`Reject ${resultDetailCandidate!.name}? A rejection email will be sent.`)) return
                         try {
                           const result = await candidateApi.updateStatus(resultDetailCandidate!.id, 'Rejected')
@@ -2851,15 +2858,17 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                           <motion.button
                                             whileHover={{ scale: 1.1 }}
                                             whileTap={{ scale: 0.9 }}
+                                            disabled={!isAdmin}
                                             onClick={async (e) => {
                                               e.stopPropagation()
+                                              if (!isAdmin) { toast.error('Admin privileges required'); return; }
                                               try {
                                                 await candidateApi.updateStatus(candidate.id, 'Shortlisted')
                                                 if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id)
                                                 setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${candidate.name}** has been shortlisted. Notification email queued.`, timestamp: new Date(), intent: 'shortlist_single' }])
                                               } catch (err) { console.error('Shortlist error:', err) }
                                             }}
-                                            className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"
+                                            className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"
                                           >
                                             <CheckCircle2 className="w-3 h-3" />Shortlist
                                           </motion.button>
@@ -3007,7 +3016,7 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                                 <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); handlePreviewCandidate(candidate) }} className="px-2 py-1 bg-sky-100 hover:bg-sky-200 text-sky-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><Eye className="w-3 h-3" />Preview</motion.button>
                                 <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={(e) => { e.stopPropagation(); navigate(`/candidates/${candidate.id}`) }} className="px-2 py-1 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><ExternalLink className="w-3 h-3" />Open</motion.button>
                                 {candidate.status !== 'Shortlisted' ? (
-                                  <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} onClick={async (e) => { e.stopPropagation(); try { await candidateApi.updateStatus(candidate.id, 'Shortlisted'); if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id); setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${candidate.name}** has been shortlisted. Notification email queued.`, timestamp: new Date(), intent: 'shortlist_single' }]) } catch (err) { console.error('Shortlist error:', err) } }} className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap"><CheckCircle2 className="w-3 h-3" />Shortlist</motion.button>
+                                  <motion.button whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }} disabled={!isAdmin} onClick={async (e) => { e.stopPropagation(); if (!isAdmin) { toast.error('Admin privileges required'); return; } try { await candidateApi.updateStatus(candidate.id, 'Shortlisted'); if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id); setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${candidate.name}** has been shortlisted. Notification email queued.`, timestamp: new Date(), intent: 'shortlist_single' }]) } catch (err) { console.error('Shortlist error:', err) } }} className="px-2 py-1 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium flex items-center gap-1 whitespace-nowrap disabled:opacity-50 disabled:cursor-not-allowed"><CheckCircle2 className="w-3 h-3" />Shortlist</motion.button>
                                 ) : <Badge className="bg-green-100 text-green-700 text-xs whitespace-nowrap">Shortlisted ✓</Badge>}
                               </div>
                             </div>

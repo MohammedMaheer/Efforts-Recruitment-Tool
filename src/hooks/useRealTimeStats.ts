@@ -58,6 +58,10 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
       });
       
       if (!response.ok) {
+        if (response.status === 401) {
+          window.dispatchEvent(new CustomEvent('auth:session-expired'));
+          return null;
+        }
         throw new Error(`HTTP ${response.status}`);
       }
       
@@ -113,6 +117,7 @@ export function useRealTimeStats(options: UseRealTimeStatsOptions = {}) {
         clearInterval(pollingRef.current);
         pollingRef.current = null;
       }
+      abortControllerRef.current?.abort();
     };
   }, [enabled, interval, fetchStats]);
 

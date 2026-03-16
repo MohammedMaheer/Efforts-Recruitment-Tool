@@ -17,6 +17,15 @@ TEMPLATES_PATH = Path(__file__).parent.parent / "data" / "email_templates"
 TEMPLATES_PATH.mkdir(parents=True, exist_ok=True)
 
 
+def _get_db():
+    """Lazy import to avoid circular imports at module load time."""
+    try:
+        from services.database_service import get_db_service
+        return get_db_service()
+    except Exception:
+        return None
+
+
 class EmailTemplatesService:
     """
     Manages email templates for candidate communications:
@@ -305,14 +314,66 @@ Best regards,
     def __init__(self):
         self.templates = {}
         self.custom_templates = {}
+        self._db_tables_created = False
+        self._ensure_db_tables()
         self._load_templates()
-    
+
+    # ── DB helpers ────────────────────────────────────────────────────
+
+    def _ensure_db_tables(self):
+        """Create the email_templates table if it doesn't exist (idempotent)."""
+        if self._db_tables_created:
+            return
+        db = _get_db()
+        if db is None:
+            return
+        try:
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS email_templates (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        subject TEXT,
+                        body TEXT,
+                        template_type TEXT DEFAULT 'custom',
+                        data TEXT NOT NULL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                conn.commit()
+                self._db_tables_created = True
+                logger.info("email_templates DB table ensured")
+        except Exception as e:
+            logger.warning(f"Could not create email_templates DB table: {e}")
+
+    # ── Load / save ──────────────────────────────────────────────────
+
     def _load_templates(self):
-        """Load default and custom templates"""
+        """Load default and custom templates — DB first, file fallback."""
         # Load defaults
         self.templates = self.DEFAULT_TEMPLATES.copy()
-        
-        # Load custom templates from disk
+
+        # Try DB
+        db = _get_db()
+        if db is not None:
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id, data FROM email_templates")
+                    rows = cursor.fetchall()
+                    for row in rows:
+                        tpl = json.loads(row[1])
+                        self.custom_templates[row[0]] = tpl
+                        self.templates[row[0]] = tpl
+                    if rows:
+                        logger.info(f"Loaded {len(rows)} custom templates from DB")
+                    return
+            except Exception as e:
+                logger.warning(f"DB load templates failed, falling back to file: {e}")
+
+        # File fallback
         custom_file = TEMPLATES_PATH / "custom_templates.json"
         if custom_file.exists():
             try:
@@ -322,9 +383,36 @@ Best regards,
                 logger.info(f"Loaded {len(self.custom_templates)} custom templates")
             except Exception as e:
                 logger.warning(f"Could not load custom templates: {e}")
-    
+
     def _save_custom_templates(self):
-        """Save custom templates to disk"""
+        """Save custom templates — DB first, file fallback."""
+        # Try DB
+        db = _get_db()
+        if db is not None:
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    # Full replace: clear + re-insert
+                    cursor.execute("DELETE FROM email_templates")
+                    for tid, tdata in self.custom_templates.items():
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO email_templates (id, name, subject, body, template_type, data, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                            (
+                                tid,
+                                tdata.get('name', ''),
+                                tdata.get('subject', ''),
+                                tdata.get('body', ''),
+                                tdata.get('category', 'custom'),
+                                json.dumps(tdata),
+                                datetime.now().isoformat(),
+                            )
+                        )
+                    conn.commit()
+                return
+            except Exception as e:
+                logger.warning(f"DB save templates failed, falling back to file: {e}")
+
+        # File fallback
         custom_file = TEMPLATES_PATH / "custom_templates.json"
         try:
             with open(custom_file, 'w') as f:

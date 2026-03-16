@@ -213,6 +213,7 @@ export default function Settings() {
       })
     } catch (error) {
       console.error('Save error:', error)
+      toast.error('Failed to save profile')
       addNotification({
         type: 'error',
         title: 'Error',
@@ -260,6 +261,7 @@ export default function Settings() {
       setConfirmPassword('')
     } catch (error) {
       console.error('Password update error:', error)
+      toast.error('Failed to update password')
       addNotification({
         type: 'error',
         title: 'Error',

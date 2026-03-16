@@ -765,6 +765,7 @@ export default function Candidates() {
                                   <button
                                     onClick={async (e) => {
                                       e.stopPropagation()
+                                      if (!isAdmin) { showToast('Admin required to shortlist candidates', 'error'); return; }
                                       if (shortlistingIds.has(candidate.id)) return
                                       const alreadyShortlisted = candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
                                       try {
@@ -813,7 +814,7 @@ export default function Candidates() {
                                         })
                                       }
                                     }}
-                                    disabled={shortlistingIds.has(candidate.id)}
+                                    disabled={!isAdmin || shortlistingIds.has(candidate.id)}
                                     className={`p-1 rounded-full transition-colors ${
                                       candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
                                         ? 'text-yellow-500 bg-yellow-50'
@@ -1005,6 +1006,7 @@ export default function Candidates() {
                         <button
                           onClick={async (e) => {
                             e.stopPropagation()
+                            if (!isAdmin) { showToast('Admin required to shortlist candidates', 'error'); return; }
                             if (shortlistingIds.has(candidate.id)) return
                             const alreadyShortlisted = candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
                             try {
@@ -1052,7 +1054,7 @@ export default function Candidates() {
                               })
                             }
                           }}
-                          disabled={shortlistingIds.has(candidate.id)}
+                          disabled={!isAdmin || shortlistingIds.has(candidate.id)}
                           className={`p-1 rounded-full transition-colors ${
                             candidate.isShortlisted || candidate.status === 'Shortlisted' || shortlistedIds.has(candidate.id)
                               ? 'text-yellow-500 bg-yellow-50'

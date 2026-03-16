@@ -89,7 +89,7 @@ export default function Dashboard() {
         setUploadResults((await response.json()).results || [])
         setTimeout(() => refetch(), 1000)
       } else {
-        setUploadResults([{ status: 'error', message: (await response.json()).detail || 'Upload failed' }])
+        setUploadResults([{ status: 'error', message: (await response.json().catch(() => ({}))).detail || 'Upload failed' }])
       }
     } catch (error: unknown) {
       setUploadResults([{ status: 'error', message: error instanceof Error ? error.message : 'Network error' }])

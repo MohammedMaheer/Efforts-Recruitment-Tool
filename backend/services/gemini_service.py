@@ -841,7 +841,7 @@ class GeminiService:
                 self._daily_call_count = 0
             if self._daily_call_count >= self._daily_call_limit:
                 logger.warning(f"Gemini daily limit reached ({self._daily_call_limit} calls). Skipping API call.")
-                raise RuntimeError(f"Gemini daily call limit reached ({self._daily_call_limit})")
+                return ""  # Return empty string instead of raising — allows fallback to keyword service
             self._daily_call_count += 1
         start = time.time()
         try:

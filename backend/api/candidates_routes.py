@@ -1329,7 +1329,7 @@ async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_
                             ucur = uc.cursor()
                             ucur.execute("""
                                 UPDATE candidates SET match_score = 15, job_category = 'Insufficient Data',
-                                last_updated = datetime('now') WHERE id = ?
+                                last_updated = CURRENT_TIMESTAMP WHERE id = ?
                             """, (cid,))
                             uc.commit()
                     await asyncio.to_thread(_set_insufficient_data, candidate_id)
@@ -1376,10 +1376,10 @@ async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_
                                 SET match_score = ?,
                                     job_category = CASE WHEN ? != '' AND ? != 'General' THEN ? ELSE job_category END,
                                     skills = CASE WHEN ? IS NOT NULL AND length(?) > 4 THEN ? ELSE skills END,
-                                    experience = CASE WHEN ? > 0 THEN MAX(COALESCE(experience, 0), ?) ELSE experience END,
+                                    experience = CASE WHEN ? > 0 THEN GREATEST(COALESCE(experience, 0), ?) ELSE experience END,
                                     summary = CASE WHEN ? != '' AND length(?) > length(COALESCE(summary, '')) THEN ? ELSE summary END,
                                     ai_analysis = ?,
-                                    last_updated = datetime('now')
+                                    last_updated = CURRENT_TIMESTAMP
                                 WHERE id = ?
                             """, (ns,
                                   nc, nc, nc,
@@ -1437,7 +1437,37 @@ async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_
 
 
 
-@router.get("/api/candidates/stream")
+@router.post("/api/candidates/reset-ai-cache")
+async def reset_ai_cache(current_user: dict = Depends(require_admin)):
+    """
+    Clear all stored AI analyses so every candidate gets a fresh Gemini analysis.
+    Use this after fixing the AI engine to remove stale fallback results.
+    """
+    try:
+        def _clear_all_ai():
+            with _db().get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM candidates WHERE is_active = 1 AND ai_analysis IS NOT NULL")
+                before = cursor.fetchone()[0]
+                cursor.execute("UPDATE candidates SET ai_analysis = NULL WHERE is_active = 1")
+                conn.commit()
+                return before
+        cleared = await asyncio.to_thread(_clear_all_ai)
+        # Also clear the in-memory response cache so stale data isn't served
+        try:
+            _cache().clear()
+        except Exception:
+            pass
+        logger.info(f"🧹 Cleared AI analysis cache for {cleared} candidates")
+        return {"status": "success", "cleared": cleared,
+                "message": f"Cleared AI analysis for {cleared} candidates — they will be re-analyzed on next view or batch run"}
+    except Exception as e:
+        logger.error(f"Reset AI cache error: {e}")
+        raise HTTPException(500, "Error clearing AI cache")
+
+
+
+
 async def stream_all_candidates(batch_size: int = 100, current_user: dict = Depends(require_auth)):
     """
     Stream all candidates for large exports (10,000+)
@@ -1516,7 +1546,7 @@ async def download_resume(candidate_id: str, current_user: dict = Depends(requir
 
 
 @router.post("/api/candidates/{candidate_id}/resume")
-async def upload_resume_for_candidate(candidate_id: str, file: UploadFile = File(...), current_user: dict = Depends(require_auth)):
+async def upload_resume_for_candidate(candidate_id: str, file: UploadFile = File(...), current_user: dict = Depends(require_admin)):
     """Upload a resume file for an existing candidate. Also re-parses the resume and updates candidate data."""
     try:
         filename = os.path.basename(file.filename or "resume.pdf")
@@ -1625,7 +1655,7 @@ async def upload_resume_for_candidate(candidate_id: str, file: UploadFile = File
 async def batch_import_candidates(
     candidates: List[dict],
     analyze: bool = True,
-    current_user: dict = Depends(require_auth)
+    current_user: dict = Depends(require_admin)
 ):
     """
     Import candidates in batch for high-volume scenarios (10,000+)
@@ -1698,7 +1728,7 @@ async def batch_import_candidates(
 
 
 @router.post("/api/candidates/linkedin")
-async def import_linkedin_profile(profile: LinkedInProfileImport, current_user: dict = Depends(require_auth)):
+async def import_linkedin_profile(profile: LinkedInProfileImport, current_user: dict = Depends(require_admin)):
     """
     Import a candidate from LinkedIn profile scraped by browser extension.
     Analyzes the profile and stores in database.

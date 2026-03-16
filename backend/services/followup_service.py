@@ -17,6 +17,15 @@ DATA_PATH = Path(__file__).parent.parent / "data" / "campaigns"
 DATA_PATH.mkdir(parents=True, exist_ok=True)
 
 
+def _get_db():
+    """Lazy import to avoid circular imports at module load time."""
+    try:
+        from services.database_service import get_db_service
+        return get_db_service()
+    except Exception:
+        return None
+
+
 class CampaignStatus(str, Enum):
     ACTIVE = "active"
     PAUSED = "paused"
@@ -204,13 +213,70 @@ class AutomatedFollowUpService:
         self.active_enrollments = {}  # candidate_id -> enrollment data
         self.email_service = None
         self.sms_service = None
+        self._db_tables_created = False
+        self._ensure_db_tables()
         self._load_campaigns()
         self._load_enrollments()
-    
+
+    # ── DB helpers ────────────────────────────────────────────────────
+
+    def _ensure_db_tables(self):
+        """Create DB tables if they don't exist (idempotent)."""
+        if self._db_tables_created:
+            return
+        db = _get_db()
+        if db is None:
+            return
+        try:
+            with db.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS campaign_definitions (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        data TEXT NOT NULL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS campaign_enrollments (
+                        id TEXT PRIMARY KEY,
+                        candidate_id TEXT NOT NULL,
+                        campaign_id TEXT NOT NULL,
+                        data TEXT NOT NULL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        UNIQUE(candidate_id, campaign_id)
+                    )
+                """)
+                conn.commit()
+                self._db_tables_created = True
+                logger.info("campaign DB tables ensured")
+        except Exception as e:
+            logger.warning(f"Could not create campaign DB tables: {e}")
+
+    # ── Campaigns load / save ────────────────────────────────────────
+
     def _load_campaigns(self):
-        """Load campaign configurations"""
+        """Load campaign configurations — DB first, file fallback."""
         self.campaigns = self.DEFAULT_CAMPAIGNS.copy()
-        
+
+        # Try DB
+        db = _get_db()
+        if db is not None:
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id, data FROM campaign_definitions")
+                    rows = cursor.fetchall()
+                    for row in rows:
+                        self.campaigns[row[0]] = json.loads(row[1])
+                    if rows:
+                        logger.info(f"Loaded {len(rows)} custom campaigns from DB")
+                    return
+            except Exception as e:
+                logger.warning(f"DB load campaigns failed, falling back to file: {e}")
+
+        # File fallback
         custom_file = DATA_PATH / "custom_campaigns.json"
         if custom_file.exists():
             try:
@@ -219,20 +285,58 @@ class AutomatedFollowUpService:
                 self.campaigns.update(custom)
             except Exception as e:
                 logger.warning(f"Could not load custom campaigns: {e}")
-    
+
     def _save_campaigns(self):
-        """Save custom campaigns"""
-        custom = {k: v for k, v in self.campaigns.items() 
+        """Save custom campaigns — DB first, file fallback."""
+        custom = {k: v for k, v in self.campaigns.items()
                   if k not in self.DEFAULT_CAMPAIGNS}
-        
+
+        # Try DB
+        db = _get_db()
+        if db is not None:
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    # Remove campaigns no longer present
+                    cursor.execute("DELETE FROM campaign_definitions")
+                    for cid, cdata in custom.items():
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO campaign_definitions (id, name, data) VALUES (?, ?, ?)",
+                            (cid, cdata.get('name', ''), json.dumps(cdata))
+                        )
+                    conn.commit()
+                return
+            except Exception as e:
+                logger.warning(f"DB save campaigns failed, falling back to file: {e}")
+
+        # File fallback
         try:
             with open(DATA_PATH / "custom_campaigns.json", 'w') as f:
                 json.dump(custom, f, indent=2)
         except Exception as e:
             logger.error(f"Could not save campaigns: {e}")
-    
+
+    # ── Enrollments load / save ──────────────────────────────────────
+
     def _load_enrollments(self):
-        """Load active enrollments"""
+        """Load active enrollments — DB first, file fallback."""
+        # Try DB
+        db = _get_db()
+        if db is not None:
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id, data FROM campaign_enrollments")
+                    rows = cursor.fetchall()
+                    for row in rows:
+                        self.active_enrollments[row[0]] = json.loads(row[1])
+                    if rows:
+                        logger.info(f"Loaded {len(rows)} enrollments from DB")
+                    return
+            except Exception as e:
+                logger.warning(f"DB load enrollments failed, falling back to file: {e}")
+
+        # File fallback
         enrollments_file = DATA_PATH / "enrollments.json"
         if enrollments_file.exists():
             try:
@@ -240,9 +344,28 @@ class AutomatedFollowUpService:
                     self.active_enrollments = json.load(f)
             except Exception as e:
                 logger.warning(f"Could not load enrollments: {e}")
-    
+
     def _save_enrollments(self):
-        """Save active enrollments"""
+        """Save active enrollments — DB first, file fallback."""
+        # Try DB
+        db = _get_db()
+        if db is not None:
+            try:
+                with db.get_connection() as conn:
+                    cursor = conn.cursor()
+                    # Full replace: clear + re-insert
+                    cursor.execute("DELETE FROM campaign_enrollments")
+                    for eid, edata in self.active_enrollments.items():
+                        cursor.execute(
+                            "INSERT OR REPLACE INTO campaign_enrollments (id, candidate_id, campaign_id, data) VALUES (?, ?, ?, ?)",
+                            (eid, edata.get('candidate_id', ''), edata.get('campaign_id', ''), json.dumps(edata, default=str))
+                        )
+                    conn.commit()
+                return
+            except Exception as e:
+                logger.warning(f"DB save enrollments failed, falling back to file: {e}")
+
+        # File fallback
         try:
             with open(DATA_PATH / "enrollments.json", 'w') as f:
                 json.dump(self.active_enrollments, f, indent=2, default=str)
@@ -643,7 +766,7 @@ async def run_campaign_processor(interval_seconds: int = 300):
     Background task to process campaign steps
     Run this in a background task/worker
     """
-    service = get_followup_service()
+    service = await asyncio.to_thread(get_followup_service)
     
     while True:
         try:

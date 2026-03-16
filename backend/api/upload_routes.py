@@ -193,8 +193,11 @@ async def upload_resume(file: UploadFile = File(...), current_user: dict = Depen
         existing = await asyncio.to_thread(_db().get_candidate_by_email, parsed['email'])
         if existing:
             candidate['id'] = existing['id']
+            _PROTECTED_STATUSES = {'Shortlisted', 'Interviewing', 'Offered', 'Hired', 'Rejected', 'Withdrawn', 'Strong', 'Partial'}
+            if existing.get('status') in _PROTECTED_STATUSES:
+                candidate['status'] = existing['status']  # preserve protected status
             await asyncio.to_thread(_db().update_candidate, candidate)
-            logger.info(f"📝 Updated candidate from upload: {candidate['name']}")
+            logger.info(f"Updated candidate from upload: {candidate['name']}")
         else:
             await asyncio.to_thread(_db().insert_candidate, candidate)
             logger.info(f"✨ New candidate from upload: {candidate['name']} ({candidate['email']}) - Score: {ai_score}")
@@ -367,6 +370,9 @@ async def upload_multiple_resumes(files: List[UploadFile] = File(...), current_u
             existing = await asyncio.to_thread(_db().get_candidate_by_email, parsed['email'])
             if existing:
                 candidate['id'] = existing['id']
+                _PROTECTED_STATUSES = {'Shortlisted', 'Interviewing', 'Offered', 'Hired', 'Rejected', 'Withdrawn', 'Strong', 'Partial'}
+                if existing.get('status') in _PROTECTED_STATUSES:
+                    candidate['status'] = existing['status']  # preserve protected status
                 await asyncio.to_thread(_db().update_candidate, candidate)
             else:
                 await asyncio.to_thread(_db().insert_candidate, candidate)

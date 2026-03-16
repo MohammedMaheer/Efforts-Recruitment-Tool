@@ -212,6 +212,10 @@ export function useCandidates(options: UseCandidatesOptions = {}): UseCandidates
       
       // 401 is now handled centrally by authFetch — no duplicate handling needed
       if (!firstResponse.ok) {
+        if (firstResponse.status === 401) {
+          window.dispatchEvent(new CustomEvent('auth:session-expired'));
+          return;
+        }
         throw new Error(`Failed to fetch candidates: ${firstResponse.statusText}`)
       }
       

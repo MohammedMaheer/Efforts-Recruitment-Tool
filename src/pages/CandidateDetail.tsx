@@ -351,6 +351,7 @@ export default function CandidateDetail() {
 
   const handleToggleShortlist = async () => {
     if (!candidate) return
+    if (!isAdmin) { toast.error('Admin privileges required'); return; }
     const wasShortlisted = isShortlisted(candidate.id)
     
     if (!wasShortlisted && !confirm(`Shortlist ${candidate.name} and send a notification email?`)) return
@@ -448,6 +449,7 @@ export default function CandidateDetail() {
 
   const handleRejectCandidate = async () => {
     if (!candidate) return
+    if (!isAdmin) { toast.error('Admin privileges required'); return; }
     try {
       const res = await candidateApi.updateStatus(candidate.id, 'Rejected')
       if (res.error) throw new Error(res.error.message || 'Failed to reject')
@@ -461,6 +463,7 @@ export default function CandidateDetail() {
       navigate('/candidates')
     } catch (error) {
       console.error('Update error:', error)
+      toast.error('Failed to reject candidate')
       addNotification({
         type: 'error',
         title: 'Update Failed',

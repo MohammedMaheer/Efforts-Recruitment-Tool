@@ -870,6 +870,13 @@ class DatabaseService:
             ))
             
             conn.commit()
+        except Exception:
+            if conn is not None:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            raise
         finally:
             if conn is not None:
                 self.return_connection(conn)
@@ -892,9 +899,15 @@ class DatabaseService:
                     (json.dumps(strengths[:5], default=str), json.dumps(gaps[:5], default=str), candidate_id)
                 )
             conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         finally:
             self.return_connection(conn)
-    
+
     def get_ai_analysis(self, candidate_id: str) -> Optional[Dict]:
         """Get stored AI analysis for a candidate"""
         conn = self.get_connection_raw()
@@ -992,6 +1005,12 @@ class DatabaseService:
             ))
             
             conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         finally:
             self.return_connection(conn)
 
@@ -1037,8 +1056,8 @@ class DatabaseService:
                 ), reverse=True)
 
                 keep = candidates[0]
-                # Generate the canonical ID (lowercase email md5)
-                canonical_id = hashlib.md5(norm_email.encode()).hexdigest()
+                # Generate the canonical ID (lowercase email sha256)
+                canonical_id = hashlib.sha256(norm_email.encode()).hexdigest()
 
                 # Merge all duplicates into the keeper
                 for dupe in candidates[1:]:
@@ -1446,11 +1465,15 @@ class DatabaseService:
                         _edu = _v if isinstance(_v, list) else []
                     except (json.JSONDecodeError, ValueError):
                         pass
+                try:
+                    skills_value = json.loads(skills_raw) if skills_raw and isinstance(skills_raw, str) else (skills_raw or [])
+                except (json.JSONDecodeError, ValueError):
+                    skills_value = []
                 results.append({
                     'id': row[0],
                     'name': row[1],
                     'email': row[2],
-                    'skills': json.loads(skills_raw) if skills_raw and isinstance(skills_raw, str) else (skills_raw or []),
+                    'skills': skills_value,
                     'experience': row[4] or 0,
                     'education': _edu,
                     'matchScore': row[6] or 0,
@@ -1836,7 +1859,7 @@ class DatabaseService:
             if IS_POSTGRES:
                 cursor.execute("""
                     SELECT COUNT(*) FROM candidates
-                    WHERE is_active = 1 AND last_updated > (NOW() - INTERVAL '1 day')::text
+                    WHERE is_active = 1 AND last_updated::timestamp > NOW() - INTERVAL '1 day'
                 """)
             else:
                 cursor.execute("""
@@ -1883,9 +1906,15 @@ class DatabaseService:
             """, (message_id, datetime.now().isoformat(), candidate_id, action))
             
             conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         finally:
             self.return_connection(conn)
-    
+
     def is_email_processed(self, message_id: str) -> bool:
         """Check if email already processed"""
         conn = self.get_connection_raw()
@@ -2333,7 +2362,7 @@ class DatabaseService:
             
             # Clean old cache entries (keep 7 days) to prevent unbounded growth
             if IS_POSTGRES:
-                cursor.execute("DELETE FROM ai_score_cache WHERE cached_at < to_char(NOW() - INTERVAL '7 days', 'YYYY-MM-DD\"T\"HH24:MI:SS')")
+                cursor.execute("DELETE FROM ai_score_cache WHERE cached_at::timestamp < NOW() - INTERVAL '7 days'")
             else:
                 cursor.execute("DELETE FROM ai_score_cache WHERE cached_at < datetime('now', '-7 days')")
             
@@ -2352,9 +2381,15 @@ class DatabaseService:
             ))
             
             conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         finally:
             self.return_connection(conn)
-    
+
     def get_candidates_needing_ai_analysis(self, job_id: str) -> List[Dict]:
         """
         Get only candidates WITHOUT cached AI scores
@@ -2389,9 +2424,15 @@ class DatabaseService:
             
             conn.commit()
             logger.info(f"📄 Saved resume for candidate {candidate_id}: {filename}")
+        except Exception:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         finally:
             self.return_connection(conn)
-    
+
     def get_resume(self, candidate_id: str) -> Optional[Dict]:
         """Get resume file from database"""
         conn = self.get_connection_raw()
@@ -2433,6 +2474,11 @@ class DatabaseService:
             conn.commit()
         except Exception as e:
             logger.error(f"Error saving search: {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            raise
         finally:
             self.return_connection(conn)
 

@@ -96,7 +96,7 @@ def _convert_sqlite_functions(sql: str) -> str:
     
     # datetime('now') → NOW()
     sql = re.sub(r"datetime\s*\(\s*'now'\s*\)", "NOW()", sql, flags=re.IGNORECASE)
-    
+
     # datetime('now', '-N days/hours') → NOW() - INTERVAL 'N days'
     sql = re.sub(
         r"datetime\s*\(\s*'now'\s*,\s*'(-\d+)\s+(day|hour|minute|second)s?'\s*\)",
@@ -180,6 +180,9 @@ def _convert_insert_or_replace(sql: str) -> str:
         'job_descriptions': 'id',
         'users': 'id',
         'search_history': 'id',
+        'email_templates': 'id',
+        'campaign_definitions': 'id',
+        'campaign_enrollments': 'id',
     }
     conflict_col = conflict_map.get(table, columns[0])
     conflict_cols_list = [c.strip() for c in conflict_col.split(',')]

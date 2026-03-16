@@ -68,10 +68,18 @@ async def sanitized_http_exception_handler(request, exc: HTTPException):
     if not DEBUG and exc.status_code >= 500:
         logger.error(f"HTTP {exc.status_code} on {request.url.path}: {detail}")
         detail = "An internal error occurred. Please try again later."
+    headers = dict(exc.headers) if exc.headers else {}
+    # Add CORS headers for exception responses (WWW-Authenticate for 401/403)
+    origin = request.headers.get("origin", "")
+    if origin and origin in [o.strip() for o in _cors_origins_raw.split(',') if o.strip()]:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    if exc.status_code in (401, 403):
+        headers["WWW-Authenticate"] = 'Bearer realm="auth"'
     return JSONResponse(
         status_code=exc.status_code,
         content={"detail": detail},
-        headers=dict(exc.headers) if exc.headers else None,
+        headers=headers,
     )
 
 @app.exception_handler(Exception)
@@ -79,7 +87,13 @@ async def unhandled_exception_handler(request, exc: Exception):
     """Catch unhandled exceptions — never leak stack traces."""
     logger.error(f"Unhandled exception on {request.url.path}: {type(exc).__name__}: {str(exc)}")
     detail = f"Internal server error: {type(exc).__name__}" if DEBUG else "An internal error occurred. Please try again later."
-    return JSONResponse(status_code=500, content={"detail": detail})
+    headers = {}
+    # Add CORS headers for exception responses
+    origin = request.headers.get("origin", "")
+    if origin and origin in [o.strip() for o in _cors_origins_raw.split(',') if o.strip()]:
+        headers["Access-Control-Allow-Origin"] = origin
+        headers["Access-Control-Allow-Credentials"] = "true"
+    return JSONResponse(status_code=500, content={"detail": detail}, headers=headers)
 
 # ── Routers ────────────────────────────────────────────────────────────────────
 from api.auth_routes import router as auth_router, user_router

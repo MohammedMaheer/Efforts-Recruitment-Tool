@@ -789,6 +789,13 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
     for row in all_rows:
         c = dict(zip(columns, row))
         cid = c['id']
+
+        # SAVEPOINT per candidate — prevents PG transaction abort cascade
+        try:
+            cursor.execute("SAVEPOINT sp_candidate")
+        except Exception:
+            pass  # SQLite ignores SAVEPOINTs outside explicit transactions
+
         name = (c.get('name') or '').strip()
         email = (c.get('email') or '').lower().strip()
         summary = c.get('summary') or ''
@@ -814,7 +821,7 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
             
             if salvaged_name and salvaged_email and salvaged_email != email:
                 # There's a real candidate buried in this gibberish
-                new_id = hashlib.md5(salvaged_email.encode()).hexdigest()
+                new_id = hashlib.sha256(salvaged_email.encode()).hexdigest()
                 cursor.execute("SELECT id FROM candidates WHERE id = ?", (new_id,))
                 if cursor.fetchone():
                     # Real candidate already exists, just delete gibberish
@@ -827,6 +834,8 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
                     # Salvage: convert this gibberish record into the real candidate
                     msg_start = re.search(r'(?:dear|hi\s*,|hello|i\s+am|my\s+name)', combined_text, re.I)
                     clean_summary = combined_text[msg_start.start():msg_start.start()+1500] if msg_start else summary[:1000]
+                    # Move resume FK first to avoid FK violation on PG
+                    cursor.execute("UPDATE resumes SET candidate_id = ? WHERE candidate_id = ?", (new_id, cid))
                     cursor.execute("""
                         UPDATE candidates SET id=?, email=?, name=?, summary=?, last_updated=?
                         WHERE id = ?
@@ -1040,7 +1049,15 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
                     f"UPDATE candidates SET {', '.join(set_parts)} WHERE id = ?",
                     vals
                 )
+                try:
+                    cursor.execute("RELEASE SAVEPOINT sp_candidate")
+                except Exception:
+                    pass
             except Exception as e:
+                try:
+                    cursor.execute("ROLLBACK TO SAVEPOINT sp_candidate")
+                except Exception:
+                    pass
                 results['errors'].append({'id': cid, 'error': str(e)[:100]})
     
     # Commit all per-candidate changes before dedup phase
@@ -1069,7 +1086,11 @@ def repair_database(conn, scraper_service=None, ai_service=None) -> Dict[str, An
             d = cursor.fetchone()
             if d:
                 d_score = d[1] or 0
-                d_skills = len(json.loads(d[2] or '[]'))
+                try:
+                    skills_list = json.loads(d[2] or '[]')
+                except (json.JSONDecodeError, ValueError):
+                    skills_list = []
+                d_skills = len(skills_list)
                 d_text = len(d[3] or '') + len(d[4] or '')
                 composite = d_score * 10 + d_skills * 5 + d_text
                 if composite > best_score:

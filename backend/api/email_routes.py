@@ -164,7 +164,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
                             'access_token': cred_result['access_token'],
                             'auth_type': 'application',
                             'is_expired': False,
-                            'expires_at': (datetime.now() + timedelta(seconds=cred_result.get('expires_in', 3600))).isoformat()
+                            'expires_at': (datetime.utcnow() + timedelta(seconds=cred_result.get('expires_in', 3600))).isoformat()
                         }
                         refresh_success = True
                         saved_auth_type = 'application'
@@ -181,7 +181,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
         try:
             graph_service.token_expiry = datetime.fromisoformat(token_data['expires_at'])
         except Exception:
-            graph_service.token_expiry = datetime.now() + timedelta(hours=1)
+            graph_service.token_expiry = datetime.utcnow() + timedelta(hours=1)
 
         logger.warning(f"Cross-verify: using {saved_auth_type} auth -- {'incremental' if incremental else 'full'} mode")
 
@@ -512,7 +512,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
         logger.error(f"Error in cross-verify sync: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        return {'status': 'error', 'message': str(e)}
+        return {'status': 'error', 'message': 'Reset failed'}
     finally:
         if hasattr(trigger_reset_and_reparse, '_lock') and trigger_reset_and_reparse._lock.locked():
             trigger_reset_and_reparse._lock.release()
@@ -552,9 +552,9 @@ async def _backfill_resumes_task(email_address: str):
                     if isinstance(_exp_raw, str) else _exp_raw
                 )
             except Exception:
-                graph_service.token_expiry = datetime.now() + timedelta(hours=1)
+                graph_service.token_expiry = datetime.utcnow() + timedelta(hours=1)
         else:
-            graph_service.token_expiry = datetime.now() + timedelta(hours=1)
+            graph_service.token_expiry = datetime.utcnow() + timedelta(hours=1)
 
         msg_candidates = await asyncio.to_thread(_db().get_candidate_message_ids)
         existing_resumes = await asyncio.to_thread(_db().get_all_resume_candidate_ids)
@@ -760,7 +760,7 @@ async def _backfill_resumes_task(email_address: str):
         logger.error(f"Resume backfill v2 error: {str(e)}")
         import traceback
         logger.error(traceback.format_exc())
-        return {'status': 'error', 'message': str(e)}
+        return {'status': 'error', 'message': 'Backfill failed'}
 
 
 @router.post("/api/email/connect")
@@ -806,7 +806,7 @@ async def sync_email_applications(request: EmailSyncRequest, current_user: dict 
             
             graph_service = MicrosoftGraphService(client_id, client_secret, tenant_id)
             graph_service.access_token = request.access_token
-            graph_service.token_expiry = datetime.now() + timedelta(hours=1)
+            graph_service.token_expiry = datetime.utcnow() + timedelta(hours=1)
             
             # Fetch emails via Microsoft Graph
             messages_result = await graph_service.get_messages(
@@ -1173,7 +1173,7 @@ async def get_oauth2_authorization_url(provider: str, redirect_uri: str):
 
 
 @router.post("/api/email/oauth2/callback")
-async def oauth2_callback(request: OAuth2CallbackRequest):
+async def oauth2_callback(request: OAuth2CallbackRequest, current_user: dict = Depends(require_admin)):
     """
     Handle OAuth2 callback after user grants permissions
     Exchange authorization code for access token and SAVE to storage
@@ -1459,9 +1459,8 @@ async def backfill_debug(current_user: dict = Depends(require_admin)):
             results["test_status_code"] = resp.status_code
             results["test_response_first200"] = resp.text[:200]
         except Exception as e:
+            logger.error(f"Debug backfill error: {e}", exc_info=True)
             results["test_exception_type"] = type(e).__name__
-            results["test_exception_msg"] = str(e)[:300]
-            results["test_traceback"] = tb.format_exc()[-500:]
 
     return results
 
@@ -1576,7 +1575,7 @@ async def cron_sync(request: Request):
         raise
     except Exception as auth_err:
         logger.error(f"Cron auth error: {auth_err}")
-        raise HTTPException(500, f"Auth error: {str(auth_err)}")
+        raise HTTPException(500, "Authentication error")
     
     # === Run incremental sync inline (completes before response) ===
     logger.info("⏰ Cron sync triggered by Cloud Scheduler")
@@ -1845,7 +1844,7 @@ async def email_webhook(request: Request):
 
 
 @router.post("/api/email/subscribe-webhook")
-async def subscribe_to_email_webhook(current_user: dict = Depends(require_auth)):
+async def subscribe_to_email_webhook(current_user: dict = Depends(require_admin)):
     """
     Create a Microsoft Graph subscription for real-time email notifications
     This needs to be called once to set up real-time sync
@@ -1947,7 +1946,7 @@ async def get_outlook_auth_url(
     client_id: str,
     tenant_id: str,
     redirect_uri: str,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin),
 ):
     """
     Get Microsoft OAuth2 authorization URL
@@ -1976,7 +1975,7 @@ async def sync_outlook_applications(
     access_token: str,
     folder: str = 'inbox',
     limit: int = 50,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin),
 ):
     """
     Sync applications from Outlook using Graph API
@@ -2001,7 +2000,7 @@ async def setup_auto_sync(
     password: Optional[str] = None,
     access_token: Optional[str] = None,
     sync_interval_minutes: int = 15,
-    current_user: dict = Depends(require_auth),
+    current_user: dict = Depends(require_admin),
 ):
     """
     Setup automatic email synchronization
@@ -2103,7 +2102,7 @@ async def get_oauth_automation_status(current_user: dict = Depends(require_auth)
 
 
 @router.post("/api/oauth/refresh")
-async def force_token_refresh(current_user: dict = Depends(require_auth)):
+async def force_token_refresh(current_user: dict = Depends(require_admin)):
     """
     Force refresh OAuth2 token
     Use when automatic refresh fails
@@ -2140,7 +2139,7 @@ async def force_token_refresh(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/oauth/sync")
-async def trigger_oauth_sync(current_user: dict = Depends(require_auth)):
+async def trigger_oauth_sync(current_user: dict = Depends(require_admin)):
     """
     Trigger immediate email sync via OAuth automation
     Uses automatic token management
@@ -2197,7 +2196,7 @@ async def get_oauth_stats(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/oauth/start-automation")
-async def start_oauth_automation(current_user: dict = Depends(require_auth)):
+async def start_oauth_automation(current_user: dict = Depends(require_admin)):
     """
     Start OAuth automation service (if stopped)
     """
@@ -2219,7 +2218,7 @@ async def start_oauth_automation(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/oauth/stop-automation")
-async def stop_oauth_automation(current_user: dict = Depends(require_auth)):
+async def stop_oauth_automation(current_user: dict = Depends(require_admin)):
     """
     Stop OAuth automation service
     Manual sync will still be available
@@ -2242,7 +2241,7 @@ async def stop_oauth_automation(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/email/manual-sync")
-async def manual_email_sync(current_user: dict = Depends(require_auth)):
+async def manual_email_sync(current_user: dict = Depends(require_admin)):
     """
     Emergency manual sync endpoint
     Bypasses OAuth automation for direct sync
@@ -2316,7 +2315,7 @@ async def manual_email_sync(current_user: dict = Depends(require_auth)):
 
 
 @router.post("/api/email/smart-refetch")
-async def smart_email_refetch(current_user: dict = Depends(require_auth)):
+async def smart_email_refetch(current_user: dict = Depends(require_admin)):
     """
     Smart re-fetch: scans ALL inbox emails, compares against existing DB,
     and processes any that were skipped or missed. Does NOT delete or modify

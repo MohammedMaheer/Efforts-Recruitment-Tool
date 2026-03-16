@@ -1302,8 +1302,8 @@ async def lifespan(app):
                 _cur.execute("SELECT COUNT(*) FROM users")
                 _user_count = _cur.fetchone()[0]
                 if _user_count == 0:
-                    _admin_email = os.getenv('ADMIN_EMAIL', 'admin@developer.com')
-                    _admin_password = os.getenv('ADMIN_PASSWORD', '')
+                    _admin_email = os.getenv('ADMIN_EMAIL', 'admin@developer.com').strip().lstrip('\ufeff')
+                    _admin_password = os.getenv('ADMIN_PASSWORD', '').strip().lstrip('\ufeff')
                     if not _admin_password:
                         import secrets
                         _admin_password = secrets.token_urlsafe(16)
@@ -1311,10 +1311,19 @@ async def lifespan(app):
                     _auth_svc.register(
                         email=_admin_email,
                         password=_admin_password,
-                        name=os.getenv('ADMIN_NAME', 'Admin User'),
-                        username=os.getenv('ADMIN_USERNAME', 'admin')
+                        name=os.getenv('ADMIN_NAME', 'Admin User').strip().lstrip('\ufeff'),
+                        username=os.getenv('ADMIN_USERNAME', 'admin').strip().lstrip('\ufeff')
                     )
                     logger.info(f"Admin user created: {_admin_email}")
+                    # Set admin role
+                    try:
+                        _conn_admin = _auth_svc._get_connection()
+                        _cur_admin = _conn_admin.cursor()
+                        _cur_admin.execute("UPDATE users SET role='admin' WHERE email=?", (_admin_email,))
+                        _conn_admin.commit()
+                        logger.info("Admin role set to 'admin'")
+                    except Exception as _e:
+                        logger.error(f"Failed to set admin role: {_e}")
                 else:
                     logger.info(f"Users table OK ({_user_count} users)")
         except Exception as _user_err:
@@ -1438,7 +1447,7 @@ async def lifespan(app):
         try:
             _db = get_db_service()
             _conn = _db.get_connection_raw()
-            health = quick_health_check(_conn)
+            health = await asyncio.to_thread(quick_health_check, _conn)
             _conn.close()
             _conn = None
 
@@ -1451,7 +1460,7 @@ async def lifespan(app):
                     f"Running auto-repair..."
                 )
                 _conn2 = _db.get_connection_raw()
-                repair_result = repair_database(_conn2)
+                repair_result = await asyncio.to_thread(repair_database, _conn2)
                 _conn2.close()
                 _conn2 = None
                 logger.info(

@@ -27,9 +27,22 @@ class Settings(BaseSettings):
     workers: int = Field(default=4, description="Number of worker processes")
     
     # Database
-    database_url: str = Field(default="./recruitment.db", description="SQLite database path")
+    database_url: str = Field(default="./recruitment.db", description="Database URL (PostgreSQL in prod, SQLite in dev)")
     db_pool_size: int = Field(default=10, description="Database connection pool size")
     db_timeout: float = Field(default=30.0, description="Database timeout in seconds")
+
+    @field_validator('database_url')
+    @classmethod
+    def validate_database_url(cls, v):
+        """Warn loudly if production is using SQLite (DATABASE_URL secret likely missing)."""
+        if os.getenv('K_SERVICE') and not v.startswith('postgres'):
+            import logging
+            logging.getLogger(__name__).critical(
+                "DATABASE_URL is not PostgreSQL on Cloud Run! "
+                "Check that the DATABASE_URL secret is mounted correctly. "
+                f"Current value prefix: {v[:20]}"
+            )
+        return v
     
     # AI Services
     ai_timeout: float = Field(default=30.0, description="AI request timeout")

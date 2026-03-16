@@ -11,7 +11,7 @@ from services.token_storage import get_token_storage
 import re
 import hashlib
 from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, HTTPException, BackgroundTasks, Request, Depends, UploadFile, File, Body, Query
 from fastapi.responses import Response, JSONResponse, StreamingResponse, RedirectResponse
 
@@ -187,7 +187,7 @@ async def _send_rejection_email(candidate: Dict):
 
     except Exception as e:
         logger.error(f"❌ Error sending rejection email: {str(e)}")
-        return {'status': 'error', 'message': str(e)}
+        return {'status': 'error', 'message': 'Email sending failed'}
 
 
 async def _send_shortlist_email(candidate: Dict):
@@ -345,11 +345,11 @@ async def _send_shortlist_email(candidate: Dict):
 
     except Exception as e:
         logger.error(f"❌ Error sending shortlist email: {str(e)}")
-        return {'status': 'error', 'message': str(e)}
+        return {'status': 'error', 'message': 'Email sending failed'}
 
 
 @router.put("/api/candidates/{candidate_id}/status")
-async def update_candidate_status(candidate_id: str, status_update: CandidateStatusUpdate, background_tasks: BackgroundTasks, current_user: dict = Depends(require_auth)):
+async def update_candidate_status(candidate_id: str, status_update: CandidateStatusUpdate, background_tasks: BackgroundTasks, current_user: dict = Depends(require_admin)):
     """
     Update candidate status (shortlist, reject, etc.)
     When status is 'Shortlisted', automatically sends a notification email to the candidate.
@@ -361,7 +361,7 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
             raise HTTPException(400, f"Invalid status '{status_update.status}'. Must be one of: {', '.join(sorted(VALID_CANDIDATE_STATUSES))}")
 
         # AUDIT LOG: Record who changed what status and when
-        logger.info(f"🔒 STATUS CHANGE AUDIT: candidate={candidate_id} new_status='{status_update.status}' user='{current_user.get('username', 'unknown')}' timestamp={datetime.utcnow().isoformat()}")
+        logger.info(f"🔒 STATUS CHANGE AUDIT: candidate={candidate_id} new_status='{status_update.status}' user='{current_user.get('username', 'unknown')}' timestamp={datetime.now(timezone.utc).isoformat()}")
 
         # Persist status in database
         updated = await asyncio.to_thread(
@@ -387,7 +387,7 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
                     logger.warning(f"📧 Shortlist email result for {candidate.get('name','?')}: {email_result}")
                 except Exception as email_err:
                     logger.error(f"❌ Shortlist email error: {email_err}")
-                    email_result = {'status': 'error', 'message': str(email_err)}
+                    email_result = {'status': 'error', 'message': 'Email sending failed'}
             else:
                 email_result = {'status': 'skipped', 'reason': 'candidate_not_found'}
 
@@ -400,7 +400,7 @@ async def update_candidate_status(candidate_id: str, status_update: CandidateSta
                     logger.warning(f"📧 Rejection email result for {candidate.get('name','?')}: {email_result}")
                 except Exception as email_err:
                     logger.error(f"❌ Rejection email error: {email_err}")
-                    email_result = {'status': 'error', 'message': str(email_err)}
+                    email_result = {'status': 'error', 'message': 'Email sending failed'}
             else:
                 email_result = {'status': 'skipped', 'reason': 'candidate_not_found'}
 
@@ -626,7 +626,7 @@ async def bulk_shortlist_candidates(
 
             except Exception as e:
                 logger.warning(f"Bulk shortlist error for {cid}: {e}")
-                results.append({'candidate_id': cid, 'status': 'error', 'message': str(e)})
+                results.append({'candidate_id': cid, 'status': 'error', 'message': 'Processing error'})
 
         # Invalidate cache after all updates
         _cache().clear()

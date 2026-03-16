@@ -132,7 +132,12 @@ export const useAuthStore = create<AuthState>()(
           clearTimeout(timeoutId)
           
           if (!response.ok) {
-            set({ isAuthenticated: false, user: null, token: null })
+            // Only clear the token on 401 — the token is definitively invalid/expired.
+            // A 500/503/504 is a backend error, not an auth failure; preserve the token
+            // so the user stays logged in and the OAuth callback can proceed.
+            if (response.status === 401) {
+              set({ isAuthenticated: false, user: null, token: null })
+            }
             return false
           }
           
@@ -147,8 +152,9 @@ export const useAuthStore = create<AuthState>()(
           if (error instanceof DOMException && error.name === 'AbortError') {
             return true
           }
-          // For genuine network errors, clear auth state — user needs to re-login
-          set({ isAuthenticated: false, user: null, token: null })
+          // For genuine network errors, preserve the token — the server may be
+          // temporarily unreachable (cold start, brief outage). The next API call
+          // will re-verify. Only a 401 response definitively invalidates a token.
           return false
         }
       },
