@@ -192,10 +192,10 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
         total_fetched = 0
 
         filter_query = None
-        scan_max_pages = 200
+        scan_max_pages = 500  # Increased from 200 to support 5000+ candidate inboxes (500 pages × 100 per page = 50,000 email capacity)
         if incremental and _last_email_sync_time:
             filter_query = f"receivedDateTime ge {_last_email_sync_time}"
-            scan_max_pages = 60
+            scan_max_pages = 150  # Increased from 60 for incremental too
             logger.info(f"Incremental: emails since {_last_email_sync_time}")
         else:
             logger.info("Full scan: paging through entire inbox")
@@ -205,7 +205,7 @@ async def trigger_reset_and_reparse(email_address: str, incremental: bool = Fals
         async for page in graph_service.get_messages_paged(
             folder='inbox',
             filter_query=filter_query,
-            page_size=50,
+            page_size=100,  # Increased from 50 for better efficiency (MS Graph API supports up to 999)
             max_pages=scan_max_pages
         ):
             total_fetched += len(page)
@@ -1634,6 +1634,29 @@ async def get_sync_status(current_user: dict = Depends(require_auth)):
             'status': 'error',
             'error': 'Failed to fetch sync status'
         }
+
+
+
+@router.post("/api/email/reset-sync-watermark")
+async def reset_sync_watermark(current_user: dict = Depends(require_admin)):
+    """
+    Reset the email sync watermark to force a full inbox rescan.
+    Use this when the first sync was incomplete or to re-fetch all emails.
+    This will disable incremental mode on the next sync.
+    """
+    global _last_email_sync_time
+    try:
+        _last_email_sync_time = None
+        await asyncio.to_thread(_db().set_sync_metadata, 'last_email_sync_time', '')
+        logger.warning(f"⏰ Admin {current_user.get('email', '?')} reset email sync watermark - next sync will be FULL")
+        return {
+            'status': 'success',
+            'message': 'Sync watermark reset. Next email sync will process the entire inbox from the beginning.',
+            'next_scan_mode': 'full'
+        }
+    except Exception as e:
+        logger.error(f"Failed to reset sync watermark: {e}")
+        raise HTTPException(500, "Failed to reset sync watermark")
 
 
 
