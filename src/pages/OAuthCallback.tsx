@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { authFetch } from '@/lib/authFetch'
 import config from '@/config'
@@ -7,11 +7,25 @@ import { useAuthStore } from '@/store/authStore'
 
 export default function OAuthCallback() {
   const navigate = useNavigate()
-  const { user } = useAuthStore()
+  const { user, verifyToken } = useAuthStore()
   const isAdmin = user?.role === 'admin'
   const hasProcessed = useRef(false)  // Prevent duplicate requests
+  const [hydrated, setHydrated] = useState(
+    // Zustand persist: check if already hydrated (synchronous on first call if storage is sync)
+    () => useAuthStore.persist?.hasHydrated?.() ?? true
+  )
+
+  // Wait for Zustand to finish rehydrating from sessionStorage before processing.
+  // On a fresh page load (after Microsoft OAuth redirect) the store may not be
+  // hydrated yet when the component first mounts — causing a false "no token" read.
+  useEffect(() => {
+    if (hydrated) return
+    return useAuthStore.persist.onFinishHydration(() => setHydrated(true))
+  }, [hydrated])
 
   useEffect(() => {
+    if (!hydrated) return  // Wait for sessionStorage hydration first
+
     const handleCallback = async () => {
       // Prevent duplicate calls (React StrictMode calls useEffect twice)
       if (hasProcessed.current) {
@@ -31,6 +45,19 @@ export default function OAuthCallback() {
 
       // Clear the URL to prevent re-use of the code
       window.history.replaceState({}, document.title, '/auth/callback')
+
+      // Now that the store is hydrated, read the token directly.
+      let activeToken = useAuthStore.getState().token
+      if (!activeToken) {
+        // Still no token after hydration — try a full verify round-trip
+        const verified = await verifyToken()
+        activeToken = useAuthStore.getState().token
+        if (!verified || !activeToken) {
+          toast.error('Session Expired', 'Please log in again and reconnect Microsoft.')
+          navigate('/login')
+          return
+        }
+      }
 
       try {
         // Exchange code for token — redirect_uri MUST match the one sent during authorization
@@ -73,7 +100,7 @@ export default function OAuthCallback() {
     }
 
     handleCallback()
-  }, [navigate, isAdmin])
+  }, [navigate, isAdmin, hydrated, verifyToken])
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -85,3 +112,4 @@ export default function OAuthCallback() {
     </div>
   )
 }
+
