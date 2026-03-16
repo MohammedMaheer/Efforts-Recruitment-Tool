@@ -845,26 +845,26 @@ class GeminiService:
             self._daily_call_count += 1
         start = time.time()
         try:
-            # Build config — disable thinking for extraction tasks to save ~70% cost
+            # Build config
             config_kwargs = dict(
                 temperature=temperature,
                 max_output_tokens=max_tokens,
             )
-            # ThinkingConfig.thinking_budget requires google-genai>=1.5; older versions
-            # only support thinking_mode. Gracefully degrade if the parameter is rejected.
-            try:
-                config_kwargs['thinking_config'] = genai_types.ThinkingConfig(
-                    thinking_budget=thinking_budget,
-                )
-            except Exception:
-                # Fallback for older SDK: use thinking_mode instead
+            # Only set ThinkingConfig when a positive budget is requested.
+            # Gemini 2.5 Flash rejects thinking_budget=0 at the API level — omitting
+            # the config entirely lets the model use its default (minimal) thinking.
+            if thinking_budget and thinking_budget > 0:
                 try:
-                    mode = "DISABLED" if thinking_budget == 0 else "ENABLED"
                     config_kwargs['thinking_config'] = genai_types.ThinkingConfig(
-                        thinking_mode=mode,
+                        thinking_budget=thinking_budget,
                     )
                 except Exception:
-                    pass  # Skip thinking config entirely
+                    try:
+                        config_kwargs['thinking_config'] = genai_types.ThinkingConfig(
+                            thinking_mode="ENABLED",
+                        )
+                    except Exception:
+                        pass  # Skip thinking config — model uses defaults
             gen_config = genai_types.GenerateContentConfig(**config_kwargs)
             response = self._client.models.generate_content(
                 model=self.model_name,
@@ -1202,7 +1202,7 @@ Return EXACTLY this JSON:
         if not text or len(text.strip()) < 20:
             return {}
 
-        cache_key = self._cache_key("analyze", text[:500] + (job_context or '')[:200])
+        cache_key = self._cache_key("analyze", text + (job_context or ''))
         cached = self._get_cached(cache_key)
         if cached:
             return cached
@@ -1400,6 +1400,14 @@ quality_score rules: 10+ skills + 5+ yrs + degree = 70-85 | 5-9 skills + 2-5 yrs
         summary = candidate_data.get('summary', '')
         resume_text = candidate_data.get('resume_text', '')
 
+        # If DB has 0 years but summary/resume mentions years, extract the real value
+        if not experience or experience == 0:
+            import re as _re
+            _text = f"{summary} {resume_text}"
+            _m = _re.search(r'(\d{1,2})\+?\s*years?\s*(of\s*)?(?:IT\s*)?experience', _text, _re.IGNORECASE)
+            if _m:
+                experience = int(_m.group(1))
+
         work_text = ""
         if work_history:
             for w in work_history[:6]:
@@ -1482,18 +1490,9 @@ Be specific — reference actual skills, companies, and experience from the prof
             self._set_cache(cache_key, result)
             logger.info(f"🔍 [Gemini] Deep Analysis: {name} → {result.get('hiring_recommendation', 'N/A')}")
 
-        return result or {
-            'executive_summary': f'{name} has {experience} years of experience.',
-            'pros': ['Application submitted'],
-            'cons': ['AI analysis unavailable'],
-            'hiring_recommendation': 'CONSIDER',
-            'confidence_score': 30,
-            'overall_rating': 'C',
-            'overall_assessment': f'{name} profile requires manual review.',
-            'strengths': ['Resume submitted'],
-            'weaknesses': ['Analysis unavailable'],
-            'recommended_roles': ['General'],
-        }
+        # Return None on failure so the caller can build a proper fallback with
+        # real candidate data (score, skills, etc.) rather than a generic placeholder.
+        return result or None
 
     # ==================================================================
     # CANDIDATE-JOB MATCHING
@@ -3456,11 +3455,15 @@ def get_gemini_service() -> Optional[GeminiService]:
     if _gemini_service is None:
         with _gemini_lock:
             if _gemini_service is None:
+                from core.config import get_settings
                 import os
-                api_key = os.getenv("GEMINI_API_KEY", "").strip()
-                model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+                _settings = get_settings()
+                # Read API key from Settings (which handles env vars + .env properly via pydantic-settings)
+                api_key = (_settings.gemini_api_key or os.getenv("GEMINI_API_KEY", "")).strip()
+                model = _settings.gemini_model
                 if api_key:
                     _gemini_service = GeminiService(api_key=api_key, model_name=model)
+                    logger.info(f"✅ Gemini service initialized with {model}")
                 else:
                     logger.info("💡 GEMINI_API_KEY not set — Gemini service not initialized")
                     return None
