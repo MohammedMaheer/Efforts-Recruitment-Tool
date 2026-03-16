@@ -54,7 +54,13 @@ class SemanticSearchService:
 
         # Step 1C: Sort by score and cap to target pool size
         ranked = sorted(scored, key=lambda x: x['semantic_score'], reverse=True)
-        return ranked[:target_pool_size]
+        final = ranked[:target_pool_size]
+
+        # Step 1D: Add match explanations to each candidate
+        for candidate in final:
+            candidate['match_reasons'] = self._build_match_reasons(candidate, constraints)
+
+        return final
 
     def apply_constraint_filters(
         self,
@@ -134,6 +140,28 @@ class SemanticSearchService:
                 if not any(lang.lower() in ' '.join(languages) for lang in constraints.languages):
                     # Soft filter: warning but don't exclude
                     candidate['language_mismatch'] = True
+
+            # ── NEGATIVE CONSTRAINTS (EXCLUSION FILTERS) ──────────────────────────
+
+            # Exclude candidates with negative skills
+            if constraints.negative_skills:
+                candidate_skills = [s.lower() for s in candidate.get('skills', []) or []]
+                if any(neg_skill.lower() in candidate_skills for neg_skill in constraints.negative_skills):
+                    continue  # Exclude this candidate
+
+            # Exclude freelancers if requested
+            if constraints.must_not_be_freelancer:
+                job_title = (candidate.get('jobSubcategory') or candidate.get('job_category') or '').lower()
+                summary = (candidate.get('summary') or '').lower()
+                # Check for freelance keywords
+                if any(keyword in job_title or keyword in summary for keyword in ['freelance', 'contractor', 'contract', 'part-time']):
+                    continue  # Exclude this candidate
+
+            # Exclude specific industries if requested
+            if constraints.excluded_industries:
+                candidate_industry = (candidate.get('current_industry') or candidate.get('job_category') or '').lower()
+                if any(ind.lower() in candidate_industry for ind in constraints.excluded_industries):
+                    continue  # Exclude this candidate
 
             filtered.append(candidate)
 
@@ -286,6 +314,43 @@ class SemanticSearchService:
         # Join all parts
         profile = ' '.join(filter(None, parts))
         return profile.lower()
+
+    def _build_match_reasons(self, candidate: Dict[str, Any], constraints: ParsedConstraints) -> List[str]:
+        """Build list of reasons why candidate matched the query constraints."""
+        match_reasons = []
+
+        # Track matched required skills
+        if constraints.required_skills:
+            candidate_skills = [s.lower() for s in candidate.get('skills', []) or []]
+            matched_skills = []
+            for req_skill in constraints.required_skills:
+                if req_skill.lower() in candidate_skills:
+                    matched_skills.append(req_skill)
+            if matched_skills:
+                match_reasons.append(f"Skills: {', '.join(matched_skills[:3])}")
+
+        # Track experience match
+        if constraints.min_experience is not None:
+            exp = candidate.get('experience', 0) or 0
+            if exp >= constraints.min_experience:
+                match_reasons.append(f"Experience: {exp} years")
+
+        # Track location match
+        if constraints.locations and candidate.get('location_match'):
+            location = candidate.get('location', '')
+            if location:
+                match_reasons.append(f"Location: {location}")
+
+        # Track remote preference match
+        if constraints.remote_type == 'required' and candidate.get('can_work_remote'):
+            match_reasons.append("Remote: Yes")
+
+        # Add semantic relevance score
+        score = candidate.get('semantic_score', 0)
+        if score > 0:
+            match_reasons.append(f"Relevance: {int(score * 100)}%")
+
+        return match_reasons
 
     def _cosine_similarity(self, a: np.ndarray, b: np.ndarray) -> float:
         """Compute cosine similarity between two vectors."""

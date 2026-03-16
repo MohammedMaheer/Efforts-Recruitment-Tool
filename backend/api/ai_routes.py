@@ -1550,6 +1550,19 @@ async def ai_smart_search(
                 "message": "No candidates in database"
             }
 
+        # Phase 2: Deduplicate candidates (merge duplicates + cleanup)
+        total_before_dedup = len(candidates)
+        try:
+            dedup_result = await asyncio.to_thread(_db().deduplicate_candidates)
+            logger.info(f"Dedup: duplicates_found={dedup_result['duplicates_found']}, merged={dedup_result['merged']}")
+            # Refresh candidate list after dedup
+            candidates = await asyncio.to_thread(
+                _db().get_candidates_for_ai, {}, 5000
+            )
+            logger.info(f"Candidate pool after dedup: {len(candidates)} (was {total_before_dedup})")
+        except Exception as dedup_err:
+            logger.warning(f"Dedup failed, continuing with full pool: {dedup_err}")
+
         # Stage 1B+C: Apply two-stage filtering + semantic search
         try:
             from services.semantic_search_service import get_semantic_search_service

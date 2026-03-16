@@ -57,6 +57,20 @@ INDUSTRY_PATTERN = re.compile(
     re.IGNORECASE
 )
 
+# Negative constraint patterns
+NEGATIVE_SKILLS_PATTERN = re.compile(
+    r'(?:not|exclude|no|without|don\'t use|avoid|no experience with)\s+([^.]*?)(?:(?:\.|,|and|or|but|salary|location|experience|required|years|year)\b|$)',
+    re.IGNORECASE
+)
+FREELANCER_PATTERN = re.compile(
+    r'\b(?:no|exclude|not)\s+(?:freelance|contractor|freelancers|contractors|contract work|part.?time)\b',
+    re.IGNORECASE
+)
+EXCLUDE_INDUSTRY_PATTERN = re.compile(
+    r'(?:no|exclude|not)\s+([^.]*?)(?:(?:industry|company|organization|\.)\b|$)',
+    re.IGNORECASE
+)
+
 
 # ── Skill Synonyms (reused from gemini_service.py) ──────────────────────────
 
@@ -113,6 +127,7 @@ class ParsedConstraints(BaseModel):
     """Structured constraints extracted from natural language query."""
     required_skills: List[str] = []
     nice_to_have_skills: List[str] = []
+    negative_skills: List[str] = []  # Skills to EXCLUDE (NOT Java, Exclude Node.js)
     min_experience: Optional[int] = None
     max_experience: Optional[int] = None
     seniority_level: Optional[str] = None  # junior, mid, senior, lead
@@ -122,8 +137,10 @@ class ParsedConstraints(BaseModel):
     max_salary: Optional[float] = None
     education_level: Optional[str] = None  # high_school, bachelors, masters, phd
     industries: List[str] = []
+    excluded_industries: List[str] = []  # Industries to EXCLUDE (no startups, exclude agencies)
     notice_period_max: Optional[str] = None  # immediate, 2weeks, 1month
     languages: List[str] = []
+    must_not_be_freelancer: bool = False  # Exclude freelancers/contractors
 
     def dict(self):
         """Return dict excluding None/empty values."""
@@ -148,6 +165,7 @@ class ConstraintParser:
         return ParsedConstraints(
             required_skills=self._extract_required_skills(query_lower),
             nice_to_have_skills=self._extract_nice_to_have_skills(query_lower),
+            negative_skills=self._extract_negative_skills(query_lower),
             min_experience=self._extract_min_experience(query_lower),
             max_experience=self._extract_max_experience(query_lower),
             seniority_level=self._extract_seniority(query_lower),
@@ -157,8 +175,10 @@ class ConstraintParser:
             max_salary=self._extract_max_salary(query_lower),
             education_level=self._extract_education_level(query_lower),
             industries=self._extract_industries(query_lower),
+            excluded_industries=self._extract_excluded_industries(query_lower),
             notice_period_max=self._extract_notice_period(query_lower),
             languages=self._extract_languages(query_lower),
+            must_not_be_freelancer=self._extract_freelancer_exclusion(query_lower),
         )
 
     def _extract_required_skills(self, query: str) -> List[str]:
@@ -356,8 +376,41 @@ class ConstraintParser:
 
         return list(languages)
 
+    def _extract_negative_skills(self, query: str) -> List[str]:
+        """Extract skills to EXCLUDE from candidates (NOT Java, Exclude Node.js, etc.)."""
+        negative_skills = set()
 
-# ── Singleton ─────────────────────────────────────────────────────────────────
+        # Look for negative skill patterns
+        match = NEGATIVE_SKILLS_PATTERN.search(query)
+        if match:
+            skills_text = match.group(1)
+            # Find skill mentions in the negative section
+            for skill_canonical, aliases in SKILL_SYNONYMS.items():
+                pattern = r'\b(' + '|'.join([re.escape(skill_canonical)] + [re.escape(a) for a in aliases]) + r')\b'
+                if re.search(pattern, skills_text, re.IGNORECASE):
+                    negative_skills.add(skill_canonical)
+
+        return list(negative_skills)
+
+    def _extract_excluded_industries(self, query: str) -> List[str]:
+        """Extract industries to EXCLUDE (no startups, exclude agencies, etc.)."""
+        excluded = set()
+
+        match = EXCLUDE_INDUSTRY_PATTERN.search(query)
+        if match:
+            industry_text = match.group(1)
+            # Check for industry mentions
+            for ind in ['startup', 'agency', 'freelance', 'contract', 'saas', 'b2b', 'enterprise', 'nonprofit', 'ngo']:
+                if ind in industry_text.lower():
+                    excluded.add(ind)
+
+        return list(excluded)
+
+    def _extract_freelancer_exclusion(self, query: str) -> bool:
+        """Check if query excludes freelancers/contractors."""
+        return bool(FREELANCER_PATTERN.search(query))
+
+
 
 _constraint_parser = None
 
