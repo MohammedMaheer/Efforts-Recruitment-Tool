@@ -2462,15 +2462,35 @@ class DatabaseService:
             self.return_connection(conn)
 
     # ── Search History ──────────────────────────────────────────────────
-    def save_search(self, search_id: str, query: str, description: str, result_count: int, top_results: list, user_id: str = ""):
-        """Save a search to history"""
+    def save_search(self, search_id: str, query: str, description: str, result_count: int, top_results: list, user_id: str = "", constraints_dict: dict = None, result_ids: list = None):
+        """
+        Save a search to history with optional constraint tracking (Phase 1.3).
+
+        Args:
+            search_id: Unique search ID
+            query: Original search query
+            description: Job category or description
+            result_count: Number of results found
+            top_results: Top candidate results
+            user_id: User who performed the search
+            constraints_dict: Parsed constraints from query (Phase 1.3)
+            result_ids: Top result IDs for analytics (Phase 1.3)
+        """
         conn = self.get_connection_raw()
         try:
             cursor = conn.cursor()
+            # Prepare constraints JSON (Phase 1.3)
+            constraints_json = json.dumps(constraints_dict) if constraints_dict else None
+            result_ids_json = json.dumps(result_ids) if result_ids else None
+
             cursor.execute("""
-                INSERT OR REPLACE INTO search_history (id, query, description, result_count, top_results, searched_at, user_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (search_id, query, description, result_count, json.dumps(top_results[:100] if isinstance(top_results, list) else []), datetime.now().isoformat(), user_id))
+                INSERT OR REPLACE INTO search_history
+                (id, query, description, result_count, top_results, searched_at, user_id, constraints_json, result_ids)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (search_id, query, description, result_count,
+                  json.dumps(top_results[:100] if isinstance(top_results, list) else []),
+                  datetime.now().isoformat(), user_id,
+                  constraints_json, result_ids_json))
             conn.commit()
         except Exception as e:
             logger.error(f"Error saving search: {e}")

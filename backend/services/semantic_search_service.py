@@ -174,10 +174,11 @@ class SemanticSearchService:
         batch_size: int = 32,
     ) -> List[Dict[str, Any]]:
         """
-        Compute semantic similarity scores using embeddings.
+        Compute semantic similarity scores using embeddings with caching (Phase 1.1).
 
         Enriches candidate profiles (skills + summary + history) and compares
         to query using sentence-transformers cosine similarity.
+        Caches embeddings to avoid recomputation on repeated searches.
 
         Args:
             candidates: Filtered candidate list
@@ -190,11 +191,18 @@ class SemanticSearchService:
         if not candidates:
             return []
 
-        # Compute query embedding once
+        # Get embedding cache (Phase 1.1)
+        from api.deps import get_embedding_cache
+        embedding_cache = get_embedding_cache()
+
+        # Compute query embedding once (cache query too)
         try:
-            query_embedding = await asyncio.to_thread(
-                self.local_ai_service.get_embedding, query
-            )
+            query_embedding = await embedding_cache.get(query)
+            if query_embedding is None:
+                query_embedding = await asyncio.to_thread(
+                    self.local_ai_service.get_embedding, query
+                )
+                await embedding_cache.set(query, query_embedding)
         except Exception as e:
             logger.error(f"Failed to embed query: {e}")
             logger.warning("Falling back to equal scores")
@@ -207,15 +215,47 @@ class SemanticSearchService:
             self._enrich_candidate_profile(c) for c in candidates
         ]
 
-        # Compute embeddings in batches
+        # Check cache for embeddings and identify missing ones (Phase 1.1)
         candidate_embeddings = []
+        missing_profiles = []
+        missing_indices = []
+
         try:
-            for i in range(0, len(candidate_profiles), batch_size):
-                batch = candidate_profiles[i : i + batch_size]
-                batch_embeddings = await asyncio.to_thread(
-                    self._batch_embed, batch
-                )
-                candidate_embeddings.extend(batch_embeddings)
+            cached_embs, missing = await embedding_cache.get_batch(candidate_profiles)
+
+            # Build embeddings list with cache hits, placeholders for misses
+            for i, profile in enumerate(candidate_profiles):
+                if profile in cached_embs:
+                    candidate_embeddings.append(cached_embs[profile])
+                else:
+                    candidate_embeddings.append(None)
+                    missing_profiles.append(profile)
+                    missing_indices.append(i)
+
+            # Compute missing embeddings only
+            if missing_profiles:
+                logger.debug(f"Embedding cache: {len(cached_embs)}/{len(candidate_profiles)} hits, computing {len(missing_profiles)} missing")
+                computed_embeddings = []
+                for i in range(0, len(missing_profiles), batch_size):
+                    batch = missing_profiles[i : i + batch_size]
+                    batch_embeddings = await asyncio.to_thread(
+                        self._batch_embed, batch
+                    )
+                    computed_embeddings.extend(batch_embeddings)
+
+                # Store computed embeddings in cache and fill results
+                computed_dict = {}
+                for profile, embedding in zip(missing_profiles, computed_embeddings):
+                    if embedding is not None:
+                        computed_dict[profile] = embedding
+                await embedding_cache.set_batch(computed_dict)
+
+                # Fill in computed embeddings
+                for idx, embedding in zip(missing_indices, computed_embeddings):
+                    candidate_embeddings[idx] = embedding
+            else:
+                logger.debug(f"Embedding cache: 100% hit rate ({len(candidate_profiles)}/{len(candidate_profiles)})")
+
         except Exception as e:
             logger.error(f"Failed to embed candidates: {e}")
             logger.warning("Falling back to equal scores")

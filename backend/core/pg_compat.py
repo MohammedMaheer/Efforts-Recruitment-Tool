@@ -326,7 +326,9 @@ CREATE TABLE IF NOT EXISTS search_history (
     result_count INTEGER DEFAULT 0,
     top_results TEXT,
     searched_at TEXT DEFAULT CURRENT_TIMESTAMP,
-    user_id TEXT
+    user_id TEXT,
+    constraints_json TEXT,
+    result_ids TEXT
 )
 """
 

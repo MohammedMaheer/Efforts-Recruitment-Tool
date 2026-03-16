@@ -33,6 +33,10 @@ _cache_lock = threading.Lock()
 # Database write semaphore (prevents SQLite lock contention)
 db_semaphore = asyncio.Semaphore(5)
 
+# Embedding cache (Phase 1.1: Cache Embeddings)
+# Lazy-loaded singlet on first use
+_embedding_cache = None
+
 # Login rate limiting
 _login_attempts: dict = {}
 _LOGIN_MAX_ATTEMPTS = 5
@@ -135,6 +139,16 @@ def get_matching_engine():
 def get_email_parser():
     """Get email parser instance."""
     return _services['email_parser']
+
+
+def get_embedding_cache():
+    """Get or create embedding cache singleton (Phase 1.1)."""
+    global _embedding_cache
+    if _embedding_cache is None:
+        from core.ai_optimizer import EmbeddingCache
+        _embedding_cache = EmbeddingCache(max_entries=5000, embedding_dim=384)
+        logger.info("Initialized embedding cache (5000 entries, 384-dim)")
+    return _embedding_cache
 
 
 def get_local_ai():

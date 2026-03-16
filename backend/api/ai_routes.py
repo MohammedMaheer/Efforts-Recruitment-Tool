@@ -6,6 +6,7 @@ import logging
 import time
 import re
 import hashlib
+import uuid as _uuid_mod
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, List, Optional, Any
 from datetime import datetime, timedelta
@@ -1509,6 +1510,28 @@ async def ai_status(current_user: dict = Depends(require_auth)):
 
 
 
+
+# ---- Helper function to log search history (Phase 1.3) ----
+
+async def _log_search(query: str, constraints_dict: dict, result_count: int, result_ids: List[str], user_id: str):
+    """
+    Log search query to search_history table for analytics (Phase 1.3).
+    Fire-and-forget to avoid blocking response.
+    """
+    try:
+        await asyncio.to_thread(
+            _db().save_search,
+            str(_uuid_mod.uuid4())[:12],
+            query,
+            constraints_dict,
+            result_count,
+            result_ids[:10],  # Top 10 IDs
+            user_id
+        )
+    except Exception as e:
+        logger.debug(f"Search history save failed (non-critical): {e}")
+
+
 @router.post("/api/ai/smart-search")
 async def ai_smart_search(
     query: str = Body(..., embed=True),
@@ -1595,6 +1618,14 @@ async def ai_smart_search(
                     )
                     if ranked:
                         formatted = _format_search_results(ranked, candidates)
+                        # Log search to history (Phase 1.3)
+                        asyncio.create_task(_log_search(
+                            query,
+                            constraints.dict(),
+                            len(formatted),
+                            [r.get('id') for r in formatted],
+                            current_user.get('sub', '')
+                        ))
                         return {
                             "results": formatted,
                             "total_candidates": len(candidates),
@@ -1613,6 +1644,14 @@ async def ai_smart_search(
             # Fallback: Return filtered results ranked by semantic score
             filtered.sort(key=lambda x: x.get('semantic_score', 0), reverse=True)
             formatted = _format_search_results(filtered[:top_n], candidates)
+            # Log search to history (Phase 1.3)
+            asyncio.create_task(_log_search(
+                query,
+                constraints.dict(),
+                len(formatted),
+                [r.get('id') for r in formatted],
+                current_user.get('sub', '')
+            ))
             return {
                 "results": formatted,
                 "total_candidates": len(candidates),

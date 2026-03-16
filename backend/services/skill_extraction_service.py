@@ -5,6 +5,7 @@ Identifies implicit skills, skill levels, and related technologies
 """
 import logging
 import re
+from difflib import get_close_matches
 from typing import Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,37 @@ class AdvancedSkillExtractor:
     
     def __init__(self):
         pass
-    
+
+    def _fuzzy_match_skill(self, typo_skill: str, candidate_skills: List[str], threshold: float = 0.85) -> Optional[str]:
+        """
+        Find similar skill in candidate list - handles typos (Phase 1.2).
+
+        Uses difflib.get_close_matches for fuzzy string matching.
+        Example: "Phyton" -> "Python", "Sofware" -> "Software"
+
+        Args:
+            typo_skill: Skill name with potential typo
+            candidate_skills: List of candidate skills to search in
+            threshold: Minimum similarity ratio (0.0-1.0)
+
+        Returns:
+            Matching skill name if found, None otherwise
+        """
+        candidate_skills_lower = [s.lower() for s in candidate_skills]
+        matches = get_close_matches(
+            typo_skill.lower(),
+            candidate_skills_lower,
+            n=1,
+            cutoff=threshold
+        )
+        if matches:
+            # Find the original skill name (with original casing)
+            match_lower = matches[0]
+            for skill in candidate_skills:
+                if skill.lower() == match_lower:
+                    return skill
+        return None
+
     async def extract_skills(self, resume_text: str) -> Dict:
         """
         Extract skills from resume using local pattern matching.
@@ -246,20 +277,32 @@ class AdvancedSkillExtractor:
     
     async def analyze_skill_gaps(self, candidate_skills: List[str], job_skills: List[str]) -> Dict:
         """
-        Analyze gaps between candidate skills and job requirements
+        Analyze gaps between candidate skills and job requirements.
+        Uses fuzzy matching (Phase 1.2) for typo tolerance.
         """
         candidate_set = set(s.lower() for s in candidate_skills)
         job_set = set(s.lower() for s in job_skills)
-        
-        # Direct matches
+
+        # Direct matches (exact)
         matching = candidate_set & job_set
-        
-        # Missing skills
+
+        # Missing skills (with fuzzy fallback - Phase 1.2)
         missing = job_set - candidate_set
-        
+        fuzzy_matched = set()
+
+        for missing_skill in list(missing):
+            # Try fuzzy match (Phase 1.2)
+            fuzzy_match = self._fuzzy_match_skill(missing_skill, list(candidate_set), threshold=0.85)
+            if fuzzy_match:
+                fuzzy_matched.add(missing_skill)
+                matching.add(missing_skill)  # Count as match via fuzzy
+
+        # Remove fuzzy matched from missing set
+        missing = missing - fuzzy_matched
+
         # Extra skills (candidate has, job doesn't require)
         extra = candidate_set - job_set
-        
+
         # Check for related skills that could substitute
         transferable = []
         for missing_skill in missing:
@@ -271,7 +314,7 @@ class AdvancedSkillExtractor:
                             'missing': missing_skill,
                             'covered_by': candidate_skill
                         })
-        
+
         # Calculate match percentage
         if job_set:
             covered = len(matching) + len(transferable)
