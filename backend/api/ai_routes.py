@@ -47,6 +47,10 @@ def _gemini():
     from api.deps import get_gemini
     return get_gemini()
 
+def _ollama():
+    from api.deps import get_ollama
+    return get_ollama()
+
 def _scraper():
     from api.deps import get_scraper
     return get_scraper()
@@ -127,21 +131,38 @@ async def _run_candidate_analysis(candidate_id: str, refresh: bool = False):
             candidate_for_analysis['resume_text'] = resume_text[:4000]
 
         analysis = None
-        # TIER 0 — Gemini (primary)
+        # TIER 0 — Ollama (local LLM — free)
         try:
-            from services.gemini_service import get_gemini_service
-            gemini_svc = get_gemini_service()
-            if gemini_svc and gemini_svc.available:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc and ollama_svc.available:
                 analysis = await asyncio.wait_for(
-                    gemini_svc.analyze_candidate_deep(candidate_for_analysis),
-                    timeout=45.0
+                    ollama_svc.analyze_candidate_deep(candidate_for_analysis),
+                    timeout=120.0
                 )
                 if analysis:
-                    analysis['source'] = 'gemini'
+                    analysis['source'] = 'ollama'
         except asyncio.TimeoutError:
-            logger.warning(f"Gemini deep analysis timeout for {candidate_id}")
-        except Exception as gemini_err:
-            logger.warning(f"Gemini deep analysis error: {gemini_err}")
+            logger.warning(f"Ollama deep analysis timeout for {candidate_id}")
+        except Exception as ollama_err:
+            logger.warning(f"Ollama deep analysis error: {ollama_err}")
+
+        # TIER 1 — Gemini (cloud fallback)
+        if not analysis:
+            try:
+                from services.gemini_service import get_gemini_service
+                gemini_svc = get_gemini_service()
+                if gemini_svc and gemini_svc.available:
+                    analysis = await asyncio.wait_for(
+                        gemini_svc.analyze_candidate_deep(candidate_for_analysis),
+                        timeout=45.0
+                    )
+                    if analysis:
+                        analysis['source'] = 'gemini'
+            except asyncio.TimeoutError:
+                logger.warning(f"Gemini deep analysis timeout for {candidate_id}")
+            except Exception as gemini_err:
+                logger.warning(f"Gemini deep analysis error: {gemini_err}")
 
         if not analysis:
             skills = candidate_for_analysis.get('skills', [])
@@ -272,6 +293,9 @@ def _quick_fallback_analysis(candidate: dict, job_description: dict) -> dict:
 
 def _determine_primary_engine() -> str:
     """Determine which AI engine is currently primary."""
+    ollama_svc = _ollama()
+    if ollama_svc and ollama_svc.available:
+        return "ollama"
     gemini_svc = _gemini()
     if gemini_svc and gemini_svc.available:
         return "gemini"
@@ -281,6 +305,9 @@ def _determine_primary_engine() -> str:
 def _determine_model_description() -> str:
     """Dynamic model description based on what's available."""
     parts = []
+    ollama_svc = _ollama()
+    if ollama_svc and ollama_svc.available:
+        parts.append(f"Ollama ({ollama_svc.primary_model})")
     gemini_svc = _gemini()
     if gemini_svc and gemini_svc.available:
         parts.append(f"Gemini ({gemini_svc.model_name})")
@@ -291,7 +318,10 @@ def _determine_model_description() -> str:
 def _determine_ai_message() -> str:
     """Generate AI status message based on current configuration."""
     primary = _determine_primary_engine()
+    ollama_svc = _ollama()
     gemini_svc = _gemini()
+    if primary == "ollama":
+        return f"AI Stack: Ollama {ollama_svc.primary_model} (primary, local, FREE) + Local Embeddings + NER"
     if primary == "gemini":
         return f"AI Stack: Gemini {gemini_svc.model_name} (primary) + Local Embeddings + NER"
     return "AI Stack: Sentence-Transformers + SpaCy NER + Keyword (FREE, no LLM)"
@@ -300,6 +330,8 @@ def _determine_ai_message() -> str:
 def _determine_cost_info() -> str:
     """Generate cost information string."""
     primary = _determine_primary_engine()
+    if primary == "ollama":
+        return "$0 (Ollama local LLM — no API costs)"
     if primary == "gemini":
         return "~$0.01-0.05/day (Gemini 2.5 Flash is very low cost)"
     return "$0 (all local, no API costs)"
@@ -388,7 +420,31 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
             cached['from_cache'] = True
             return cached
 
-        # TIER 0 — Gemini
+        # TIER 0 — Ollama (local LLM — free)
+        try:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc and ollama_svc.available:
+                analysis = await asyncio.wait_for(
+                    ollama_svc.analyze_candidate_deep(candidate),
+                    timeout=120.0
+                )
+                if analysis and analysis.get('overall_rating'):
+                    result = {
+                        "candidate_id": candidate_id,
+                        "candidate_name": candidate['name'],
+                        **analysis,
+                        "ai_powered": True,
+                        "source": "ollama"
+                    }
+                    _cache()[cache_key] = result
+                    return result
+        except asyncio.TimeoutError:
+            logger.warning("Ollama deep analysis timeout")
+        except Exception as ollama_err:
+            logger.warning(f"Ollama deep analysis failed: {ollama_err}")
+
+        # TIER 1 — Gemini (cloud fallback)
         try:
             from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()
@@ -410,7 +466,7 @@ async def get_candidate_deep_analysis(candidate_id: str, current_user: dict = De
         except Exception as gemini_err:
             logger.warning(f"Gemini deep analysis failed: {gemini_err}")
 
-        # TIER 1: Basic fallback — No AI
+        # TIER 2: Basic fallback — No AI
         return {
             "candidate_id": candidate_id,
             "candidate_name": candidate['name'],
@@ -500,21 +556,46 @@ async def match_candidates_to_job_file(
 
         total_searched = len(candidates_list)
 
-        # TIER 0: Try Gemini (primary AI — always available in production)
+        ranked = None
+        ai_source = None
+
+        # TIER 0 — Ollama (local LLM — free)
         try:
-            from services.gemini_service import get_gemini_service
-            gemini_svc = get_gemini_service()
-            if gemini_svc and gemini_svc.available:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc and ollama_svc.available:
                 ranked = await asyncio.wait_for(
-                    gemini_svc.rank_candidates_for_job(candidates_list, jd_text, top_n),
-                    timeout=_deps().AI_ANALYSIS_TIMEOUT
+                    ollama_svc.rank_candidates_for_job(candidates_list, jd_text, top_n),
+                    timeout=120.0
                 )
                 if ranked:
-                    formatted_rankings = []
-                    for i, r in enumerate(ranked):
-                        c = r.get('candidate', {})
-                        m = r.get('match', {})
-                        formatted_rankings.append({
+                    ai_source = "ollama"
+        except asyncio.TimeoutError:
+            logger.warning("Ollama job file matching timeout")
+        except Exception as ollama_err:
+            logger.warning(f"Ollama job file matching failed: {ollama_err}")
+
+        # TIER 1 — Gemini (cloud fallback)
+        if not ranked:
+            try:
+                from services.gemini_service import get_gemini_service
+                gemini_svc = get_gemini_service()
+                if gemini_svc and gemini_svc.available:
+                    ranked = await asyncio.wait_for(
+                        gemini_svc.rank_candidates_for_job(candidates_list, jd_text, top_n),
+                        timeout=_deps().AI_ANALYSIS_TIMEOUT
+                    )
+                    if ranked:
+                        ai_source = "gemini"
+            except (asyncio.TimeoutError, Exception) as gemini_err:
+                logger.warning(f"Gemini job file matching failed: {gemini_err}")
+
+        if ranked:
+            formatted_rankings = []
+            for i, r in enumerate(ranked):
+                c = r.get('candidate', {})
+                m = r.get('match', {})
+                formatted_rankings.append({
                             'rank': i + 1,
                             'candidate_id': c.get('id', ''),
                             'candidate_name': c.get('name', 'Unknown'),
@@ -547,16 +628,14 @@ async def match_candidates_to_job_file(
                                 'isShortlisted': c.get('status', '') == 'Shortlisted',
                             },
                         })
-                    return {
-                        "status": "success",
-                        "rankings": formatted_rankings,
-                        "ai_powered": True,
-                        "source": "gemini",
-                        "total_candidates_searched": total_searched,
-                        "jd_text_length": len(jd_text)
-                    }
-        except (asyncio.TimeoutError, Exception) as gemini_err:
-            logger.warning(f"Gemini job file matching failed: {gemini_err}")
+                return {
+                    "status": "success",
+                    "rankings": formatted_rankings,
+                    "ai_powered": True,
+                    "source": ai_source,
+                    "total_candidates_searched": total_searched,
+                    "jd_text_length": len(jd_text)
+                }
 
         # TIER 1: Enhanced keyword matching fallback
         jd_lower = jd_text.lower()
@@ -637,21 +716,46 @@ async def match_candidates_to_job_description(
                 "job_analysis": {}
             }
 
-        # TIER 0: Try Gemini (primary AI — always available in production)
+        ranked = None
+        ai_source = None
+
+        # TIER 0 — Ollama (local LLM — free)
         try:
-            from services.gemini_service import get_gemini_service
-            gemini_svc = get_gemini_service()
-            if gemini_svc and gemini_svc.available:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc and ollama_svc.available:
                 ranked = await asyncio.wait_for(
-                    gemini_svc.rank_candidates_for_job(candidates, job_description, top_n),
-                    timeout=_deps().AI_ANALYSIS_TIMEOUT
+                    ollama_svc.rank_candidates_for_job(candidates, job_description, top_n),
+                    timeout=120.0
                 )
                 if ranked:
-                    formatted_rankings = []
-                    for i, r in enumerate(ranked):
-                        c = r.get('candidate', {})
-                        m = r.get('match', {})
-                        formatted_rankings.append({
+                    ai_source = "ollama"
+        except asyncio.TimeoutError:
+            logger.warning("Ollama job matching timeout")
+        except Exception as ollama_err:
+            logger.warning(f"Ollama job matching failed: {ollama_err}")
+
+        # TIER 1 — Gemini (cloud fallback)
+        if not ranked:
+            try:
+                from services.gemini_service import get_gemini_service
+                gemini_svc = get_gemini_service()
+                if gemini_svc and gemini_svc.available:
+                    ranked = await asyncio.wait_for(
+                        gemini_svc.rank_candidates_for_job(candidates, job_description, top_n),
+                        timeout=_deps().AI_ANALYSIS_TIMEOUT
+                    )
+                    if ranked:
+                        ai_source = "gemini"
+            except (asyncio.TimeoutError, Exception) as gemini_err:
+                logger.warning(f"Gemini job matching failed: {gemini_err}")
+
+        if ranked:
+            formatted_rankings = []
+            for i, r in enumerate(ranked):
+                c = r.get('candidate', {})
+                m = r.get('match', {})
+                formatted_rankings.append({
                             'rank': i + 1,
                             'candidate_id': c.get('id', ''),
                             'candidate_name': c.get('name', 'Unknown'),
@@ -684,15 +788,13 @@ async def match_candidates_to_job_description(
                                 'isShortlisted': c.get('status', '') == 'Shortlisted',
                             },
                         })
-                    return {
-                        "status": "success",
-                        "rankings": formatted_rankings,
-                        "ai_powered": True,
-                        "source": "gemini",
-                        "total_candidates_searched": len(candidates),
-                    }
-        except (asyncio.TimeoutError, Exception) as gemini_err:
-            logger.warning(f"Gemini job matching failed: {gemini_err}")
+                return {
+                    "status": "success",
+                    "rankings": formatted_rankings,
+                    "ai_powered": True,
+                    "source": ai_source,
+                    "total_candidates_searched": len(candidates),
+                }
 
         # TIER 1: Basic keyword matching fallback
         jd_lower = job_description.lower()
@@ -762,7 +864,36 @@ async def compare_candidates(
         if len(candidates) < 2:
             raise HTTPException(404, "Could not find enough candidates to compare")
         
-        # TIER 0 — Gemini
+        # TIER 0 — Ollama (local LLM — free)
+        try:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc and ollama_svc.available:
+                jd_part = f" against this job: {job_description[:3000]}" if job_description else ""
+                cand_summaries = [
+                    f"{c.get('name','?')}: {c.get('experience',0)}yr exp, skills: {', '.join(c.get('skills',[])[:5])}"
+                    for c in candidates
+                ]
+                query = f"Compare and rank these candidates{jd_part}. Candidates: {'; '.join(cand_summaries)}"
+                ollama_result = await asyncio.wait_for(
+                    ollama_svc.chat(query, None, candidates_data=candidates),
+                    timeout=120.0
+                )
+                if ollama_result:
+                    response_text = ollama_result.get('response', '') if isinstance(ollama_result, dict) else str(ollama_result)
+                    if response_text:
+                        return {
+                            "comparison_summary": response_text,
+                            "candidates": [c.get('name', 'Unknown') for c in candidates],
+                            "ai_powered": True,
+                            "source": "ollama"
+                        }
+        except asyncio.TimeoutError:
+            logger.warning("Ollama comparison timeout")
+        except Exception as ollama_err:
+            logger.warning(f"Ollama comparison failed: {ollama_err}")
+
+        # TIER 1 — Gemini (cloud fallback)
         try:
             from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()
@@ -789,7 +920,7 @@ async def compare_candidates(
         except Exception as gemini_err:
             logger.warning(f"Gemini comparison failed: {gemini_err}")
 
-        # TIER 1: Rule-based fallback
+        # TIER 2: Rule-based fallback
         candidates.sort(key=lambda x: x.get('matchScore', 0), reverse=True)
         return {
             "comparison_matrix": [
@@ -883,7 +1014,49 @@ async def ai_chat(
                 'categories': stats.get('categories', {}),
             }
         
-        # TIER 0: Try Gemini (cost-effective, always available in production)
+        # TIER 0 — Ollama (local LLM — free)
+        try:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc and ollama_svc.available:
+                ollama_result = await asyncio.wait_for(
+                    ollama_svc.chat(message, context, conversation_history=conversation_history, candidates_data=candidates_data, return_candidates=True, num_candidates=num_candidates),
+                    timeout=120.0
+                )
+                if ollama_result:
+                    if isinstance(ollama_result, dict):
+                        cands = ollama_result.get('candidates_lookup', [])
+                        try:
+                            import uuid as _uuid_mod
+                            top3 = [{"name": c.get("name",""), "score": c.get("matchScore", 0), "id": c.get("id","")} for c in cands[:3]]
+                            await asyncio.to_thread(
+                                _db().save_search,
+                                str(_uuid_mod.uuid4())[:12], message,
+                                (cands[0].get("jobCategory","") if cands else ""),
+                                len(cands), top3, current_user.get("sub","")
+                            )
+                        except Exception as e:
+                            logger.debug(f"Non-critical: save_search failed: {e}")
+                        return {
+                            "response": ollama_result.get('response', ''),
+                            "ai_powered": True,
+                            "context_included": include_candidates,
+                            "source": "ollama",
+                            "candidates_lookup": cands
+                        }
+                    else:
+                        return {
+                            "response": ollama_result,
+                            "ai_powered": True,
+                            "context_included": include_candidates,
+                            "source": "ollama"
+                        }
+        except asyncio.TimeoutError:
+            logger.warning("Ollama chat timeout")
+        except Exception as ollama_err:
+            logger.warning(f"Ollama chat error: {ollama_err}")
+
+        # TIER 1 — Gemini (cloud fallback)
         try:
             from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()
@@ -931,10 +1104,10 @@ async def ai_chat(
             import traceback as _tb
             logger.warning(f"Gemini chat error: {gemini_err}\n{_tb.format_exc()}")
         
-        # TIER 1: Rule-based fallback
+        # TIER 2: Rule-based fallback
         return {
             "response": f"I understand you're asking about: '{message}'. Currently no AI services are available. "
-                        f"Please configure GEMINI_API_KEY for intelligent responses.",
+                        f"Please check Ollama is running or configure GEMINI_API_KEY for intelligent responses.",
             "ai_powered": False,
             "context_included": include_candidates,
             "source": "rule_based"
@@ -1008,15 +1181,8 @@ async def rescore_single_candidate(candidate_id: str, current_user: dict = Depen
                 "jobCategory": old_category,
             }
 
-        # Use Gemini (preferred) or fallback AI service
+        # Use best available AI (Ollama > Gemini > local)
         rescore_ai = _ai()
-        try:
-            from services.gemini_service import get_gemini_service
-            gemini_svc = get_gemini_service()
-            if gemini_svc and gemini_svc.available:
-                rescore_ai = gemini_svc
-        except Exception:
-            pass
 
         new_score = old_score
         new_category = old_category
@@ -1187,25 +1353,44 @@ async def analyze_match(request: AnalyzeMatchRequest, current_user: dict = Depen
             return cached
         
         result = None
-        # TIER 0 — Gemini (primary)
+        # TIER 0 — Ollama (local LLM — free)
         try:
-            from services.gemini_service import get_gemini_service
-            _ai_gemini = get_gemini_service()
-            if _ai_gemini and _ai_gemini.available:
+            from services.llm_service import get_llm_service
+            _ai_ollama = get_llm_service()
+            if _ai_ollama and _ai_ollama.available:
                 jd_text = json.dumps(request.job_description)
                 result = await asyncio.wait_for(
-                    _ai_gemini.match_candidate_to_job(request.candidate, jd_text),
-                    timeout=15.0
+                    _ai_ollama.match_candidate_to_job(request.candidate, jd_text),
+                    timeout=120.0
                 )
                 if result:
-                    result['source'] = 'gemini'
-                    logger.info("✅ Gemini match analysis completed")
+                    result['source'] = 'ollama'
+                    logger.info("✅ Ollama match analysis completed")
         except asyncio.TimeoutError:
-            logger.warning("⏱️ Gemini analyze-match timeout")
-        except Exception as gemini_err:
-            logger.warning(f"⚠️ Gemini analyze-match error: {gemini_err}")
+            logger.warning("⏱️ Ollama analyze-match timeout")
+        except Exception as ollama_err:
+            logger.warning(f"⚠️ Ollama analyze-match error: {ollama_err}")
 
-        # TIER 1 — Local AI (fallback)
+        # TIER 1 — Gemini (cloud fallback)
+        if not result:
+            try:
+                from services.gemini_service import get_gemini_service
+                _ai_gemini = get_gemini_service()
+                if _ai_gemini and _ai_gemini.available:
+                    jd_text = json.dumps(request.job_description)
+                    result = await asyncio.wait_for(
+                        _ai_gemini.match_candidate_to_job(request.candidate, jd_text),
+                        timeout=15.0
+                    )
+                    if result:
+                        result['source'] = 'gemini'
+                        logger.info("✅ Gemini match analysis completed")
+            except asyncio.TimeoutError:
+                logger.warning("⏱️ Gemini analyze-match timeout")
+            except Exception as gemini_err:
+                logger.warning(f"⚠️ Gemini analyze-match error: {gemini_err}")
+
+        # TIER 2 — Local AI (fallback)
         if not result:
             try:
                 local_svc = _get_local_ai()
@@ -1254,7 +1439,28 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
     3-TIER FALLBACK: Gemini -> Local AI -> Rule-based
     """
     try:
-        # TIER 0: Try Gemini first (primary)
+        # TIER 0 — Ollama (local LLM — free)
+        try:
+            from services.llm_service import get_llm_service
+            _ai_ollama = get_llm_service()
+            if _ai_ollama and _ai_ollama.available:
+                jd_str = json.dumps(request.job_description)
+                questions = await asyncio.wait_for(
+                    _ai_ollama.generate_interview_questions(
+                        request.candidate,
+                        jd_str,
+                        request.num_questions
+                    ),
+                    timeout=120.0
+                )
+                if questions:
+                    return {"questions": questions, "source": "ollama"}
+        except asyncio.TimeoutError:
+            logger.warning("Ollama interview questions timeout")
+        except Exception as ollama_err:
+            logger.warning(f"⚠️ Ollama interview questions failed: {ollama_err}")
+
+        # TIER 1 — Gemini (cloud fallback)
         try:
             from services.gemini_service import get_gemini_service
             _ai_gemini = get_gemini_service()
@@ -1273,7 +1479,7 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
         except Exception as gemini_err:
             logger.warning(f"⚠️ Gemini interview questions failed: {gemini_err}")
 
-        # TIER 1: Try Local AI (FREE)
+        # TIER 2: Try Local AI (FREE)
         try:
             local_svc = _get_local_ai()
             if local_svc:
@@ -1323,10 +1529,31 @@ async def generate_interview_questions(request: InterviewQuestionsRequest, curre
 async def summarize_resume(request: SummarizeResumeRequest, current_user: dict = Depends(require_auth)):
     """
     Generate AI summary of resume
-    3-TIER FALLBACK: Gemini -> Local AI -> Rule-based
+    4-TIER FALLBACK: Ollama -> Gemini -> Local AI -> Rule-based
     """
     try:
-        # TIER 0 — Gemini
+        # TIER 0 — Ollama (local LLM — free)
+        try:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc and ollama_svc.available:
+                result = await asyncio.wait_for(
+                    ollama_svc.analyze_candidate(request.resume_text),
+                    timeout=120.0
+                )
+                if result and isinstance(result, dict) and result.get('summary'):
+                    return {
+                        "summary": result['summary'],
+                        "key_skills": result.get('skills', []),
+                        "experience_years": result.get('experience', 0),
+                        "source": "ollama"
+                    }
+        except asyncio.TimeoutError:
+            logger.warning("Ollama summarize-resume timeout")
+        except Exception:
+            pass  # Fall through
+
+        # TIER 1 — Gemini (cloud fallback)
         try:
             from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()
@@ -1343,9 +1570,9 @@ async def summarize_resume(request: SummarizeResumeRequest, current_user: dict =
                         "source": "gemini"
                     }
         except Exception:
-            pass  # Fall through to TIER 1
+            pass  # Fall through
 
-        # TIER 1: Try Local AI (FREE)
+        # TIER 2: Try Local AI (FREE)
         try:
             local_svc = _get_local_ai()
             if local_svc:
@@ -1404,8 +1631,25 @@ async def batch_analyze_new_candidates(job_id: str = "general", batch_size: int 
                 result = None
                 engine = 'local_ai'
 
-                # TIER 0 — Gemini
+                # TIER 0 — Ollama (local LLM — free)
                 if analysis_text:
+                    try:
+                        from services.llm_service import get_llm_service
+                        _ai_ollama = get_llm_service()
+                        if _ai_ollama and _ai_ollama.available:
+                            async with _batch_sem:
+                                ollama_result = await asyncio.wait_for(
+                                    _ai_ollama.analyze_candidate(analysis_text, job_context=_job_ctx),
+                                    timeout=120.0
+                                )
+                            if ollama_result and ollama_result.get('quality_score', 0) > 0:
+                                result = ollama_result
+                                engine = 'ollama'
+                    except Exception as e:
+                        logger.debug(f"Ollama batch analyze skipped for {analysis_text[:50]}: {e}")
+
+                # TIER 1 — Gemini (cloud fallback)
+                if result is None and analysis_text:
                     try:
                         from services.gemini_service import get_gemini_service
                         _ai_gemini = get_gemini_service()
@@ -1602,44 +1846,69 @@ async def ai_smart_search(
             )
             logger.info(f"Filtered to {len(filtered)} candidates after constraints + semantic search")
 
-            # Stage 2: Try constraint-aware Gemini ranking
+            # Stage 2: Try constraint-aware AI ranking (Ollama first, then Gemini)
+            ranked = None
+            stage2_source = None
             try:
-                from services.gemini_service import get_gemini_service
-                gemini_svc = get_gemini_service()
-                if gemini_svc and gemini_svc.available and filtered:
+                from services.llm_service import get_llm_service
+                ollama_svc = get_llm_service()
+                if ollama_svc and ollama_svc.available and filtered:
                     ranked = await asyncio.wait_for(
-                        gemini_svc.rank_candidates_with_constraints(
+                        ollama_svc.rank_candidates_with_constraints(
                             filtered,
                             constraints,
                             query,
                             top_n
                         ),
-                        timeout=_deps().AI_ANALYSIS_TIMEOUT
+                        timeout=120.0
                     )
                     if ranked:
-                        formatted = _format_search_results(ranked, candidates)
-                        # Log search to history (Phase 1.3)
-                        asyncio.create_task(_log_search(
-                            query,
-                            constraints.dict(),
-                            len(formatted),
-                            [r.get('id') for r in formatted],
-                            current_user.get('sub', '')
-                        ))
-                        return {
-                            "results": formatted,
-                            "total_candidates": len(candidates),
-                            "after_constraints": len(filtered),
-                            "for_gemini": len(filtered),
-                            "query": query,
-                            "constraints": constraints.dict(),
-                            "source": "two-stage-semantic+gemini",
-                            "message": f"Found {len(formatted)} matches using two-stage search"
-                        }
+                        stage2_source = "two-stage-semantic+ollama"
             except asyncio.TimeoutError:
-                logger.warning(f"Constraint-aware Gemini ranking timed out after {_deps().AI_ANALYSIS_TIMEOUT}s")
-            except Exception as gemini_err:
-                logger.warning(f"Constraint-aware Gemini ranking failed: {gemini_err}")
+                logger.warning("Ollama constraint-aware ranking timeout")
+            except Exception as ollama_err:
+                logger.warning(f"Ollama constraint-aware ranking failed: {ollama_err}")
+
+            if not ranked:
+                try:
+                    from services.gemini_service import get_gemini_service
+                    gemini_svc = get_gemini_service()
+                    if gemini_svc and gemini_svc.available and filtered:
+                        ranked = await asyncio.wait_for(
+                            gemini_svc.rank_candidates_with_constraints(
+                                filtered,
+                                constraints,
+                                query,
+                                top_n
+                            ),
+                            timeout=_deps().AI_ANALYSIS_TIMEOUT
+                        )
+                        if ranked:
+                            stage2_source = "two-stage-semantic+gemini"
+                except asyncio.TimeoutError:
+                    logger.warning(f"Gemini constraint-aware ranking timed out after {_deps().AI_ANALYSIS_TIMEOUT}s")
+                except Exception as gemini_err:
+                    logger.warning(f"Gemini constraint-aware ranking failed: {gemini_err}")
+
+            if ranked:
+                formatted = _format_search_results(ranked, candidates)
+                asyncio.create_task(_log_search(
+                    query,
+                    constraints.dict(),
+                    len(formatted),
+                    [r.get('id') for r in formatted],
+                    current_user.get('sub', '')
+                ))
+                return {
+                    "results": formatted,
+                    "total_candidates": len(candidates),
+                    "after_constraints": len(filtered),
+                    "for_ai": len(filtered),
+                    "query": query,
+                    "constraints": constraints.dict(),
+                    "source": stage2_source,
+                    "message": f"Found {len(formatted)} matches using two-stage search"
+                }
 
             # Fallback: Return filtered results ranked by semantic score + seniority weighting (Phase 2.2)
             filtered.sort(key=lambda x: x.get('semantic_score', 0), reverse=True)
@@ -1678,7 +1947,29 @@ async def ai_smart_search(
         except Exception as semantic_err:
             logger.warning(f"Two-stage search failed: {semantic_err}")
 
-        # Fallback to legacy Gemini ranking (no semantic filtering)
+        # Fallback to legacy AI ranking (no semantic filtering) — Ollama first, then Gemini
+        try:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc and ollama_svc.available:
+                ranked = await asyncio.wait_for(
+                    ollama_svc.rank_candidates_for_job(candidates, query, top_n),
+                    timeout=120.0
+                )
+                if ranked:
+                    formatted = _format_search_results(ranked, candidates)
+                    return {
+                        "results": formatted,
+                        "total_searched": len(candidates),
+                        "query": query,
+                        "source": "ollama-legacy",
+                        "message": f"Found {len(formatted)} matches using Ollama (semantic filtering unavailable)"
+                    }
+        except asyncio.TimeoutError:
+            logger.warning("Ollama legacy ranking timeout")
+        except Exception as ollama_err:
+            logger.warning(f"Legacy Ollama fallback failed: {ollama_err}")
+
         try:
             from services.gemini_service import get_gemini_service
             gemini_svc = get_gemini_service()

@@ -13,6 +13,7 @@ from core.db_wrapper import IS_POSTGRES
 from services.database_service import get_db_service
 from services.email_scraper import get_scraper_service
 from services.gemini_service import get_gemini_service
+from services.llm_service import get_llm_service
 from services.token_storage import get_token_storage
 from services.microsoft_graph import MicrosoftGraphService
 from services.oauth_automation_service import get_oauth_automation, OAuthAutomationService
@@ -382,14 +383,21 @@ async def auto_sync_emails():
                         graph_service.auth_type = token_data.get('auth_type', 'delegated')
                         graph_service.token_expiry = token_data.get('expires_at_dt', datetime.now() + timedelta(hours=1))
 
-                        # Get AI service for candidate analysis
+                        # Get AI service for candidate analysis (Ollama -> Gemini -> local)
                         ai_service = None
                         try:
-                            gemini_svc = get_gemini_service()
-                            if gemini_svc and gemini_svc.available:
-                                ai_service = gemini_svc
+                            ollama_svc = get_llm_service()
+                            if ollama_svc and ollama_svc.available:
+                                ai_service = ollama_svc
                         except Exception:
                             pass
+                        if not ai_service:
+                            try:
+                                gemini_svc = get_gemini_service()
+                                if gemini_svc and gemini_svc.available:
+                                    ai_service = gemini_svc
+                            except Exception:
+                                pass
                         if not ai_service:
                             from services.local_ai_service import get_local_ai_service
                             ai_service = get_local_ai_service()
@@ -1106,11 +1114,18 @@ async def _background_process_candidates(interval_minutes: int = 5):
 
                 ai_service = None
                 try:
-                    gemini_svc = get_gemini_service()
-                    if gemini_svc and gemini_svc.available:
-                        ai_service = gemini_svc
-                except Exception as _gemini_err:
-                    logger.debug(f"[BG-Process] Gemini init failed: {_gemini_err}")
+                    ollama_svc = get_llm_service()
+                    if ollama_svc and ollama_svc.available:
+                        ai_service = ollama_svc
+                except Exception as _ollama_err:
+                    logger.debug(f"[BG-Process] Ollama init failed: {_ollama_err}")
+                if not ai_service:
+                    try:
+                        gemini_svc = get_gemini_service()
+                        if gemini_svc and gemini_svc.available:
+                            ai_service = gemini_svc
+                    except Exception as _gemini_err:
+                        logger.debug(f"[BG-Process] Gemini init failed: {_gemini_err}")
 
                 if ai_service:
                     processed = 0
@@ -1336,14 +1351,28 @@ async def lifespan(app):
     logger.info(f"Environment: {'Production' if _settings.is_production else 'Development'}")
     logger.info(f"AI Tier Order: {' -> '.join(_settings.ai_tier_order)}")
 
-    # Initialize Gemini
+    # Initialize Ollama (local LLM - primary AI tier)
+    ollama_service = None
+    if _settings.use_ollama:
+        try:
+            ollama_service = get_llm_service()
+            if ollama_service and ollama_service.available:
+                logger.info(f"Ollama: {_settings.ollama_model} at {_settings.ollama_host} (ready)")
+            else:
+                logger.warning(f"Ollama: enabled but not reachable at {_settings.ollama_host}")
+        except Exception as e:
+            logger.warning(f"Ollama init failed: {e}")
+    else:
+        logger.info("Ollama: disabled (set USE_OLLAMA=true to enable local LLM)")
+
+    # Initialize Gemini (cloud AI fallback)
     gemini_service = get_gemini_service()
     if gemini_service and gemini_service.available:
         logger.info(f"Gemini: {gemini_service.model_name} (ready)")
     elif _settings.gemini_api_key:
         logger.warning("Gemini: API key set but service failed to initialize")
     else:
-        logger.info("Gemini: not configured (set GEMINI_API_KEY for cloud deployment)")
+        logger.info("Gemini: not configured (optional cloud fallback)")
 
     logger.info(f"Email Accounts: {len(scraper_service.email_accounts)} configured")
     logger.info(f"Max Concurrent Requests: {MAX_CONCURRENT_REQUESTS}")

@@ -13,6 +13,7 @@
 import { jsPDF } from 'jspdf'
 import { PDFDocument } from 'pdf-lib'
 import { authFetch } from '@/lib/authFetch'
+import { isTextGarbled } from '@/lib/textUtils'
 import { config } from '@/config'
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -976,31 +977,6 @@ function sanitizeForHelvetica(text: string): string {
   return t
 }
 
-function detectMojibake(text: string): boolean {
-  if (!text || text.length < 30) return false
-  const markers = [
-    '\u00C3\u0082', '\u00C3\u0083', '\u00C3\u00A9', '\u00C3\u00A8',
-    '\u00C3\u00BC', '\u00C3\u00B6', '\u00C2\u00A0', '\u00C2\u00AE',
-    'Ã\u0082', 'Ã\u0083', 'Ã\u00A9', 'Ã\u00A8', 'Ã\u00BC', 'Ã\u00B6',
-  ]
-  let hits = 0
-  for (const m of markers) {
-    let pos = 0
-    while ((pos = text.indexOf(m, pos)) !== -1) { hits++; pos += m.length }
-  }
-  // Count characters outside Helvetica-renderable range
-  let nonRenderable = 0
-  const sample = Math.min(text.length, 3000)
-  for (let i = 0; i < sample; i++) {
-    const ch = text.charCodeAt(i)
-    if (ch >= 0xC0 && ch <= 0xFF) nonRenderable++ // high Latin-1 (mojibake)
-    else if (ch > 0xFF && ch !== 0x2013 && ch !== 0x2014 && ch !== 0x2018 && ch !== 0x2019 && ch !== 0x201C && ch !== 0x201D && ch !== 0x2022 && ch !== 0x2026) {
-      nonRenderable++ // any non-Latin Unicode (Arabic, CJK, emoji, etc.)
-    }
-  }
-  return hits >= 3 || (nonRenderable / sample > 0.10)
-}
-
 /**
  * Detect text where characters are separated by spaces/dashes/dots/bullets,
  * e.g. "S   A   R   A   V   A   N   A" or "S•A•R•A" — bad PDF extraction.
@@ -1423,7 +1399,6 @@ export async function generateCandidatePDF(
   // ── Step 3: Render resume text if available (fallback when PDF merge didn't work) ──
   if (!resumeMerged) {
     let rawResumeText = candidate.resumeText?.trim() || ''
-    const isMoji = detectMojibake(rawResumeText)
 
     // Detect and repair spaced-character corruption before sanitising
     if (detectSpacedCharCorruption(rawResumeText)) {
@@ -1431,6 +1406,7 @@ export async function generateCandidatePDF(
       rawResumeText = collapseSpacedChars(rawResumeText)
     }
 
+    const isMoji = isTextGarbled(rawResumeText)
     const resumeText = sanitizeForHelvetica(rawResumeText)
 
     if (resumeText.length > 30 && !isMoji) {
@@ -1597,12 +1573,12 @@ export async function downloadOriginalResume(candidate: CandidateData): Promise<
   }
 
   if (!resumeText || resumeText.length < 20) throw new Error('No resume available for this candidate')
-  if (detectMojibake(resumeText)) throw new Error('Resume text contains encoding errors. Original file not available.')
 
   // Repair spaced-character corruption before sanitizing
   if (detectSpacedCharCorruption(resumeText)) {
     resumeText = collapseSpacedChars(resumeText)
   }
+  if (isTextGarbled(resumeText)) throw new Error('Resume text contains encoding errors. Original file not available.')
 
   // Sanitize for Helvetica rendering
   resumeText = sanitizeForHelvetica(resumeText)

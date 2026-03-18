@@ -5,7 +5,6 @@ import asyncio
 import logging
 import time
 from core.lifespan import backup_db_to_gcs
-from services.gemini_service import get_gemini_service
 from services.microsoft_graph import MicrosoftGraphService
 from services.token_storage import get_token_storage
 import re
@@ -523,14 +522,8 @@ async def reprocess_garbled_candidates(current_user: dict = Depends(require_admi
                             new_category = 'Insufficient Data'
                         else:
                             try:
-                                # Use Gemini if available for better results
+                                # _ai() returns best available: Ollama -> Gemini -> local
                                 _rescore_ai = _ai()
-                                try:
-                                    _g = get_gemini_service()
-                                    if _g and _g.available:
-                                        _rescore_ai = _g
-                                except Exception as e:
-                                    logger.debug(f"Non-critical: Gemini service not available for rescore: {e}")
                                 analysis_result = await asyncio.wait_for(
                                     _rescore_ai.analyze_candidate(combined_text),
                                     timeout=_deps().AI_ANALYSIS_TIMEOUT
@@ -601,13 +594,12 @@ async def fix_garbage_summaries(current_user: dict = Depends(require_admin)):
         fixed_structured = 0
         cleared = 0
         
-        # Initialize AI service
-        ai_svc = None
-        try:
-            ai_svc = get_gemini_service()
-            logger.info("Gemini AI available for summary regeneration")
-        except Exception as e:
-            logger.warning(f"Gemini not available, will use structured summaries: {e}")
+        # Initialize AI service (Ollama -> Gemini -> local)
+        ai_svc = _ai()
+        if ai_svc and hasattr(ai_svc, 'available') and ai_svc.available:
+            logger.info("LLM AI available for summary regeneration")
+        else:
+            logger.warning("No LLM available, will use structured summaries")
         
         for candidate in candidates:
             summary = candidate.get('summary', '') or ''
@@ -726,14 +718,8 @@ async def reprocess_candidate_scores(current_user: dict = Depends(require_admin)
         if not rows:
             return {"status": "success", "message": "No candidates need reprocessing", "processed": 0}
         
-        # Prefer Gemini for reprocessing
+        # _ai() returns best available: Ollama -> Gemini -> local
         reprocess_ai = _ai()
-        try:
-            gemini_svc = get_gemini_service()
-            if gemini_svc and gemini_svc.available:
-                reprocess_ai = gemini_svc
-        except Exception as e:
-            logger.debug(f"Non-critical: Gemini service not available for reprocessing: {e}")
         
         processed = 0
         errors = 0
@@ -1241,14 +1227,15 @@ async def recategorize_general_candidates(current_user: dict = Depends(require_a
 @router.post("/api/candidates/reprocess-with-gemini")
 async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_admin)):
     """
-    Bulk reprocess ALL poorly-scored candidates using Gemini AI.
+    Bulk reprocess ALL poorly-scored candidates using LLM AI.
     Targets candidates with: score <= 35, category='General', minimal skills like '["R"]'.
     Uses resume_text (from PDF parsing) for best results. Cost-optimized with batching and delays.
     """
     try:
-        gemini_svc = get_gemini_service()
-        if not gemini_svc or not gemini_svc.available:
-            raise HTTPException(503, "Gemini service not available")
+        # Use best available LLM: Ollama -> Gemini
+        ai_svc = _ai()
+        if not ai_svc or not getattr(ai_svc, 'available', False):
+            raise HTTPException(503, "No AI service available (Ollama or Gemini)")
         
         def _fetch_gemini_rescore():
             with _db().get_connection() as conn:
@@ -1335,9 +1322,9 @@ async def reprocess_candidates_with_gemini(current_user: dict = Depends(require_
                     await asyncio.to_thread(_set_insufficient_data, candidate_id)
                     continue
                 
-                # Call Gemini for analysis
+                # Call AI for analysis
                 result = await asyncio.wait_for(
-                    gemini_svc.analyze_candidate(analysis_text),
+                    ai_svc.analyze_candidate(analysis_text),
                     timeout=_deps().AI_ANALYSIS_TIMEOUT
                 )
                 

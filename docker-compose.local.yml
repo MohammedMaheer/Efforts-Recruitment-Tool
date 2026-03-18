@@ -1,0 +1,48 @@
+# docker-compose.local.yml — Fully local mode
+# Everything runs on your machine: PostgreSQL, Backend, Ollama, AI models.
+# Frontend stays on Vercel; Cloudflare Tunnel bridges them.
+#
+# Usage:
+#   docker compose -f docker-compose.local.yml up -d
+#
+# Or just run:   start_local.bat   (handles everything automatically)
+#
+# Prerequisites:
+#   - Docker Desktop running
+#   - Ollama installed with model:  ollama pull qwen2.5:14b
+#   - backend/.env filled in (copy from backend/.env.example)
+
+version: '3.8'
+
+services:
+  # ── Local PostgreSQL Database ──────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: recruitment-db
+    environment:
+      POSTGRES_DB: ai_recruiter
+      POSTGRES_USER: recruiter
+      POSTGRES_PASSWORD: recruiter_local_2026
+    volumes:
+      - recruitment_pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U recruiter -d ai_recruiter"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
+    restart: unless-stopped
+
+volumes:
+  recruitment_pgdata:
+    driver: local
+
+networks:
+  default:
+    name: recruitment-local

@@ -26,7 +26,6 @@ export async function authFetch(
   
   const response = await fetch(input, {
     ...init,
-    cache: 'no-store' as RequestCache,
     headers: {
       ...authHeaders,
       ...init?.headers,

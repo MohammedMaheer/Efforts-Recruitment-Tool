@@ -62,6 +62,7 @@ import { isTextGarbled } from '@/lib/textUtils'
 import { cleanLocation, getScoreColor, getFitLabel } from '@/lib/utils'
 import { normalizeCategory } from '@/lib/categoryUtils'
 import { ScoreRing } from '@/components/ui/ScoreRing'
+import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription } from '@/components/ui/Dialog'
 
 /** Shape of the detailed AI candidate analysis returned by the backend */
 interface CandidateAnalysis {
@@ -552,6 +553,16 @@ export default function AIAssistant() {
     return localStorage.getItem(ACTIVE_SESSION_KEY) || Date.now().toString()
   })
   const [newChatTrigger, setNewChatTrigger] = useState(0)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean
+    title: string
+    message: string
+    confirmLabel?: string
+    variant?: 'danger'
+    onConfirm: () => void
+    typeToConfirm?: string
+  } | null>(null)
+  const [confirmInput, setConfirmInput] = useState('')
   const [previewCandidate, setPreviewCandidate] = useState<Candidate | null>(null)
   const [previewAnalysis, setPreviewAnalysis] = useState<CandidateAnalysis | null>(null)
   const [previewLoading, setPreviewLoading] = useState(false)
@@ -744,33 +755,41 @@ export default function AIAssistant() {
     }
   }
 
-  const handleShortlistInResults = async (candidate: Candidate, idx: number) => {
+  const handleShortlistInResults = (candidate: Candidate, idx: number) => {
     if (!isAdmin) { toast.error('Admin privileges required'); return; }
-    if (!confirm(`Shortlist ${candidate.name}? A notification email will be sent.`)) return
-    setShortlistingId(candidate.id)
-    try {
-      const result = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
-      if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id)
-      setResultsCandidates(prev => prev.map((c, i) => i === idx ? { ...c, status: 'Shortlisted' } : c))
-      if (resultDetailCandidate?.id === candidate.id) {
-        setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
+    setConfirmInput('')
+    setConfirmDialog({
+      open: true,
+      title: 'Shortlist Candidate',
+      message: `Shortlist ${candidate.name}? A notification email will be sent.`,
+      confirmLabel: 'Shortlist',
+      onConfirm: async () => {
+        setShortlistingId(candidate.id)
+        try {
+          const result = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+          if (!isShortlisted(candidate.id)) toggleShortlist(candidate.id)
+          setResultsCandidates(prev => prev.map((c, i) => i === idx ? { ...c, status: 'Shortlisted' } : c))
+          if (resultDetailCandidate?.id === candidate.id) {
+            setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
+          }
+          const emailStatus = result?.data?.email_sent?.status
+          const emailSent = emailStatus === 'success' || emailStatus === 'queued'
+          setMessages(prev => [...prev, {
+            id: Date.now().toString(),
+            type: 'ai',
+            content: emailSent
+              ? `**${candidate.name}** has been shortlisted. Notification email sent!`
+              : `**${candidate.name}** has been shortlisted.`,
+            timestamp: new Date(),
+            intent: 'shortlist_single'
+          }])
+        } catch (err) {
+          console.error('Shortlist error:', err)
+          toast.error('Error', `Failed to shortlist ${candidate.name}`)
+        }
+        setShortlistingId(null)
       }
-      const emailStatus = result?.data?.email_sent?.status
-      const emailSent = emailStatus === 'success' || emailStatus === 'queued'
-      setMessages(prev => [...prev, {
-        id: Date.now().toString(),
-        type: 'ai',
-        content: emailSent
-          ? `**${candidate.name}** has been shortlisted. Notification email sent!`
-          : `**${candidate.name}** has been shortlisted.`,
-        timestamp: new Date(),
-        intent: 'shortlist_single'
-      }])
-    } catch (err) {
-      console.error('Shortlist error:', err)
-      toast.error('Error', `Failed to shortlist ${candidate.name}`)
-    }
-    setShortlistingId(null)
+    })
   }
 
   // Auto-select first candidate when results arrive
@@ -812,38 +831,43 @@ export default function AIAssistant() {
     }
     const toShortlist = candidateList.filter(c => selectedIds.has(c.id) && c.status !== 'Shortlisted')
     if (toShortlist.length === 0) return
-    if (!confirm(`Shortlist ${toShortlist.length} selected candidate${toShortlist.length !== 1 ? 's' : ''} and send notification emails?`)) return
-    try {
-      const ids = toShortlist.map(c => c.id)
-      const result = await candidateApi.bulkShortlist(ids)
-      const data = result.data
-      const count = data?.shortlisted || 0
-      const emailsSent = data?.emails_sent || 0
-      toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
-      setSelectedIds(new Set())
-      const confirmMsg: Message = {
-        id: Date.now().toString(),
-        type: 'ai',
-        content: `**${count} candidate${count !== 1 ? 's' : ''}** shortlisted successfully. **${emailsSent}** personalized email${emailsSent !== 1 ? 's' : ''} sent.`,
-        timestamp: new Date(),
-        intent: 'shortlist_confirm',
-        actions: [{ label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }]
-      }
-      setMessages(prev => [...prev, confirmMsg])
-    } catch (e) {
-      console.error('Bulk shortlist error:', e)
-      // Fallback: try one-by-one
-      let count = 0
-      for (const c of toShortlist) {
+    setConfirmInput('')
+    setConfirmDialog({
+      open: true,
+      title: 'Shortlist Selected Candidates',
+      message: `Shortlist ${toShortlist.length} selected candidate${toShortlist.length !== 1 ? 's' : ''} and send notification emails?`,
+      confirmLabel: 'Shortlist',
+      onConfirm: async () => {
         try {
-          await candidateApi.updateStatus(c.id, 'Shortlisted')
-          if (!isShortlisted(c.id)) toggleShortlist(c.id)
-          count++
-        } catch (err) { console.error('Shortlist error:', err) }
+          const ids = toShortlist.map(c => c.id)
+          const result = await candidateApi.bulkShortlist(ids)
+          const data = result.data
+          const count = data?.shortlisted || 0
+          const emailsSent = data?.emails_sent || 0
+          toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
+          setSelectedIds(new Set())
+          const confirmMsg: Message = {
+            id: Date.now().toString(),
+            type: 'ai',
+            content: `**${count} candidate${count !== 1 ? 's' : ''}** shortlisted successfully. **${emailsSent}** personalized email${emailsSent !== 1 ? 's' : ''} sent.`,
+            timestamp: new Date(),
+            intent: 'shortlist_confirm',
+            actions: [{ label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }]
+          }
+          setMessages(prev => [...prev, confirmMsg])
+        } catch (e) {
+          console.error('Bulk shortlist error:', e)
+          // Fallback: keep calls concurrent to avoid N sequential round-trips
+          const fallbackResults = await Promise.allSettled(
+            toShortlist.map((c) => candidateApi.updateStatus(c.id, 'Shortlisted'))
+          )
+          const count = fallbackResults.filter((r) => r.status === 'fulfilled').length
+          toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
+          setSelectedIds(new Set())
+          setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${count} candidate${count !== 1 ? 's' : ''}** shortlisted. Personalized emails queued.`, timestamp: new Date(), intent: 'shortlist_confirm', actions: [{ label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }] }])
+        }
       }
-      setSelectedIds(new Set())
-      setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${count} candidate${count !== 1 ? 's' : ''}** shortlisted. Personalized emails queued.`, timestamp: new Date(), intent: 'shortlist_confirm', actions: [{ label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }] }])
-    }
+    })
   }
 
   // ── Chat Session Persistence ──
@@ -1231,24 +1255,32 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
           if (emails) window.open(`mailto:${emails}`)
           else toast.info('No Emails', 'No email addresses found.')
         }, variant: 'primary' },
-        { label: 'Shortlist All', icon: Star, action: async () => {
+        { label: 'Shortlist All', icon: Star, action: () => {
           if (!isAdmin) {
             toast.error('Permission Required', 'Only admins can bulk shortlist candidates.')
             return
           }
           const count = filteredCandidates.filter(c => c.status !== 'Shortlisted').length
           if (count === 0) { toast.info('Already Shortlisted', 'All candidates are already shortlisted.'); return }
-          const typed = prompt(`⚠️ This will shortlist ${count} candidates and send notification emails.\n\nType "${count}" to confirm:`)
-          if (typed !== String(count)) { if (typed !== null) toast.info('Cancelled', 'Confirmation did not match.'); return }
-          try {
-            const ids = filteredCandidates.map(c => c.id)
-            const result = await candidateApi.bulkShortlist(ids)
-            const data = result.data
-            toast.success('Bulk shortlist complete', `Shortlisted ${data?.shortlisted || 0} candidates — ${data?.emails_sent || 0} personalized emails sent!`)
-          } catch (e) {
-            console.error('Bulk shortlist error:', e)
-            toast.error('Error', 'Failed to shortlist candidates. Please try again.')
-          }
+          setConfirmInput('')
+          setConfirmDialog({
+            open: true,
+            title: 'Shortlist All Candidates',
+            message: `This will shortlist ${count} candidates and send notification emails.`,
+            confirmLabel: 'Shortlist All',
+            typeToConfirm: String(count),
+            onConfirm: async () => {
+              try {
+                const ids = filteredCandidates.map(c => c.id)
+                const result = await candidateApi.bulkShortlist(ids)
+                const data = result.data
+                toast.success('Bulk shortlist complete', `Shortlisted ${data?.shortlisted || 0} candidates — ${data?.emails_sent || 0} personalized emails sent!`)
+              } catch (e) {
+                console.error('Bulk shortlist error:', e)
+                toast.error('Error', 'Failed to shortlist candidates. Please try again.')
+              }
+            }
+          })
         }, variant: 'secondary' }
       ]
     }
@@ -1645,32 +1677,35 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
               icon: CheckCircle2,
               action: async () => {
                 if (!isAdmin) { toast.error('Admin privileges required'); return; }
-                if (!confirm(`Are you sure you want to shortlist ${matchedCandidates.length} top matches? This will also send notification emails.`)) return
-                let shortlisted = 0
-                for (const c of matchedCandidates) {
-                  try {
-                    await candidateApi.updateStatus(c.id, 'Shortlisted')
-                    if (!isShortlisted(c.id)) toggleShortlist(c.id)
-                    shortlisted++
-                  } catch (e) {
-                    console.error(`Failed to shortlist ${c.name}:`, e)
+                setConfirmInput('')
+                setConfirmDialog({
+                  open: true,
+                  title: 'Shortlist Top Matches',
+                  message: `Shortlist ${matchedCandidates.length} top matches and send notification emails?`,
+                  confirmLabel: 'Shortlist',
+                  onConfirm: async () => {
+                    const shortlistResults = await Promise.allSettled(
+                      matchedCandidates.map((c) => candidateApi.updateStatus(c.id, 'Shortlisted'))
+                    )
+                    const shortlisted = shortlistResults.filter((r) => r.status === 'fulfilled').length
+                    matchedCandidates.forEach((c) => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
+                    const confirmMsg: Message = {
+                      id: Date.now().toString(),
+                      type: 'ai',
+                      content: `Successfully shortlisted **${shortlisted} candidate${shortlisted !== 1 ? 's' : ''}**. Notification emails have been sent.`,
+                      timestamp: new Date(),
+                      intent: 'shortlist_confirm',
+                      insights: [
+                        { title: 'Shortlisted', value: shortlisted, icon: CheckCircle2, color: 'green' },
+                        { title: 'Emails Sent', value: shortlisted, icon: Mail, color: 'blue' }
+                      ],
+                      actions: [
+                        { label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }
+                      ]
+                    }
+                    setMessages(prev => [...prev, confirmMsg])
                   }
-                }
-                const confirmMsg: Message = {
-                  id: Date.now().toString(),
-                  type: 'ai',
-                  content: `Successfully shortlisted **${shortlisted} candidate${shortlisted !== 1 ? 's' : ''}**. Notification emails have been sent.`,
-                  timestamp: new Date(),
-                  intent: 'shortlist_confirm',
-                  insights: [
-                    { title: 'Shortlisted', value: shortlisted, icon: CheckCircle2, color: 'green' },
-                    { title: 'Emails Sent', value: shortlisted, icon: Mail, color: 'blue' }
-                  ],
-                  actions: [
-                    { label: 'View Shortlist', icon: Star, action: () => navigate('/shortlist'), variant: 'primary' }
-                  ]
-                }
-                setMessages(prev => [...prev, confirmMsg])
+                })
               },
               variant: 'success'
             },
@@ -2099,20 +2134,28 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                       if (!isAdmin) { toast.error('Admin required'); return; }
                       const toShortlist = resultsCandidates.filter(c => selectedIds.has(c.id) && c.status !== 'Shortlisted')
                       if (toShortlist.length === 0) return
-                      if (!confirm(`Are you sure you want to shortlist ${toShortlist.length} selected candidates? This will also send notification emails.`)) return
-                      try {
-                        const ids = toShortlist.map(c => c.id)
-                        const result = await candidateApi.bulkShortlist(ids)
-                        const data = result.data
-                        toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
-                        setResultsCandidates(prev => prev.map(c => selectedIds.has(c.id) ? { ...c, status: 'Shortlisted' } : c))
-                        if (resultDetailCandidate && selectedIds.has(resultDetailCandidate.id)) setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
-                        setSelectedIds(new Set())
-                        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${data?.shortlisted || toShortlist.length} candidates** shortlisted. **${data?.emails_sent || 0}** notification emails sent.`, timestamp: new Date(), intent: 'shortlist_confirm' }])
-                      } catch (e) {
-                        console.error('Bulk shortlist error:', e)
-                        toast.error('Permission Required', 'Only admins can bulk shortlist candidates.')
-                      }
+                      setConfirmInput('')
+                      setConfirmDialog({
+                        open: true,
+                        title: 'Shortlist Selected Candidates',
+                        message: `Shortlist ${toShortlist.length} selected candidates and send notification emails?`,
+                        confirmLabel: 'Shortlist',
+                        onConfirm: async () => {
+                          try {
+                            const ids = toShortlist.map(c => c.id)
+                            const result = await candidateApi.bulkShortlist(ids)
+                            const data = result.data
+                            toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
+                            setResultsCandidates(prev => prev.map(c => selectedIds.has(c.id) ? { ...c, status: 'Shortlisted' } : c))
+                            if (resultDetailCandidate && selectedIds.has(resultDetailCandidate.id)) setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
+                            setSelectedIds(new Set())
+                            setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${data?.shortlisted || toShortlist.length} candidates** shortlisted. **${data?.emails_sent || 0}** notification emails sent.`, timestamp: new Date(), intent: 'shortlist_confirm' }])
+                          } catch (e) {
+                            console.error('Bulk shortlist error:', e)
+                            toast.error('Permission Required', 'Only admins can bulk shortlist candidates.')
+                          }
+                        }
+                      })
                     }}
                     disabled={!isAdmin}
                     className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -2126,20 +2169,28 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                       if (!isAdmin) { toast.error('Admin required'); return; }
                       const toShortlist = resultsCandidates.filter(c => c.status !== 'Shortlisted')
                       if (toShortlist.length === 0) return
-                      const typed = prompt(`⚠️ This will shortlist ALL ${toShortlist.length} candidates and send notification emails.\n\nType "${toShortlist.length}" to confirm:`)
-                      if (typed !== String(toShortlist.length)) return
-                      try {
-                        const ids = toShortlist.map(c => c.id)
-                        const result = await candidateApi.bulkShortlist(ids)
-                        const data = result.data
-                        toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
-                        setResultsCandidates(prev => prev.map(c => ({ ...c, status: 'Shortlisted' })))
-                        if (resultDetailCandidate) setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
-                        setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${data?.shortlisted || toShortlist.length} candidates** shortlisted. **${data?.emails_sent || 0}** notification emails sent.`, timestamp: new Date(), intent: 'shortlist_confirm' }])
-                      } catch (e) {
-                        console.error('Bulk shortlist error:', e)
-                        toast.error('Permission Required', 'Only admins can bulk shortlist candidates.')
-                      }
+                      setConfirmInput('')
+                      setConfirmDialog({
+                        open: true,
+                        title: 'Shortlist All Candidates',
+                        message: `This will shortlist ALL ${toShortlist.length} candidates and send notification emails.`,
+                        confirmLabel: 'Shortlist All',
+                        typeToConfirm: String(toShortlist.length),
+                        onConfirm: async () => {
+                          try {
+                            const ids = toShortlist.map(c => c.id)
+                            const result = await candidateApi.bulkShortlist(ids)
+                            const data = result.data
+                            toShortlist.forEach(c => { if (!isShortlisted(c.id)) toggleShortlist(c.id) })
+                            setResultsCandidates(prev => prev.map(c => ({ ...c, status: 'Shortlisted' })))
+                            if (resultDetailCandidate) setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
+                            setMessages(prev => [...prev, { id: Date.now().toString(), type: 'ai', content: `**${data?.shortlisted || toShortlist.length} candidates** shortlisted. **${data?.emails_sent || 0}** notification emails sent.`, timestamp: new Date(), intent: 'shortlist_confirm' }])
+                          } catch (e) {
+                            console.error('Bulk shortlist error:', e)
+                            toast.error('Permission Required', 'Only admins can bulk shortlist candidates.')
+                          }
+                        }
+                      })
                     }}
                     disabled={!isAdmin}
                     className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-green-600 hover:bg-green-700 text-white rounded-lg text-xs font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -2296,22 +2347,30 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                         ? 'bg-amber-100 text-amber-700 border border-amber-300 cursor-default'
                         : 'bg-amber-500 hover:bg-amber-600 text-white shadow-sm'}
                       disabled={resultDetailCandidate.status === 'Shortlisted'}
-                      onClick={async () => {
+                      onClick={() => {
                         if (!isAdmin) { toast.error('Admin privileges required'); return; }
-                        if (!confirm(`Shortlist ${resultDetailCandidate!.name}? A notification email will be sent.`)) return
-                        try {
-                          const result = await candidateApi.updateStatus(resultDetailCandidate!.id, 'Shortlisted')
-                          if (!isShortlisted(resultDetailCandidate!.id)) toggleShortlist(resultDetailCandidate!.id)
-                          setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
-                          setResultsCandidates(prev => prev.map((c, i) => i === selectedResultIdx ? { ...c, status: 'Shortlisted' } : c))
-                          const emailStatus = result?.data?.email_sent?.status
-                          const emailSent = emailStatus === 'success' || emailStatus === 'queued'
-                          if (emailSent) {
-                            toast.success('Shortlisted', `${resultDetailCandidate!.name} shortlisted — email sent!`)
-                          } else {
-                            toast.success('Shortlisted', `${resultDetailCandidate!.name} has been shortlisted.`)
+                        setConfirmInput('')
+                        setConfirmDialog({
+                          open: true,
+                          title: 'Shortlist Candidate',
+                          message: `Shortlist ${resultDetailCandidate!.name}? A notification email will be sent.`,
+                          confirmLabel: 'Shortlist',
+                          onConfirm: async () => {
+                            try {
+                              const result = await candidateApi.updateStatus(resultDetailCandidate!.id, 'Shortlisted')
+                              if (!isShortlisted(resultDetailCandidate!.id)) toggleShortlist(resultDetailCandidate!.id)
+                              setResultDetailCandidate(prev => prev ? { ...prev, status: 'Shortlisted' } : prev)
+                              setResultsCandidates(prev => prev.map((c, i) => i === selectedResultIdx ? { ...c, status: 'Shortlisted' } : c))
+                              const emailStatus = result?.data?.email_sent?.status
+                              const emailSent = emailStatus === 'success' || emailStatus === 'queued'
+                              if (emailSent) {
+                                toast.success('Shortlisted', `${resultDetailCandidate!.name} shortlisted — email sent!`)
+                              } else {
+                                toast.success('Shortlisted', `${resultDetailCandidate!.name} has been shortlisted.`)
+                              }
+                            } catch { toast.error('Error', 'Failed to shortlist candidate.') }
                           }
-                        } catch { toast.error('Error', 'Failed to shortlist candidate.') }
+                        })
                       }}
                     >
                       <Star className="w-3.5 h-3.5 mr-1.5" />
@@ -2323,21 +2382,30 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
                         ? 'bg-red-100 text-red-600 border border-red-300 cursor-default'
                         : 'bg-red-500 hover:bg-red-600 text-white shadow-sm'}
                       disabled={resultDetailCandidate.status === 'Rejected'}
-                      onClick={async () => {
+                      onClick={() => {
                         if (!isAdmin) { toast.error('Admin privileges required'); return; }
-                        if (!confirm(`Reject ${resultDetailCandidate!.name}? A rejection email will be sent.`)) return
-                        try {
-                          const result = await candidateApi.updateStatus(resultDetailCandidate!.id, 'Rejected')
-                          setResultDetailCandidate(prev => prev ? { ...prev, status: 'Rejected' } : prev)
-                          setResultsCandidates(prev => prev.map((c, i) => i === selectedResultIdx ? { ...c, status: 'Rejected' } : c))
-                          const emailStatus = result?.data?.email_sent?.status
-                          const emailSent = emailStatus === 'success' || emailStatus === 'queued'
-                          if (emailSent) {
-                            toast.success('Rejected', `${resultDetailCandidate!.name} rejected — rejection email sent.`)
-                          } else {
-                            toast.success('Rejected', `${resultDetailCandidate!.name} has been rejected.`)
+                        setConfirmInput('')
+                        setConfirmDialog({
+                          open: true,
+                          title: 'Reject Candidate',
+                          message: `Reject ${resultDetailCandidate!.name}? A rejection email will be sent.`,
+                          confirmLabel: 'Reject',
+                          variant: 'danger',
+                          onConfirm: async () => {
+                            try {
+                              const result = await candidateApi.updateStatus(resultDetailCandidate!.id, 'Rejected')
+                              setResultDetailCandidate(prev => prev ? { ...prev, status: 'Rejected' } : prev)
+                              setResultsCandidates(prev => prev.map((c, i) => i === selectedResultIdx ? { ...c, status: 'Rejected' } : c))
+                              const emailStatus = result?.data?.email_sent?.status
+                              const emailSent = emailStatus === 'success' || emailStatus === 'queued'
+                              if (emailSent) {
+                                toast.success('Rejected', `${resultDetailCandidate!.name} rejected — rejection email sent.`)
+                              } else {
+                                toast.success('Rejected', `${resultDetailCandidate!.name} has been rejected.`)
+                              }
+                            } catch { toast.error('Error', 'Failed to reject candidate.') }
                           }
-                        } catch { toast.error('Error', 'Failed to reject candidate.') }
+                        })
                       }}
                     >
                       <XCircle className="w-3.5 h-3.5 mr-1.5" />
@@ -3537,6 +3605,55 @@ response = `**Predictive Analytics Report**\n\nI've analyzed your top candidates
         onClose={() => setShowJobMatchModal(false)}
         onMatch={handleJobMatch}
       />
+
+      {/* Confirm Dialog — EH-02: replaces browser confirm/prompt */}
+      {confirmDialog && (
+        <Dialog open={confirmDialog.open} onOpenChange={(open) => {
+          if (!open) { setConfirmDialog(null); setConfirmInput('') }
+        }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{confirmDialog.title}</DialogTitle>
+              <DialogDescription>{confirmDialog.message}</DialogDescription>
+            </DialogHeader>
+            {confirmDialog.typeToConfirm && (
+              <div className="py-2">
+                <label className="text-sm text-gray-700 block mb-1.5">
+                  Type <span className="font-mono font-bold text-gray-900">{confirmDialog.typeToConfirm}</span> to confirm:
+                </label>
+                <input
+                  type="text"
+                  value={confirmInput}
+                  onChange={(e) => setConfirmInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && confirmInput.trim() === confirmDialog.typeToConfirm) {
+                      const action = confirmDialog.onConfirm
+                      setConfirmDialog(null); setConfirmInput('')
+                      action()
+                    }
+                  }}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  autoFocus
+                />
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setConfirmDialog(null); setConfirmInput('') }}>Cancel</Button>
+              <Button
+                variant={confirmDialog.variant === 'danger' ? 'destructive' : 'default'}
+                disabled={!!confirmDialog.typeToConfirm && confirmInput.trim() !== confirmDialog.typeToConfirm}
+                onClick={() => {
+                  const action = confirmDialog.onConfirm
+                  setConfirmDialog(null); setConfirmInput('')
+                  action()
+                }}
+              >
+                {confirmDialog.confirmLabel ?? 'Confirm'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 }

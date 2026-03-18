@@ -9,7 +9,6 @@ from services.db_repair import audit_database, repair_database, quick_health_che
 from services.resume_parser import is_spaced_text, text_quality_score, collapse_spaced_chars
 from services.token_storage import get_token_storage
 from services.microsoft_graph import MicrosoftGraphService
-from services.gemini_service import get_gemini_service
 import re
 import hashlib
 from typing import Dict, List, Optional, Any
@@ -286,13 +285,8 @@ async def full_database_repair(current_user: dict = Depends(require_admin)):
                         new_category = 'General'
                     else:
                         try:
+                            # _ai() returns best available: Ollama -> Gemini -> local
                             _rescore_ai = _ai()
-                            try:
-                                _g = get_gemini_service()
-                                if _g and _g.available:
-                                    _rescore_ai = _g
-                            except Exception:
-                                pass
                             analysis_result = await asyncio.wait_for(
                                 _rescore_ai.analyze_candidate(combined_text),
                                 timeout=_deps().AI_ANALYSIS_TIMEOUT
@@ -521,11 +515,15 @@ async def relookup_garbled_from_email(current_user: dict = Depends(require_admin
                     
                     if updates:
                         updates['last_updated'] = datetime.now().isoformat()
+                        _RELOOKUP_ALLOWED_COLS = {'name', 'email', 'skills', 'summary', 'resume_text', 'phone', 'location', 'experience', 'last_updated'}
                         def _update_relookup_candidate(updates_dict, cand_id):
+                            safe_updates = {k: v for k, v in updates_dict.items() if k in _RELOOKUP_ALLOWED_COLS}
+                            if not safe_updates:
+                                return
                             with _db().get_connection() as uc:
                                 ucur = uc.cursor()
-                                set_parts = [f"{k} = ?" for k in updates_dict]
-                                vals = list(updates_dict.values()) + [cand_id]
+                                set_parts = [f"{k} = ?" for k in safe_updates]
+                                vals = list(safe_updates.values()) + [cand_id]
                                 ucur.execute(
                                     f"UPDATE candidates SET {', '.join(set_parts)} WHERE id = ?",
                                     vals

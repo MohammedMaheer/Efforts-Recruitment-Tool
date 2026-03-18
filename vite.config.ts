@@ -12,14 +12,29 @@ export default defineConfig({
     },
   },
   build: {
+    target: 'es2020',
+    sourcemap: 'hidden',
+    chunkSizeWarningLimit: 400,
+    cssCodeSplit: true,
     rollupOptions: {
       output: {
         manualChunks: {
-          // Split large vendor libraries into separate chunks
+          // Core React — loaded on every page
           'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          // UI primitives
           'vendor-ui': ['@radix-ui/react-dialog', '@radix-ui/react-dropdown-menu', '@radix-ui/react-tabs', '@radix-ui/react-select', '@radix-ui/react-progress', '@radix-ui/react-slider'],
+          // Charts — only Dashboard
           'vendor-charts': ['recharts'],
+          // Utilities
           'vendor-utils': ['date-fns', 'clsx', 'tailwind-merge', 'zustand'],
+          // Animation library (~130KB) — used across many pages
+          'vendor-motion': ['framer-motion'],
+          // Icons — used everywhere
+          'vendor-icons': ['lucide-react'],
+          // PDF generation — heavy (~330KB), only on-demand
+          'vendor-pdf': ['jspdf', 'pdf-lib'],
+          // Sanitization
+          'vendor-sanitize': ['dompurify'],
         },
       },
     },

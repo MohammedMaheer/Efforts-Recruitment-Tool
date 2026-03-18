@@ -48,6 +48,21 @@ logger = logging.getLogger(__name__)
 _settings = get_settings()
 DEBUG = _settings.debug if not _settings.is_production else False
 
+# ── CORS origins (computed early so exception handlers can reference them) ────
+if _settings.is_production:
+    _cors_origins_raw = os.getenv(
+        'CORS_ORIGINS',
+        'https://efforts-recruitment-ai.web.app,https://efforts-recruitment-ai.firebaseapp.com'
+    )
+else:
+    _cors_origins_raw = 'http://localhost:3000,http://localhost:3001,http://localhost:5173,http://localhost:5174'
+_allowed_origins_set = set(o.strip() for o in _cors_origins_raw.split(',') if o.strip())
+# Always include maheer.tech origins
+_allowed_origins_set.update(['https://maheer.tech', 'https://www.maheer.tech', 'https://api.maheer.tech'])
+_extra_origins = os.getenv('EXTRA_CORS_ORIGINS', '').strip()
+if _extra_origins:
+    _allowed_origins_set.update(o.strip() for o in _extra_origins.split(',') if o.strip())
+
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(
     title=_settings.app_name,
@@ -71,7 +86,7 @@ async def sanitized_http_exception_handler(request, exc: HTTPException):
     headers = dict(exc.headers) if exc.headers else {}
     # Add CORS headers for exception responses (WWW-Authenticate for 401/403)
     origin = request.headers.get("origin", "")
-    if origin and origin in [o.strip() for o in _cors_origins_raw.split(',') if o.strip()]:
+    if origin and origin in _allowed_origins_set:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
     if exc.status_code in (401, 403):
@@ -90,7 +105,7 @@ async def unhandled_exception_handler(request, exc: Exception):
     headers = {}
     # Add CORS headers for exception responses
     origin = request.headers.get("origin", "")
-    if origin and origin in [o.strip() for o in _cors_origins_raw.split(',') if o.strip()]:
+    if origin and origin in _allowed_origins_set:
         headers["Access-Control-Allow-Origin"] = origin
         headers["Access-Control-Allow-Credentials"] = "true"
     return JSONResponse(status_code=500, content={"detail": detail}, headers=headers)
@@ -128,33 +143,21 @@ setup_middleware(app)
 
 # CORS — registered last so it is the outermost layer
 # (Starlette executes middleware in reverse registration order)
-if _settings.is_production:
-    _cors_origins_raw = os.getenv(
-        'CORS_ORIGINS',
-        'https://efforts-recruitment-ai.web.app,https://efforts-recruitment-ai.firebaseapp.com'
-    )
-    allowed_origins = [o.strip() for o in _cors_origins_raw.split(',') if o.strip()]
-else:
-    allowed_origins = [
-        'http://localhost:3000',
-        'http://localhost:3001',
-        'http://localhost:5173',
-        'http://localhost:5174',
-    ]
+allowed_origins = sorted(_allowed_origins_set)
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type", "Accept", "X-Requested-With"],
-    max_age=3600,
+    allow_headers=["*"],
+    max_age=86400,  # 24h preflight cache
 )
 logger.info(f"CORS enabled for: {', '.join(allowed_origins)}")
 
 @app.middleware("http")
 async def add_performance_headers(request, call_next):
-    """Add X-Process-Time header and disable browser caching for API routes."""
+    """Add X-Process-Time header. Cache-Control is handled by CacheControlMiddleware."""
     start_time = time.time()
     try:
         response = await call_next(request)
@@ -166,9 +169,7 @@ async def add_performance_headers(request, call_next):
         raise
     process_time = time.time() - start_time
     response.headers["X-Process-Time"] = str(round(process_time * 1000, 2))
-    if request.url.path.startswith("/api/"):
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
+    # Don't override Cache-Control — let CacheControlMiddleware handle caching policy
     return response
 
 

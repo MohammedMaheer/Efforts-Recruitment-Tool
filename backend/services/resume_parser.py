@@ -506,22 +506,35 @@ class ResumeParser:
         return None
 
     async def _parse_with_gemini(self, text: str) -> Optional[Dict[str, Any]]:
-        """Parse resume using Gemini AI service as production fallback.
+        """Parse resume using LLM service (Ollama first, then Gemini fallback).
         
-        This is critical for Cloud Run where Ollama isn't available.
-        Uses gemini.parse_resume() which has a dedicated extraction prompt
+        Tries Ollama (free, local) first, then falls back to Gemini (cloud).
+        Uses parse_resume() which has a dedicated extraction prompt
         with comprehensive field extraction.
         """
         try:
-            from services.gemini_service import get_gemini_service
-            gemini = get_gemini_service()
-            if not gemini or not gemini.available:
-                logger.info("Gemini service not available for resume parsing")
+            llm = None
+            # Try Ollama first (free, local)
+            try:
+                from services.llm_service import get_llm_service
+                ollama = get_llm_service()
+                if ollama and ollama.available:
+                    llm = ollama
+            except Exception:
+                pass
+            # Fallback to Gemini (cloud)
+            if not llm:
+                from services.gemini_service import get_gemini_service
+                gemini = get_gemini_service()
+                if gemini and gemini.available:
+                    llm = gemini
+            if not llm:
+                logger.info("No LLM service available for resume parsing")
                 return None
             
             # Use parse_resume which has a dedicated extraction prompt
             # (NOT analyze_candidate which is for scoring/quality assessment)
-            result = await gemini.parse_resume(text)
+            result = await llm.parse_resume(text)
             
             if result and (result.get('name') or result.get('email') or result.get('skills')):
                 # Normalize work_history format

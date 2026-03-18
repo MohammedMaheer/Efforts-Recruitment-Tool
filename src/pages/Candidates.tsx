@@ -18,7 +18,7 @@ import {
   TableRow,
 } from '@/components/ui/Table'
 import { getMatchScoreColor, getStatusBadgeColor, getCategoryColor } from '@/lib/utils'
-import { generateQuickProfilePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
+// pdfGenerator is dynamically imported on demand (~330KB saved from initial bundle)
 import { candidateApi } from '@/services/api'
 import { normalizeCategory } from '@/lib/categoryUtils'
 import { toast } from '@/components/ui/Toast'
@@ -671,9 +671,10 @@ export default function Candidates() {
                               </TableCell>
                               <TableCell className="w-[90px]">
                                 <div className="space-y-1">
-                                  <p className={`text-sm font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
-                                    {(candidate.matchScore ?? 0).toFixed(0)}%
-                                  </p>
+                                    <p className={`text-sm font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
+                                      {(candidate.matchScore ?? 0).toFixed(0)}%
+                                      <span className="sr-only">{candidate.matchScore >= 70 ? ' — Strong match' : candidate.matchScore >= 40 ? ' — Partial match' : ' — Weak match'}</span>
+                                    </p>
                                   <Progress
                                     value={candidate.matchScore}
                                     className="w-14 h-1"
@@ -841,7 +842,7 @@ export default function Candidates() {
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation()
-                                      generateQuickProfilePDF(candidate).catch((err: Error) =>
+                                      import('@/lib/pdfGenerator').then(m => m.generateQuickProfilePDF(candidate)).catch((err: Error) =>
                                         toast.error('PDF Failed', err.message || 'Could not generate PDF report')
                                       )
                                     }}
@@ -852,7 +853,7 @@ export default function Candidates() {
                                   </button>
                                   {candidate.hasResume && (
                                     <button
-                                      onClick={(e) => { e.stopPropagation(); downloadOriginalResume(candidate).catch((err: Error) => toast.error('Download Failed', err.message || 'No resume available')) }}
+                                      onClick={(e) => { e.stopPropagation(); import('@/lib/pdfGenerator').then(m => m.downloadOriginalResume(candidate)).catch((err: Error) => toast.error('Download Failed', err.message || 'No resume available')) }}
                                       className="p-1 rounded-full hover:bg-emerald-100 text-emerald-600 transition-colors"
                                       title="Download Original Resume"
                                     >
@@ -953,9 +954,10 @@ export default function Candidates() {
                     </TableCell>
                     <TableCell className="w-[100px]">
                       <div className="space-y-1">
-                        <p className={`text-base font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
-                          {(candidate.matchScore ?? 0).toFixed(0)}%
-                        </p>
+                          <p className={`text-base font-bold ${getMatchScoreColor(candidate.matchScore)}`}>
+                            {(candidate.matchScore ?? 0).toFixed(0)}%
+                            <span className="sr-only">{(candidate.matchScore ?? 0) >= 70 ? ' — Strong match' : (candidate.matchScore ?? 0) >= 40 ? ' — Partial match' : ' — Weak match'}</span>
+                          </p>
                         <Progress
                           value={candidate.matchScore ?? 0}
                           className="w-16 h-1.5"
@@ -1081,7 +1083,7 @@ export default function Candidates() {
                         <button
                           onClick={(e) => {
                             e.stopPropagation()
-                            generateQuickProfilePDF(candidate).catch((err: Error) =>
+                            import('@/lib/pdfGenerator').then(m => m.generateQuickProfilePDF(candidate)).catch((err: Error) =>
                               toast.error('PDF Failed', err.message || 'Could not generate PDF report')
                             )
                           }}
@@ -1092,7 +1094,7 @@ export default function Candidates() {
                         </button>
                         {candidate.hasResume && (
                           <button
-                            onClick={(e) => { e.stopPropagation(); downloadOriginalResume(candidate).catch((err: Error) => toast.error('Download Failed', err.message || 'No resume available')) }}
+                            onClick={(e) => { e.stopPropagation(); import('@/lib/pdfGenerator').then(m => m.downloadOriginalResume(candidate)).catch((err: Error) => toast.error('Download Failed', err.message || 'No resume available')) }}
                             className="p-1 rounded-full hover:bg-emerald-100 text-emerald-600 transition-colors"
                             title="Download Original Resume"
                           >

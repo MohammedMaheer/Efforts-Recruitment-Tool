@@ -38,6 +38,10 @@ def _gemini():
     from api.deps import get_gemini
     return get_gemini()
 
+def _ollama():
+    from api.deps import get_ollama
+    return get_ollama()
+
 def _scraper():
     from api.deps import get_scraper
     return get_scraper()
@@ -185,7 +189,7 @@ async def get_setup_status(current_user: dict = Depends(require_admin)):
         "is_production": env == 'production',
         "debug": os.getenv('DEBUG', 'true').lower() == 'true',
         "database": "postgresql" if "postgresql" in os.getenv('DATABASE_URL', '') else "sqlite",
-        "ai_mode": "gemini" if _gemini() and _gemini().available else "local (free)",
+        "ai_mode": "ollama" if _ollama() and _ollama().available else ("gemini" if _gemini() and _gemini().available else "local (free)"),
         "email_oauth": bool(os.getenv('MICROSOFT_CLIENT_ID')),
         "sms_enabled": bool(os.getenv('TWILIO_ACCOUNT_SID')),
         "calendar_enabled": bool(os.getenv('GOOGLE_CLIENT_ID') or os.getenv('CALENDLY_API_KEY')),
@@ -510,7 +514,13 @@ async def get_live_stats(current_user: dict = Depends(require_auth)):
                 
                 cursor.execute("""
                     SELECT COUNT(*) FROM candidates
-                    WHERE is_active = 1 AND applied_date > NOW() - INTERVAL '24 hours'
+                    WHERE is_active = 1 AND COALESCE(
+                        CASE
+                            WHEN applied_date ~* '^[0-9]{4}-[0-9]{2}-[0-9]{2}' THEN applied_date::timestamptz
+                            ELSE NULL
+                        END,
+                        created_at
+                    ) > NOW() - INTERVAL '24 hours'
                 """)
                 new_24h = cursor.fetchone()[0]
                 
@@ -694,6 +704,13 @@ async def factory_reset(
         # Clear in-memory caches
         try:
             _cache().clear()
+        except Exception:
+            pass
+        try:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc:
+                ollama_svc.clear_cache()
         except Exception:
             pass
         try:

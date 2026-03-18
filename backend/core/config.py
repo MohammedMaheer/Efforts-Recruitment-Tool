@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     
     # Database
     database_url: str = Field(default="./recruitment.db", description="Database URL (PostgreSQL in prod, SQLite in dev)")
-    db_pool_size: int = Field(default=10, description="Database connection pool size")
+    db_pool_size: int = Field(default=25, description="Database connection pool size")
     db_timeout: float = Field(default=30.0, description="Database timeout in seconds")
 
     @field_validator('database_url')
@@ -48,9 +48,15 @@ class Settings(BaseSettings):
     ai_timeout: float = Field(default=30.0, description="AI request timeout")
     ai_analysis_timeout: float = Field(default=30.0, description="AI analysis timeout for LLM inference")
 
-    # Google Gemini (primary for deployment)
+    # Google Gemini (cloud AI — optional, used when GEMINI_API_KEY is set)
     gemini_api_key: Optional[str] = Field(default=None, description="Google Gemini API key")
     gemini_model: str = Field(default="gemini-2.5-flash", description="Gemini model (2.5 Flash is fast & capable)")
+
+    # Ollama (local LLM — primary when running locally)
+    ollama_host: str = Field(default="http://localhost:11434", description="Ollama API base URL")
+    ollama_model: str = Field(default="qwen2.5:14b", description="Ollama model for AI analysis")
+    ollama_timeout: float = Field(default=120.0, description="Ollama request timeout in seconds")
+    use_ollama: bool = Field(default=True, description="Use Ollama as primary AI service when available")
     
     # Microsoft Graph (Email)
     microsoft_client_id: Optional[str] = Field(default=None)
@@ -127,6 +133,8 @@ class Settings(BaseSettings):
     
     @property
     def ai_tier_order(self) -> list:
+        if self.use_ollama:
+            return ["ollama", "gemini", "keyword"]
         return ["gemini", "keyword"]
     
     class Config:

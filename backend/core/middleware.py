@@ -502,6 +502,11 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "SAMEORIGIN"
         response.headers["X-XSS-Protection"] = "1; mode=block"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        response.headers["Strict-Transport-Security"] = "max-age=63072000; includeSubDomains; preload"
+        response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+        # CSP for API responses — restrictive since APIs don't serve HTML
+        if request.url.path.startswith("/api/"):
+            response.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
         
         # Cache control for API responses
         if request.url.path.startswith("/api/"):
@@ -517,11 +522,13 @@ class CacheControlMiddleware(BaseHTTPMiddleware):
     Smart cache control based on endpoint and method
     """
     
-    # Endpoints that can be cached
+    # Endpoints that can be cached (path prefix → max-age seconds)
     CACHEABLE_ENDPOINTS = {
-        "/api/stats": 30,  # 30 seconds
-        "/api/categories": 300,  # 5 minutes
-        "/health": 10,  # 10 seconds
+        "/api/stats": 30,       # 30 seconds
+        "/api/categories": 300, # 5 minutes
+        "/api/taxonomy": 300,   # 5 minutes
+        "/health": 10,          # 10 seconds
+        "/api/health": 10,      # 10 seconds
     }
     
     async def dispatch(self, request: Request, call_next: Callable) -> Response:

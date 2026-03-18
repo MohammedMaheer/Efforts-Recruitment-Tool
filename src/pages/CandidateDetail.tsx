@@ -39,7 +39,7 @@ import { Progress } from '@/components/ui/Progress'
 import { getMatchScoreColor, getCategoryColor } from '@/lib/utils'
 import config from '@/config'
 import { authFetch } from '@/lib/authFetch'
-import { generateCandidatePDF, downloadOriginalResume } from '@/lib/pdfGenerator'
+// pdfGenerator is dynamically imported on demand (~330KB saved from initial bundle)
 import { isTextGarbled } from '@/lib/textUtils'
 import { toast } from '@/components/ui/Toast'
 import type { Candidate } from '@/types'
@@ -353,42 +353,56 @@ export default function CandidateDetail() {
     if (!candidate) return
     if (!isAdmin) { toast.error('Admin privileges required'); return; }
     const wasShortlisted = isShortlisted(candidate.id)
-    
-    if (!wasShortlisted && !confirm(`Shortlist ${candidate.name} and send a notification email?`)) return
+
+    if (!wasShortlisted) {
+      setShowShortlistConfirm(true)
+      return
+    }
     setIsShortlisting(true)
-    
     try {
-      if (!wasShortlisted) {
-        // Shortlisting — call API which persists status AND auto-sends email
-        const result = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
-        if (result.error) throw new Error(result.error.message || 'Failed to shortlist')
-        toggleShortlist(candidate.id)
-        
-        const emailStatus = result?.data?.email_sent?.status
-        const emailSent = emailStatus === 'success' || emailStatus === 'queued'
-        const emailFailed = emailStatus === 'error' || emailStatus === 'failed'
-        addNotification({
-          type: emailFailed ? 'warning' : 'success',
-          title: 'Added to Shortlist',
-          message: emailSent 
-            ? `${candidate.name} shortlisted — notification email sent!`
-            : emailFailed
-              ? `${candidate.name} shortlisted — email could not be sent. Please check email settings or send manually.`
-              : `${candidate.name} added to your shortlist`,
-          actionUrl: '/shortlist'
-        })
-      } else {
-        // Un-shortlisting — revert to Reviewed status
-        const unRes = await candidateApi.updateStatus(candidate.id, 'Reviewed')
-        if (unRes.error) throw new Error(unRes.error.message || 'Failed to remove from shortlist')
-        toggleShortlist(candidate.id)
-        addNotification({
-          type: 'info',
-          title: 'Removed from Shortlist',
-          message: `${candidate.name} removed from your shortlist`,
-          actionUrl: `/candidates/${candidate.id}`
-        })
-      }
+      // Un-shortlisting — revert to Reviewed status
+      const unRes = await candidateApi.updateStatus(candidate.id, 'Reviewed')
+      if (unRes.error) throw new Error(unRes.error.message || 'Failed to remove from shortlist')
+      toggleShortlist(candidate.id)
+      addNotification({
+        type: 'info',
+        title: 'Removed from Shortlist',
+        message: `${candidate.name} removed from your shortlist`,
+        actionUrl: `/candidates/${candidate.id}`
+      })
+    } catch (error) {
+      console.error('Shortlist error:', error)
+      addNotification({
+        type: 'error',
+        title: 'Shortlist Failed',
+        message: `Could not update shortlist status for ${candidate.name}`,
+      })
+    } finally {
+      setIsShortlisting(false)
+    }
+  }
+
+  const handleConfirmShortlist = async () => {
+    if (!candidate) return
+    setShowShortlistConfirm(false)
+    setIsShortlisting(true)
+    try {
+      const result = await candidateApi.updateStatus(candidate.id, 'Shortlisted')
+      if (result.error) throw new Error(result.error.message || 'Failed to shortlist')
+      toggleShortlist(candidate.id)
+      const emailStatus = result?.data?.email_sent?.status
+      const emailSent = emailStatus === 'success' || emailStatus === 'queued'
+      const emailFailed = emailStatus === 'error' || emailStatus === 'failed'
+      addNotification({
+        type: emailFailed ? 'warning' : 'success',
+        title: 'Added to Shortlist',
+        message: emailSent
+          ? `${candidate.name} shortlisted — notification email sent!`
+          : emailFailed
+            ? `${candidate.name} shortlisted — email could not be sent. Please check email settings or send manually.`
+            : `${candidate.name} added to your shortlist`,
+        actionUrl: '/shortlist'
+      })
     } catch (error) {
       console.error('Shortlist error:', error)
       addNotification({
@@ -445,6 +459,7 @@ export default function CandidateDetail() {
     window.location.href = `mailto:${candidate.email}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`
   }
 
+  const [showShortlistConfirm, setShowShortlistConfirm] = useState(false)
   const [showRejectConfirm, setShowRejectConfirm] = useState(false)
 
   const handleRejectCandidate = async () => {
@@ -596,7 +611,10 @@ export default function CandidateDetail() {
               <div className="flex items-center gap-3 flex-shrink-0">
                 {/* Score badge */}
                 <div className="text-center px-4">
-                  <div className={`text-2xl font-bold ${scoreColor}`}>{(candidate.matchScore ?? 0).toFixed(0)}%</div>
+                    <div className={`text-2xl font-bold ${scoreColor}`}>
+                      {(candidate.matchScore ?? 0).toFixed(0)}%
+                      <span className="sr-only">{(candidate.matchScore ?? 0) >= 70 ? ' — Strong match' : (candidate.matchScore ?? 0) >= 40 ? ' — Partial match' : ' — Weak match'}</span>
+                    </div>
                   <div className="text-[10px] font-medium text-gray-400 uppercase tracking-wider mt-0.5">Match</div>
                 </div>
                 <div className="h-10 w-px bg-gray-200" />
@@ -614,7 +632,7 @@ export default function CandidateDetail() {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => generateCandidatePDF(candidate, aiAnalysis)}
+                    onClick={() => import('@/lib/pdfGenerator').then(m => m.generateCandidatePDF(candidate, aiAnalysis)).catch((err: Error) => toast.error('PDF Failed', err.message || 'Could not generate PDF'))}
                     disabled={fullDataLoading && !fullCandidateData}
                     className="text-xs h-8"
                   >
@@ -835,11 +853,11 @@ export default function CandidateDetail() {
                     aiAnalysis.confidence_score >= 40 ? 'text-amber-600' :
                     'text-rose-600'
                   }`}>{aiAnalysis.confidence_score}%</span>
-                  {aiAnalysis.source && (
-                    <span className="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full capitalize">
-                      {aiAnalysis.source === 'fallback' ? 'profile-based' : aiAnalysis.source}
-                    </span>
-                  )}
+                    {aiAnalysis.source && (
+                      <span className="text-[10px] text-gray-400 bg-gray-100 px-2 py-0.5 rounded-full capitalize">
+                        {aiAnalysis.source === 'fallback' ? 'profile-based' : aiAnalysis.source}
+                      </span>
+                    )}
                 </div>
               )}
             </div>
@@ -847,42 +865,42 @@ export default function CandidateDetail() {
         </motion.div>
       )}
 
-      {analysisError && !aiAnalysis && (
-        <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
-          <div className="flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-lg p-3">
-            <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
-            <div>
-              <p className="text-sm font-medium text-amber-800">AI Analysis Unavailable</p>
-              <p className="text-xs text-amber-600 mt-0.5">{analysisError}</p>
-            </div>
-          </div>
-        </motion.div>
-      )}
-
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
-        {/* Left Column — Main Content */}
-        <div className="lg:col-span-2 space-y-4">
-          {/* Summary */}
-          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
-            <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
-              <div className="p-5">
-                <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Professional Summary</h3>
-                {fullDataLoading && !fullCandidateData ? (
-                  <div className="space-y-2 animate-pulse">
-                    <div className="h-3 bg-gray-200 rounded w-full" />
-                    <div className="h-3 bg-gray-200 rounded w-5/6" />
-                    <div className="h-3 bg-gray-200 rounded w-4/6" />
-                  </div>
-                ) : candidate.summary ? (
-                  <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{candidate.summary}</p>
-                ) : (
-                  <p className="text-sm text-gray-400 italic">No summary available. Run AI Analysis to generate one.</p>
-                )}
+          {/* Skills */}
+        {analysisError && !aiAnalysis && (
+          <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}>
+            <div className="flex items-start gap-2.5 bg-amber-50 border border-amber-200 rounded-lg p-3">
+              <AlertCircle className="w-4 h-4 text-amber-500 flex-shrink-0 mt-0.5" />
+              <div>
+                <p className="text-sm font-medium text-amber-800">AI Analysis Unavailable</p>
+                <p className="text-xs text-amber-600 mt-0.5">{analysisError}</p>
               </div>
             </div>
           </motion.div>
+        )}
 
-          {/* Skills */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
+          {/* Left Column — Main Content */}
+          <div className="lg:col-span-2 space-y-4">
+            {/* Summary */}
+            <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.05 }}>
+              <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+                <div className="p-5">
+                  <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2">Professional Summary</h3>
+                  {fullDataLoading && !fullCandidateData ? (
+                    <div className="space-y-2 animate-pulse">
+                      <div className="h-3 bg-gray-200 rounded w-full" />
+                      <div className="h-3 bg-gray-200 rounded w-5/6" />
+                      <div className="h-3 bg-gray-200 rounded w-4/6" />
+                    </div>
+                  ) : candidate.summary ? (
+                    <p className="text-sm text-gray-700 leading-relaxed whitespace-pre-line">{candidate.summary}</p>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">No summary available. Run AI Analysis to generate one.</p>
+                  )}
+                </div>
+              </div>
+            </motion.div>
+
           <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
             <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
               <div className="p-5">
@@ -973,35 +991,35 @@ export default function CandidateDetail() {
                     <div className="p-5">
                       <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1.5">
                         <Award className="w-3.5 h-3.5" />Certifications
-                      </h3>
-                      <div className="space-y-1.5">
-                        {candidate.certifications.map((cert: string, i: number) => (
-                          <div key={i} className="flex items-start gap-1.5">
-                            <Award className="w-3 h-3 text-amber-500 mt-0.5 flex-shrink-0" />
-                            <span className="text-xs text-gray-700">{cert}</span>
-                          </div>
-                        ))}
+                        </h3>
+                        <div className="space-y-1.5">
+                          {candidate.certifications.map((cert: string, i: number) => (
+                            <div key={i} className="flex items-start gap-1.5">
+                              <Award className="w-3 h-3 text-amber-500 mt-0.5 flex-shrink-0" />
+                              <span className="text-xs text-gray-700">{cert}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )}
-                {candidate.languages && candidate.languages.length > 0 && (
-                  <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
-                    <div className="p-5">
-                      <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1.5">
-                        <Globe className="w-3.5 h-3.5" />Languages
-                      </h3>
-                      <div className="flex flex-wrap gap-1.5">
-                        {candidate.languages.map((lang: string, i: number) => (
-                          <span key={i} className="text-xs px-2 py-0.5 rounded-full border border-sky-100 bg-sky-50/50 text-sky-700">{lang}</span>
-                        ))}
+                  )}
+                  {candidate.languages && candidate.languages.length > 0 && (
+                    <div className="rounded-xl border border-gray-100/80 bg-white shadow-sm">
+                      <div className="p-5">
+                        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1.5">
+                          <Globe className="w-3.5 h-3.5" />Languages
+                        </h3>
+                        <div className="flex flex-wrap gap-1.5">
+                          {candidate.languages.map((lang: string, i: number) => (
+                            <span key={i} className="text-xs px-2 py-0.5 rounded-full border border-sky-100 bg-sky-50/50 text-sky-700">{lang}</span>
+                          ))}
+                        </div>
                       </div>
                     </div>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
+                  )}
+                </div>
+              </motion.div>
+            )}
 
           {/* Resume Section — upload, view, download */}
           <input type="file" ref={resumeFileInputRef} accept=".pdf,.docx,.doc" className="hidden" onChange={handleResumeUpload} />
@@ -1024,7 +1042,7 @@ export default function CandidateDetail() {
                       </button>
                       <button
                         onClick={async () => {
-                          try { await downloadOriginalResume(candidate as any) } catch (err) { console.error('Resume download failed:', err); toast.error('Download failed', 'No resume file available') }
+                          try { const { downloadOriginalResume } = await import('@/lib/pdfGenerator'); await downloadOriginalResume(candidate as any) } catch (err) { console.error('Resume download failed:', err); toast.error('Download failed', 'No resume file available') }
                         }}
                         className="flex items-center gap-1 text-xs font-medium text-indigo-600 hover:text-indigo-800 bg-indigo-50 hover:bg-indigo-100 px-2.5 py-1 rounded-lg transition-colors"
                       >
@@ -1237,6 +1255,48 @@ export default function CandidateDetail() {
               >
                 Cancel
               </button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Shortlist Confirmation Modal */}
+      {showShortlistConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowShortlistConfirm(false)}>
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-xl shadow-xl p-6 max-w-sm mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Shortlist Candidate</h3>
+            <p className="text-sm text-gray-600 mb-5">
+              Shortlist <span className="font-medium">{candidate?.name}</span> and send a notification email?
+            </p>
+            <div className="flex gap-3 justify-end">
+              <Button variant="outline" size="sm" onClick={() => setShowShortlistConfirm(false)}>Cancel</Button>
+              <Button size="sm" onClick={handleConfirmShortlist}>Shortlist</Button>
+            </div>
+          </motion.div>
+        </div>
+      )}
+
+      {/* Shortlist Confirmation Modal */}
+      {showShortlistConfirm && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50" onClick={() => setShowShortlistConfirm(false)}>
+          <motion.div
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+            className="bg-white rounded-xl shadow-xl p-6 max-w-sm mx-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Shortlist Candidate</h3>
+            <p className="text-sm text-gray-600 mb-5">
+              Shortlist <span className="font-medium">{candidate?.name}</span> and send a notification email?
+            </p>
+            <div className="flex gap-3 justify-end">
+              <Button variant="outline" size="sm" onClick={() => setShowShortlistConfirm(false)}>Cancel</Button>
+              <Button size="sm" onClick={handleConfirmShortlist}>Shortlist</Button>
             </div>
           </motion.div>
         </div>

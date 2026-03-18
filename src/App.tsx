@@ -9,9 +9,11 @@ import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ToastContainer } from '@/components/ui/Toast'
 import { lazyRetry } from '@/lib/lazyRetry'
 import config from '@/config'
-import LoginPage from '@/pages/LoginPage'
-import OAuthCallback from '@/pages/OAuthCallback'
-import DashboardLayout from '@/components/layout/DashboardLayout'
+
+// Lazy-load ALL route components for optimal code splitting
+const LoginPage = lazyRetry(() => import('@/pages/LoginPage'))
+const OAuthCallback = lazyRetry(() => import('@/pages/OAuthCallback'))
+const DashboardLayout = lazyRetry(() => import('@/components/layout/DashboardLayout'))
 
 // Lazy-load route components for code splitting (with auto-retry on stale chunks)
 const Dashboard = lazyRetry(() => import('@/pages/Dashboard'))
@@ -78,9 +80,20 @@ function PublicRoute({ children }: { children: React.ReactNode }) {
  */
 function App() {
   const [isVerifying, setIsVerifying] = useState(true)
+  const [hydrated, setHydrated] = useState<boolean>(
+    // Zustand persist exposes hydration status synchronously when available
+    () => useAuthStore.persist?.hasHydrated?.() ?? false
+  )
   const verifyToken = useAuthStore((state) => state.verifyToken)
   const token = useAuthStore((state) => state.token)
   const navigate = useNavigate()
+
+  // Wait for auth store hydration before running any auth logic to avoid
+  // transient "logged out" flashes on refresh or OAuth return flows.
+  useEffect(() => {
+    if (hydrated) return
+    return useAuthStore.persist.onFinishHydration(() => setHydrated(true))
+  }, [hydrated])
   
   // Listen for session-expired events from the API layer (avoids hard reload)
   useEffect(() => {
@@ -91,6 +104,7 @@ function App() {
 
   // Warm up Cloud Run (fire-and-forget) then verify token
   useEffect(() => {
+    if (!hydrated) return
     const verify = async () => {
       // Wake up Cloud Run backend with a lightweight health ping
       fetch(`${config.apiUrl}/health`, { method: 'GET' }).catch(() => {})
@@ -100,10 +114,10 @@ function App() {
       setIsVerifying(false)
     }
     verify()
-  }, [token, verifyToken])
+  }, [token, verifyToken, hydrated])
 
   // Show loading state while verifying token
-  if (isVerifying) {
+  if (isVerifying || !hydrated) {
     return (
       <div className="min-h-screen bg-gray-50 flex items-center justify-center">
         <div className="text-center">
@@ -126,18 +140,20 @@ function App() {
           path="/login" 
           element={
             <PublicRoute>
-              <LoginPage />
+              <RouteWithErrorBoundary><LoginPage /></RouteWithErrorBoundary>
             </PublicRoute>
           } 
         />
-        <Route path="/auth/callback" element={<OAuthCallback />} />
+        <Route path="/auth/callback" element={<RouteWithErrorBoundary><OAuthCallback /></RouteWithErrorBoundary>} />
         
         {/* Protected Routes */}
         <Route
           path="/"
           element={
             <ProtectedRoute>
-              <DashboardLayout />
+              <Suspense fallback={<RouteFallback />}>
+                <DashboardLayout />
+              </Suspense>
             </ProtectedRoute>
           }
         >

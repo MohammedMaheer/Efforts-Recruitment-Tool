@@ -103,20 +103,36 @@ Format as clean text with section headers. Be specific and compelling."""
         result_text = None
         source = "fallback"
 
-        # Try Gemini first
+        # Try Ollama first (free, local LLM)
         try:
-            from services.gemini_service import get_gemini_service
-            gemini_svc = get_gemini_service()
-            if gemini_svc and gemini_svc.available:
+            from services.llm_service import get_llm_service
+            ollama_svc = get_llm_service()
+            if ollama_svc and ollama_svc.available:
                 result = await asyncio.wait_for(
-                    gemini_svc.chat(prompt, None),
+                    ollama_svc.chat(prompt, None),
                     timeout=_deps().AI_ANALYSIS_TIMEOUT
                 )
                 if result:
                     result_text = result
-                    source = "gemini"
+                    source = "ollama"
         except Exception as e:
-            logger.warning(f"Gemini JD generation failed: {e}")
+            logger.warning(f"Ollama JD generation failed: {e}")
+
+        # Try Gemini (cloud fallback)
+        if not result_text:
+            try:
+                from services.gemini_service import get_gemini_service
+                gemini_svc = get_gemini_service()
+                if gemini_svc and gemini_svc.available:
+                    result = await asyncio.wait_for(
+                        gemini_svc.chat(prompt, None),
+                        timeout=_deps().AI_ANALYSIS_TIMEOUT
+                    )
+                    if result:
+                        result_text = result
+                        source = "gemini"
+            except Exception as e:
+                logger.warning(f"Gemini JD generation failed: {e}")
 
         # Rule-based fallback
         if not result_text:

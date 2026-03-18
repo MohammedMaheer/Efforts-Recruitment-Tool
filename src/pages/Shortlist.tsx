@@ -27,7 +27,6 @@ import {
 } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { useCandidates } from '@/hooks/useCandidates'
-import { useCandidateStore } from '@/store/candidateStore'
 import type { Candidate } from '@/types'
 import { useNotificationStore } from '@/store/notificationStore'
 import { Button } from '@/components/ui/Button'
@@ -39,6 +38,7 @@ import { candidateApi } from '@/services/api'
 import { getScoreColor, getFitLabel } from '@/lib/utils'
 import { ScoreRing } from '@/components/ui/ScoreRing'
 import { useAuthStore } from '@/store/authStore'
+import { Dialog, DialogContent, DialogHeader, DialogFooter, DialogTitle, DialogDescription } from '@/components/ui/Dialog'
 
 type SortKey = 'score' | 'name' | 'experience' | 'date'
 type SortDir = 'asc' | 'desc'
@@ -46,8 +46,6 @@ type SortDir = 'asc' | 'desc'
 export default function Shortlist() {
   const navigate = useNavigate()
   const { candidates, loading, error, refetch } = useCandidates({ autoFetch: true })
-  const shortlistedIds = useCandidateStore((s) => s.shortlistedIds)
-  const toggleShortlist = useCandidateStore((s) => s.toggleShortlist)
   const addNotification = useNotificationStore((s) => s.addNotification)
   const isAdmin = useAuthStore((s) => s.user?.role === 'admin')
 
@@ -58,6 +56,16 @@ export default function Shortlist() {
   const [sortDir, setSortDir] = useState<SortDir>('desc')
   const [removing, setRemoving] = useState<string | null>(null)
   const [bulkRemoving, setBulkRemoving] = useState(false)
+  const [confirmDialog, setConfirmDialog] = useState<{
+    open: boolean
+    title: string
+    message: string
+    confirmLabel?: string
+    variant?: 'danger'
+    onConfirm: () => void
+    typeToConfirm?: string
+  } | null>(null)
+  const [confirmInput, setConfirmInput] = useState('')
 
   // ONLY use backend status 'Shortlisted' — NOT stale localStorage shortlistedIds
   // This prevents phantom auto-shortlisting from old localStorage data
@@ -115,7 +123,6 @@ export default function Shortlist() {
     setRemoving(candidate.id)
     try {
       await candidateApi.updateStatus(candidate.id, 'Reviewed')
-      if (shortlistedIds.includes(candidate.id)) toggleShortlist(candidate.id)
       setSelectedIds((prev) => { const n = new Set(prev); n.delete(candidate.id); return n })
       if (selectedCandidate?.id === candidate.id) setSelectedCandidate(null)
       await refetch()
@@ -125,7 +132,7 @@ export default function Shortlist() {
     } finally {
       setRemoving(null)
     }
-  }, [isAdmin, shortlistedIds, toggleShortlist, refetch, addNotification, selectedCandidate])
+  }, [isAdmin, refetch, addNotification, selectedCandidate])
 
   const handleBulkRemove = useCallback(async () => {
     if (!isAdmin) { toast.error('Permission Required', 'Only admins can remove candidates from shortlist.'); return }
@@ -133,10 +140,7 @@ export default function Shortlist() {
     setBulkRemoving(true)
     const idsToRemove = [...selectedIds]
     const results = await Promise.allSettled(
-      idsToRemove.map(async (id) => {
-        await candidateApi.updateStatus(id, 'Reviewed')
-        if (shortlistedIds.includes(id)) toggleShortlist(id)
-      })
+      idsToRemove.map((id) => candidateApi.updateStatus(id, 'Reviewed'))
     )
     const removed = results.filter(r => r.status === 'fulfilled').length
     setSelectedIds(new Set())
@@ -144,7 +148,7 @@ export default function Shortlist() {
     await refetch()
     setBulkRemoving(false)
     addNotification({ type: 'info', title: 'Removed', message: `${removed} candidate(s) removed` })
-  }, [isAdmin, selectedIds, shortlistedIds, toggleShortlist, refetch, addNotification, selectedCandidate])
+  }, [isAdmin, selectedIds, refetch, addNotification, selectedCandidate])
 
   const handleScheduleInterview = useCallback((candidate: Candidate) => {
     const start = new Date()
@@ -188,19 +192,28 @@ export default function Shortlist() {
     }
   }, [shortlistedCandidates])
 
-  const handleResetAll = useCallback(async () => {
+  const handleResetAll = useCallback(() => {
     if (shortlistedCandidates.length === 0) return
-    const typed = prompt(`⚠️ This will remove ALL ${shortlistedCandidates.length} candidates from the shortlist (reset to Strong).\n\nType "${shortlistedCandidates.length}" to confirm:`)
-    if (typed !== String(shortlistedCandidates.length)) return
-    try {
-      await candidateApi.resetShortlist()
-      setSelectedIds(new Set())
-      setSelectedCandidate(null)
-      await refetch()
-      addNotification({ type: 'success', title: 'Reset Complete', message: `All candidates removed from shortlist` })
-    } catch {
-      addNotification({ type: 'error', title: 'Error', message: 'Failed to reset shortlist' })
-    }
+    setConfirmInput('')
+    setConfirmDialog({
+      open: true,
+      title: 'Reset Shortlist',
+      message: `This will remove ALL ${shortlistedCandidates.length} candidates from the shortlist.`,
+      confirmLabel: 'Reset All',
+      variant: 'danger',
+      typeToConfirm: String(shortlistedCandidates.length),
+      onConfirm: async () => {
+        try {
+          await candidateApi.resetShortlist()
+          setSelectedIds(new Set())
+          setSelectedCandidate(null)
+          await refetch()
+          addNotification({ type: 'success', title: 'Reset Complete', message: `All candidates removed from shortlist` })
+        } catch {
+          addNotification({ type: 'error', title: 'Error', message: 'Failed to reset shortlist' })
+        }
+      }
+    })
   }, [shortlistedCandidates, refetch, addNotification])
 
   // Stats
@@ -478,9 +491,59 @@ export default function Shortlist() {
           </div>
         </div>
       )}
+
+      {/* Confirm Dialog — EH-02: replaces browser prompt */}
+      {confirmDialog && (
+        <Dialog open={confirmDialog.open} onOpenChange={(open) => {
+          if (!open) { setConfirmDialog(null); setConfirmInput('') }
+        }}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>{confirmDialog.title}</DialogTitle>
+              <DialogDescription>{confirmDialog.message}</DialogDescription>
+            </DialogHeader>
+            {confirmDialog.typeToConfirm && (
+              <div className="py-2">
+                <label className="text-sm text-gray-700 block mb-1.5">
+                  Type <span className="font-mono font-bold text-gray-900">{confirmDialog.typeToConfirm}</span> to confirm:
+                </label>
+                <input
+                  type="text"
+                  value={confirmInput}
+                  onChange={(e) => setConfirmInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && confirmInput.trim() === confirmDialog.typeToConfirm) {
+                      const action = confirmDialog.onConfirm
+                      setConfirmDialog(null); setConfirmInput('')
+                      action()
+                    }
+                  }}
+                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  autoFocus
+                />
+              </div>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => { setConfirmDialog(null); setConfirmInput('') }}>Cancel</Button>
+              <Button
+                variant={confirmDialog.variant === 'danger' ? 'destructive' : 'default'}
+                disabled={!!confirmDialog.typeToConfirm && confirmInput.trim() !== confirmDialog.typeToConfirm}
+                onClick={() => {
+                  const action = confirmDialog.onConfirm
+                  setConfirmDialog(null); setConfirmInput('')
+                  action()
+                }}
+              >
+                {confirmDialog.confirmLabel ?? 'Confirm'}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
     </div>
   )
 }
+
 
 /* =============== Candidate Detail Panel =============== */
 function CandidateDetailPanel({

@@ -18,6 +18,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 1G
     restart: unless-stopped
 
   # Redis Cache (Optional - for production caching)
@@ -33,6 +38,11 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 512M
     restart: unless-stopped
 
   # Backend API (FastAPI)
@@ -69,7 +79,7 @@ services:
       REDIS_URL: ${REDIS_URL:-redis://redis:6379}
       CACHE_TYPE: ${CACHE_TYPE:-memory}
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -85,6 +95,14 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
     restart: unless-stopped
 
   # Frontend (React/Vite served by nginx)
@@ -97,10 +115,15 @@ services:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
       VITE_ENV: ${VITE_ENV:-production}
     ports:
-      - "80:80"
-      - "3000:3000"
+      - "127.0.0.1:80:80"
+      - "127.0.0.1:3000:3000"
     depends_on:
       - backend
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
     restart: unless-stopped
 
 volumes:

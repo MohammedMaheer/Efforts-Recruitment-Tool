@@ -1258,7 +1258,13 @@ Return JSON:
 
 quality_score rules: 10+ skills + 5+ yrs + degree = 70-85 | 5-9 skills + 2-5 yrs = 55-70 | 3-4 skills + 1-2 yrs = 45-55 | Nearly empty = below 30 | Any skills/experience = min 35. Never default to 25/50/65."""
 
-        result = await self._agenerate_json(prompt, temperature=0.0, max_tokens=2048)
+        try:
+            result = await self._agenerate_json(prompt, temperature=0.0, max_tokens=2048)
+        except ValueError as fmt_err:
+            # Some runtimes attempt Python-style formatting on braces inside the JSON schema; escape and retry once.
+            logger.warning(f"Gemini analyze prompt formatting issue, retrying with escaped braces: {fmt_err}")
+            safe_prompt = prompt.replace('{', '{{').replace('}', '}}')
+            result = await self._agenerate_json(safe_prompt, temperature=0.0, max_tokens=2048)
 
         if result:
             # Normalize score — prefer quality_score, then match_score

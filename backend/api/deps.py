@@ -30,8 +30,9 @@ MAX_CONCURRENT_REQUESTS = settings.max_concurrent_requests
 response_cache = TTLCache(maxsize=1000, ttl=300)
 _cache_lock = threading.Lock()
 
-# Database write semaphore (prevents SQLite lock contention)
-db_semaphore = asyncio.Semaphore(5)
+# Database write semaphore (prevents SQLite lock contention; PostgreSQL handles concurrency natively)
+_is_postgres = settings.database_url.startswith('postgres')
+db_semaphore = asyncio.Semaphore(50 if _is_postgres else 5)
 
 # Embedding cache (Phase 1.1: Cache Embeddings)
 # Lazy-loaded singlet on first use
@@ -53,6 +54,7 @@ def get_services():
     from services.email_parser import EmailParser
     from services.local_ai_service import get_local_ai_service
     from services.gemini_service import get_gemini_service
+    from services.llm_service import get_llm_service
     from services.email_scraper import get_scraper_service
     from services.database_service import get_db_service
     from services.auth_service import get_auth_service
@@ -63,17 +65,21 @@ def get_services():
     email_parser = EmailParser()
     local_ai_service = get_local_ai_service()
     gemini_service = get_gemini_service()
+    ollama_service = get_llm_service()
     scraper_service = get_scraper_service()
     db_service = get_db_service()
     auth_service = get_auth_service()
 
-    # Determine primary AI service
-    if gemini_service and gemini_service.available:
+    # Determine primary AI service: Ollama → Gemini → local_ai_service
+    if ollama_service and ollama_service.available:
+        ai_service = ollama_service
+        logger.info("Using Ollama as PRIMARY AI service (local LLM — free)")
+    elif gemini_service and gemini_service.available:
         ai_service = gemini_service
         logger.info("Using Gemini as PRIMARY AI service for candidate analysis")
     else:
         ai_service = local_ai_service
-        logger.warning("Gemini not available — falling back to local_ai_service (reduced quality)")
+        logger.warning("No LLM available — falling back to local_ai_service (reduced quality)")
 
     return {
         'resume_parser': resume_parser,
@@ -81,6 +87,7 @@ def get_services():
         'email_parser': email_parser,
         'local_ai_service': local_ai_service,
         'gemini_service': gemini_service,
+        'ollama_service': ollama_service,
         'ai_service': ai_service,
         'scraper_service': scraper_service,
         'db_service': db_service,
@@ -114,6 +121,11 @@ def get_ai():
 def get_gemini():
     """Get Gemini service instance (may be None)."""
     return _services.get('gemini_service')
+
+
+def get_ollama():
+    """Get Ollama service instance (may be None)."""
+    return _services.get('ollama_service')
 
 
 def get_scraper():

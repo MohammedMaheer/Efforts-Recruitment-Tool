@@ -1384,10 +1384,27 @@ class EmailScraperService:
                     sender_email
                 )
             
-            # AI-powered email parsing — Gemini primary, keyword parser fallback
+            # AI-powered email parsing — Ollama -> Gemini -> keyword fallback
             llm_portal_data = None
 
-            # Try Gemini
+            # Try Ollama (local LLM — free)
+            if not llm_portal_data:
+                try:
+                    from services.llm_service import get_llm_service
+                    ollama_svc = get_llm_service()
+                    if ollama_svc and ollama_svc.available:
+                        llm_portal_data = await ollama_svc.parse_candidate_email(
+                            subject=subject,
+                            body=clean_body[:6000],
+                            sender=sender_email,
+                            resume_text=_raw_resume_text
+                        )
+                        if llm_portal_data:
+                            logger.info(f"Ollama parsed email: {llm_portal_data.get('name', 'Unknown')} | Source: {llm_portal_data.get('source', 'Unknown')}")
+                except Exception as ollama_err:
+                    logger.warning(f"Ollama email parsing error: {ollama_err}")
+
+            # Try Gemini (cloud fallback)
             if not llm_portal_data:
                 try:
                     from services.gemini_service import get_gemini_service
