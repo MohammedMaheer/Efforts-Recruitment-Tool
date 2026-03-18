@@ -71,3 +71,8 @@ deploy-frontend/
 
 # GCloud
 .gcloudignore
+
+# Large binary files
+*.tar
+*.tar.gz
+gcp-export/cloud-run/recruitment-backend-image.tar
