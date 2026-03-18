@@ -76,3 +76,8 @@ deploy-frontend/
 *.tar
 *.tar.gz
 gcp-export/cloud-run/recruitment-backend-image.tar
+
+admin_pass.txt
+admin_email.txt
+fix-admin-login.ps1
+setup-and-deploy.ps1
